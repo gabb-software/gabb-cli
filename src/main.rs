@@ -1,5 +1,6 @@
 mod daemon;
 mod indexer;
+mod rust_lang;
 mod store;
 mod ts;
 
@@ -46,9 +47,7 @@ fn init_logging(verbosity: u8) {
         1 => "debug",
         _ => "trace",
     };
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or(level),
-    )
-    .format_timestamp_secs()
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(level))
+        .format_timestamp_secs()
+        .init();
 }

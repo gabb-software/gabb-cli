@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fs;
@@ -101,7 +101,8 @@ impl IndexStore {
 
     pub fn remove_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let path_str = normalize_path(path.as_ref());
-        self.conn.borrow()
+        self.conn
+            .borrow()
             .execute("DELETE FROM files WHERE path = ?1", params![path_str])?;
         self.conn.borrow().execute(
             "DELETE FROM references WHERE file = ?1",
@@ -111,7 +112,8 @@ impl IndexStore {
             "DELETE FROM edges WHERE src IN (SELECT id FROM symbols WHERE file = ?1)",
             params![path_str.clone()],
         )?;
-        self.conn.borrow()
+        self.conn
+            .borrow()
             .execute("DELETE FROM symbols WHERE file = ?1", params![path_str])?;
         Ok(())
     }

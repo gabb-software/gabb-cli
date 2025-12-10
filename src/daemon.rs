@@ -1,4 +1,4 @@
-use crate::indexer::{build_full_index, index_one, is_ts_file, remove_if_tracked};
+use crate::indexer::{build_full_index, index_one, is_indexed_file, remove_if_tracked};
 use crate::store::IndexStore;
 use anyhow::{Context, Result};
 use log::{debug, info, warn};
@@ -61,7 +61,7 @@ fn handle_event(root: &Path, store: &IndexStore, event: Event) -> Result<()> {
         | EventKind::Create(_)
         | EventKind::Modify(_) => {
             for path in paths {
-                if is_ts_file(&path) && path.is_file() {
+                if is_indexed_file(&path) && path.is_file() {
                     index_one(&path, store)?;
                 }
             }

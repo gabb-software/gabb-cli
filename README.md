@@ -1,9 +1,9 @@
 # Gabb CLI
 
-Gabb is a Rust CLI that builds a local code index so editors and AI coding assistants can answer questions like "where is this implemented?" without shipping your sources to a remote service. The MVP focuses on TypeScript/TSX projects and an indexing daemon that stays in sync with filesystem changes.
+Gabb is a Rust CLI that builds a local code index so editors and AI coding assistants can answer questions like "where is this implemented?" without shipping your sources to a remote service. The MVP focuses on TypeScript/TSX and Rust projects with an indexing daemon that stays in sync with filesystem changes.
 
 ## Status
-- MVP: indexes TypeScript/TSX and stores results in a local SQLite database
+- MVP: indexes TypeScript/TSX and Rust, storing results in a local SQLite database
 - Commands: `gabb daemon` (watches a workspace and keeps the index fresh)
 - Outputs: symbol definitions, relationships (implements/extends), and references
 
@@ -18,7 +18,7 @@ cargo run -- daemon --root . --db .gabb/index.db
 # 3) Let the daemon watch for changes; the index lives at .gabb/index.db
 ```
 
-The daemon will crawl your workspace, index all `*.ts`/`*.tsx` files, and keep the SQLite database up to date as files change. Use `-v`/`-vv` to increase logging.
+The daemon will crawl your workspace, index all `*.ts`/`*.tsx`/`*.rs` files, and keep the SQLite database up to date as files change. Use `-v`/`-vv` to increase logging.
 
 ## Installation
 - Prerequisite: Rust toolchain (Edition 2024). Install via [rustup](https://rustup.rs/).
@@ -42,7 +42,7 @@ Flags:
 - `-v`, `-vv`: increase log verbosity
 
 What gets indexed:
-- Files: `*.ts`, `*.tsx`
+- Files: `*.ts`, `*.tsx`, `*.rs`
 - Data stored: symbols (functions, classes, interfaces, methods), relationships (implements/extends), references
 - Storage: SQLite with WAL enabled for safe concurrent reads
 
@@ -51,6 +51,7 @@ What gets indexed:
 - `src/daemon.rs`: filesystem watcher and incremental indexing loop
 - `src/indexer.rs`: full/index-one routines and workspace traversal
 - `src/ts.rs`: TypeScript parser built on tree-sitter
+- `src/rust_lang.rs`: Rust parser built on tree-sitter
 - `src/store.rs`: SQLite-backed index store
 - `ARCHITECTURE.md`: deeper design notes for future commands (find implementations, usages, duplicates)
 

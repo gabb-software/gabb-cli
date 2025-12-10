@@ -5,8 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tree_sitter::{Language, Node, Parser, TreeCursor};
 
-static TS_LANGUAGE: Lazy<Language> =
-    Lazy::new(|| tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into());
+static RUST_LANGUAGE: Lazy<Language> = Lazy::new(|| tree_sitter_rust::LANGUAGE.into());
 
 pub fn index_file(
     path: &Path,
@@ -14,11 +13,11 @@ pub fn index_file(
 ) -> Result<(Vec<SymbolRecord>, Vec<EdgeRecord>, Vec<ReferenceRecord>)> {
     let mut parser = Parser::new();
     parser
-        .set_language(&TS_LANGUAGE)
-        .context("failed to set TypeScript language")?;
+        .set_language(&RUST_LANGUAGE)
+        .context("failed to set Rust language")?;
     let tree = parser
         .parse(source, None)
-        .context("failed to parse TypeScript file")?;
+        .context("failed to parse Rust file")?;
 
     let mut symbols = Vec::new();
     let mut edges = Vec::new();
@@ -63,56 +62,39 @@ fn walk_symbols(
     loop {
         let node = cursor.node();
         match node.kind() {
-            "function_declaration" => {
+            "function_item" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = slice(source, &name_node);
                     let sym = make_symbol(path, &node, &name, "function", container.clone());
                     declared_spans.insert((sym.start as usize, sym.end as usize));
-                    symbol_by_name.entry(name.clone()).or_insert(sym.id.clone());
+                    symbol_by_name.entry(name).or_insert(sym.id.clone());
                     symbols.push(sym);
                 }
             }
-            "class_declaration" => {
+            "struct_item" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = slice(source, &name_node);
-                    let class_id;
-                    {
-                        let sym = make_symbol(path, &node, &name, "class", container.clone());
-                        class_id = sym.id.clone();
-                        declared_spans.insert((sym.start as usize, sym.end as usize));
-                        symbol_by_name.entry(name.clone()).or_insert(sym.id.clone());
-                        symbols.push(sym);
-                    }
-                    if let Some(implements) = node.child_by_field_name("implements") {
-                        collect_type_list(
-                            path,
-                            source,
-                            &implements,
-                            &class_id,
-                            "implements",
-                            edges,
-                        );
-                    }
-                    if let Some(extends) = node.child_by_field_name("superclass") {
-                        collect_type_list(path, source, &extends, &class_id, "extends", edges);
-                    }
-                }
-            }
-            "interface_declaration" => {
-                if let Some(name_node) = node.child_by_field_name("name") {
-                    let name = slice(source, &name_node);
-                    let sym = make_symbol(path, &node, &name, "interface", container.clone());
+                    let sym = make_symbol(path, &node, &name, "struct", container.clone());
                     declared_spans.insert((sym.start as usize, sym.end as usize));
-                    symbol_by_name.entry(name.clone()).or_insert(sym.id.clone());
+                    symbol_by_name.entry(name).or_insert(sym.id.clone());
                     symbols.push(sym);
                 }
             }
-            "method_definition" | "method_signature" => {
+            "enum_item" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = slice(source, &name_node);
-                    let sym = make_symbol(path, &node, &name, "method", container.clone());
+                    let sym = make_symbol(path, &node, &name, "enum", container.clone());
                     declared_spans.insert((sym.start as usize, sym.end as usize));
-                    symbol_by_name.entry(name.clone()).or_insert(sym.id.clone());
+                    symbol_by_name.entry(name).or_insert(sym.id.clone());
+                    symbols.push(sym);
+                }
+            }
+            "trait_item" => {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = slice(source, &name_node);
+                    let sym = make_symbol(path, &node, &name, "trait", container.clone());
+                    declared_spans.insert((sym.start as usize, sym.end as usize));
+                    symbol_by_name.entry(name).or_insert(sym.id.clone());
                     symbols.push(sym);
                 }
             }
@@ -120,14 +102,11 @@ fn walk_symbols(
         }
 
         if cursor.goto_first_child() {
-            let child_container =
-                if matches!(node.kind(), "class_declaration" | "interface_declaration") {
-                    node.child_by_field_name("name")
-                        .map(|n| slice(source, &n))
-                        .or(container.clone())
-                } else {
-                    container.clone()
-                };
+            let child_container = if node.kind() == "impl_item" {
+                impl_container_name(source, &node).or(container.clone())
+            } else {
+                container.clone()
+            };
             walk_symbols(
                 path,
                 source,
@@ -143,32 +122,6 @@ fn walk_symbols(
 
         if !cursor.goto_next_sibling() {
             break;
-        }
-    }
-}
-
-fn collect_type_list(
-    path: &Path,
-    _source: &str,
-    node: &Node,
-    src_id: &str,
-    kind: &str,
-    edges: &mut Vec<EdgeRecord>,
-) {
-    // Collect identifiers used in implements/extends clauses.
-    for child in node.children(&mut node.walk()) {
-        if child.kind() == "identifier" {
-            let dst_id = format!(
-                "{}#{}-{}",
-                normalize_path(path),
-                child.start_byte(),
-                child.end_byte()
-            );
-            edges.push(EdgeRecord {
-                src: src_id.to_string(),
-                dst: dst_id,
-                kind: kind.to_string(),
-            });
         }
     }
 }
@@ -209,6 +162,12 @@ fn collect_references(
     refs
 }
 
+fn impl_container_name(source: &str, node: &Node) -> Option<String> {
+    node.child_by_field_name("type")
+        .map(|ty| slice(source, &ty))
+        .filter(|s| !s.is_empty())
+}
+
 fn make_symbol(
     path: &Path,
     node: &Node,
@@ -232,7 +191,7 @@ fn make_symbol(
     }
 }
 
-fn slice<'a>(source: &'a str, node: &Node) -> String {
+fn slice(source: &str, node: &Node) -> String {
     let bytes = node.byte_range();
     source
         .get(bytes.clone())

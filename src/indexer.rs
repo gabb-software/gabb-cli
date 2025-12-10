@@ -1,6 +1,7 @@
-use crate::store::{normalize_path, now_unix, FileRecord, IndexStore};
+use crate::rust_lang;
+use crate::store::{FileRecord, IndexStore, normalize_path, now_unix};
 use crate::ts;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use blake3::Hasher;
 use log::{debug, info, warn};
 use std::collections::HashSet;
@@ -30,7 +31,7 @@ pub fn build_full_index(root: &Path, store: &IndexStore) -> Result<()> {
                 continue;
             }
         };
-        if !entry.file_type().is_file() || !is_ts_file(entry.path()) {
+        if !entry.file_type().is_file() || !is_indexed_file(entry.path()) {
             continue;
         }
         match index_one(entry.path(), store) {
@@ -42,10 +43,7 @@ pub fn build_full_index(root: &Path, store: &IndexStore) -> Result<()> {
     }
 
     prune_deleted(store, &seen)?;
-    info!(
-        "Full index complete. DB at {}",
-        store.db_path().display()
-    );
+    info!("Full index complete. DB at {}", store.db_path().display());
     Ok(())
 }
 
@@ -54,7 +52,13 @@ pub fn index_one(path: &Path, store: &IndexStore) -> Result<String> {
     let contents = fs::read(path)?;
     let source = String::from_utf8_lossy(&contents).to_string();
     let record = to_record(path, &contents)?;
-    let (symbols, edges, references) = ts::index_file(path, &source)?;
+    let (symbols, edges, references) = if is_ts_file(path) {
+        ts::index_file(path, &source)?
+    } else if is_rust_file(path) {
+        rust_lang::index_file(path, &source)?
+    } else {
+        bail!("unsupported file type: {}", path.display());
+    };
     store.save_file_index(&record, &symbols, &edges, &references)?;
     debug!(
         "Indexed {} symbols={} edges={} refs={}",
@@ -99,6 +103,14 @@ pub fn is_ts_file(path: &Path) -> bool {
         path.extension().and_then(|e| e.to_str()),
         Some("ts" | "tsx")
     )
+}
+
+pub fn is_rust_file(path: &Path) -> bool {
+    matches!(path.extension().and_then(|e| e.to_str()), Some("rs"))
+}
+
+pub fn is_indexed_file(path: &Path) -> bool {
+    is_ts_file(path) || is_rust_file(path)
 }
 
 fn to_record(path: &Path, contents: &[u8]) -> Result<FileRecord> {

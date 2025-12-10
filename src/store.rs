@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fs;
@@ -87,13 +87,13 @@ impl IndexStore {
             );
             CREATE INDEX IF NOT EXISTS edges_src_idx ON edges(src);
             CREATE INDEX IF NOT EXISTS edges_dst_idx ON edges(dst);
-            CREATE TABLE IF NOT EXISTS references (
+            CREATE TABLE IF NOT EXISTS references_tbl (
                 file TEXT NOT NULL,
                 start INTEGER NOT NULL,
                 end INTEGER NOT NULL,
                 symbol_id TEXT NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS references_symbol_idx ON references(symbol_id);
+            CREATE INDEX IF NOT EXISTS references_symbol_idx ON references_tbl(symbol_id);
             "#,
         )?;
         Ok(())
@@ -105,7 +105,7 @@ impl IndexStore {
             .borrow()
             .execute("DELETE FROM files WHERE path = ?1", params![path_str])?;
         self.conn.borrow().execute(
-            "DELETE FROM references WHERE file = ?1",
+            "DELETE FROM references_tbl WHERE file = ?1",
             params![path_str.clone()],
         )?;
         self.conn.borrow().execute(
@@ -137,7 +137,7 @@ impl IndexStore {
         let conn = &mut *self.conn.borrow_mut();
         let tx = conn.transaction()?;
         tx.execute(
-            "DELETE FROM references WHERE file = ?1",
+            "DELETE FROM references_tbl WHERE file = ?1",
             params![file_record.path.clone()],
         )?;
         tx.execute(
@@ -165,7 +165,7 @@ impl IndexStore {
 
         for r in references {
             tx.execute(
-                "INSERT INTO references(file, start, end, symbol_id) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO references_tbl(file, start, end, symbol_id) VALUES (?1, ?2, ?3, ?4)",
                 params![r.file, r.start, r.end, r.symbol_id],
             )?;
         }

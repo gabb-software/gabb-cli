@@ -1,5 +1,6 @@
 use anyhow::Result;
 use rusqlite::{params, Connection};
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -41,7 +42,7 @@ pub struct ReferenceRecord {
 
 #[derive(Debug)]
 pub struct IndexStore {
-    conn: Connection,
+    conn: RefCell<Connection>,
     db_path: PathBuf,
 }
 
@@ -52,7 +53,7 @@ impl IndexStore {
         }
         let conn = Connection::open(path)?;
         let store = Self {
-            conn,
+            conn: RefCell::new(conn),
             db_path: path.to_path_buf(),
         };
         store.init_schema()?;
@@ -60,7 +61,7 @@ impl IndexStore {
     }
 
     fn init_schema(&self) -> Result<()> {
-        self.conn.execute_batch(
+        self.conn.borrow().execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
             CREATE TABLE IF NOT EXISTS files (
@@ -98,40 +99,26 @@ impl IndexStore {
         Ok(())
     }
 
-    pub fn upsert_file(&self, record: &FileRecord) -> Result<()> {
-        self.conn.execute(
-            r#"
-            INSERT INTO files(path, hash, mtime, indexed_at)
-            VALUES (?1, ?2, ?3, ?4)
-            ON CONFLICT(path) DO UPDATE SET
-                hash=excluded.hash,
-                mtime=excluded.mtime,
-                indexed_at=excluded.indexed_at
-            "#,
-            params![record.path, record.hash, record.mtime, record.indexed_at],
-        )?;
-        Ok(())
-    }
-
     pub fn remove_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let path_str = normalize_path(path.as_ref());
-        self.conn
+        self.conn.borrow()
             .execute("DELETE FROM files WHERE path = ?1", params![path_str])?;
-        self.conn.execute(
+        self.conn.borrow().execute(
             "DELETE FROM references WHERE file = ?1",
             params![path_str.clone()],
         )?;
-        self.conn.execute(
+        self.conn.borrow().execute(
             "DELETE FROM edges WHERE src IN (SELECT id FROM symbols WHERE file = ?1)",
             params![path_str.clone()],
         )?;
-        self.conn
+        self.conn.borrow()
             .execute("DELETE FROM symbols WHERE file = ?1", params![path_str])?;
         Ok(())
     }
 
     pub fn list_paths(&self) -> Result<HashSet<String>> {
-        let mut stmt = self.conn.prepare("SELECT path FROM files")?;
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare("SELECT path FROM files")?;
         let rows = stmt
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<HashSet<String>>>()?;
@@ -145,7 +132,8 @@ impl IndexStore {
         edges: &[EdgeRecord],
         references: &[ReferenceRecord],
     ) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        let conn = &mut *self.conn.borrow_mut();
+        let tx = conn.transaction()?;
         tx.execute(
             "DELETE FROM references WHERE file = ?1",
             params![file_record.path.clone()],

@@ -6,7 +6,7 @@ use std::path::Path;
 use tree_sitter::{Language, Node, Parser, TreeCursor};
 
 static TS_LANGUAGE: Lazy<Language> =
-    Lazy::new(|| tree_sitter_typescript::language_typescript());
+    Lazy::new(|| tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into());
 
 pub fn index_file(path: &Path, source: &str) -> Result<(Vec<SymbolRecord>, Vec<EdgeRecord>, Vec<ReferenceRecord>)> {
     let mut parser = Parser::new();
@@ -137,7 +137,7 @@ fn walk_symbols(
 
 fn collect_type_list(
     path: &Path,
-    source: &str,
+    _source: &str,
     node: &Node,
     src_id: &str,
     kind: &str,
@@ -146,7 +146,6 @@ fn collect_type_list(
     // Collect identifiers used in implements/extends clauses.
     for child in node.children(&mut node.walk()) {
         if child.kind() == "identifier" {
-            let name = slice(source, &child);
             let dst_id = format!(
                 "{}#{}-{}",
                 normalize_path(path),

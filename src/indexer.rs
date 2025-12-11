@@ -1,6 +1,5 @@
-use crate::rust_lang;
+use crate::languages::{rust, typescript};
 use crate::store::{FileRecord, IndexStore, normalize_path, now_unix};
-use crate::ts;
 use anyhow::{Context, Result, bail};
 use blake3::Hasher;
 use log::{debug, info, warn};
@@ -53,9 +52,9 @@ pub fn index_one(path: &Path, store: &IndexStore) -> Result<String> {
     let source = String::from_utf8_lossy(&contents).to_string();
     let record = to_record(path, &contents)?;
     let (symbols, edges, references) = if is_ts_file(path) {
-        ts::index_file(path, &source)?
+        typescript::index_file(path, &source)?
     } else if is_rust_file(path) {
-        rust_lang::index_file(path, &source)?
+        rust::index_file(path, &source)?
     } else {
         bail!("unsupported file type: {}", path.display());
     };

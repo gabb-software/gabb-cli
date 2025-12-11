@@ -1,8 +1,7 @@
 mod daemon;
 mod indexer;
-mod rust_lang;
+mod languages;
 mod store;
-mod ts;
 
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};

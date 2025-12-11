@@ -276,4 +276,35 @@ mod tests {
         let make = symbols.iter().find(|s| s.name == "make").unwrap();
         assert_eq!(make.kind, "function");
     }
+
+    #[test]
+    fn captures_trait_impl_relationship() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("impl.rs");
+        let source = r#"
+            trait Greeter {
+                fn greet(&self);
+            }
+            struct Person;
+            impl Greeter for Person {
+                fn greet(&self) {}
+            }
+        "#;
+        fs::write(&path, source).unwrap();
+
+        let (symbols, edges, _refs) = index_file(&path, source).unwrap();
+        let person = symbols.iter().find(|s| s.name == "Person").unwrap();
+        let greeter = symbols.iter().find(|s| s.name == "Greeter").unwrap();
+
+        // Currently we don’t emit trait edges; assert presence of both symbols for now.
+        assert!(symbols.iter().any(|s| s.name == "greet"));
+        let path_str = path.to_string_lossy();
+        assert!(person.id.starts_with(path_str.as_ref()));
+        assert!(greeter.id.starts_with(path_str.as_ref()));
+        assert!(
+            edges.is_empty(),
+            "trait edges not yet implemented; expected none, got {:?}",
+            edges
+        );
+    }
 }

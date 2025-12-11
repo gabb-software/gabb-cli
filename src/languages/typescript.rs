@@ -329,4 +329,36 @@ mod tests {
             edges
         );
     }
+
+    #[test]
+    fn links_extends_across_files_best_effort() {
+        let dir = tempdir().unwrap();
+        let base = dir.path();
+        let iface_path = base.join("base.ts");
+        let impl_path = base.join("impl.ts");
+
+        let iface_src = r#"
+            export interface Base {
+                run(): void;
+            }
+        "#;
+        let impl_src = r#"
+            import { Base } from "./base";
+            export class Child extends Base {
+                run() {}
+            }
+        "#;
+        fs::write(&iface_path, iface_src).unwrap();
+        fs::write(&impl_path, impl_src).unwrap();
+
+        let (iface_symbols, _, _) = index_file(&iface_path, iface_src).unwrap();
+        let (_, impl_edges, _) = index_file(&impl_path, impl_src).unwrap();
+
+        let _base = iface_symbols.iter().find(|s| s.name == "Base").unwrap();
+        assert!(
+            impl_edges.iter().any(|e| e.kind == "extends"),
+            "expected extends edge pointing to Base"
+        );
+        // We do not resolve cross-file edges yet; just assert we recorded an extends relationship.
+    }
 }

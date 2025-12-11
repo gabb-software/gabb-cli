@@ -23,6 +23,8 @@ pub struct SymbolRecord {
     pub name: String,
     pub start: i64,
     pub end: i64,
+    pub qualifier: Option<String>,
+    pub visibility: Option<String>,
     pub container: Option<String>,
 }
 
@@ -78,6 +80,8 @@ impl IndexStore {
                 name TEXT NOT NULL,
                 start INTEGER NOT NULL,
                 end INTEGER NOT NULL,
+                qualifier TEXT,
+                visibility TEXT,
                 container TEXT
             );
             CREATE INDEX IF NOT EXISTS symbols_file_idx ON symbols(file);
@@ -97,6 +101,23 @@ impl IndexStore {
             CREATE INDEX IF NOT EXISTS references_symbol_idx ON references_tbl(symbol_id);
             "#,
         )?;
+        self.ensure_column("symbols", "qualifier", "TEXT")?;
+        self.ensure_column("symbols", "visibility", "TEXT")?;
+        Ok(())
+    }
+
+    fn ensure_column(&self, table: &str, column: &str, ty: &str) -> Result<()> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let name: String = row.get(1)?;
+            if name == column {
+                return Ok(());
+            }
+        }
+        drop(rows);
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"), [])?;
         Ok(())
     }
 
@@ -152,8 +173,18 @@ impl IndexStore {
 
         for sym in symbols {
             tx.execute(
-                "INSERT INTO symbols(id, file, kind, name, start, end, container) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![sym.id, sym.file, sym.kind, sym.name, sym.start, sym.end, sym.container],
+                "INSERT INTO symbols(id, file, kind, name, start, end, qualifier, visibility, container) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    sym.id,
+                    sym.file,
+                    sym.kind,
+                    sym.name,
+                    sym.start,
+                    sym.end,
+                    sym.qualifier,
+                    sym.visibility,
+                    sym.container
+                ],
             )?;
         }
 
@@ -204,8 +235,9 @@ impl IndexStore {
         limit: Option<usize>,
     ) -> Result<Vec<SymbolRecord>> {
         let file_norm = file.map(|f| normalize_path(Path::new(f)));
-        let mut sql =
-            String::from("SELECT id, file, kind, name, start, end, container FROM symbols");
+        let mut sql = String::from(
+            "SELECT id, file, kind, name, start, end, qualifier, visibility, container FROM symbols",
+        );
         let mut values: Vec<Value> = Vec::new();
         let mut clauses: Vec<&str> = Vec::new();
 
@@ -245,7 +277,9 @@ impl IndexStore {
                     name: row.get(3)?,
                     start: row.get(4)?,
                     end: row.get(5)?,
-                    container: row.get(6)?,
+                    qualifier: row.get(6)?,
+                    visibility: row.get(7)?,
+                    container: row.get(8)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -276,7 +310,7 @@ impl IndexStore {
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
-            "SELECT id, file, kind, name, start, end, container FROM symbols WHERE id IN ({})",
+            "SELECT id, file, kind, name, start, end, qualifier, visibility, container FROM symbols WHERE id IN ({})",
             placeholders
         );
         let conn = self.conn.borrow();
@@ -290,7 +324,9 @@ impl IndexStore {
                     name: row.get(3)?,
                     start: row.get(4)?,
                     end: row.get(5)?,
-                    container: row.get(6)?,
+                    qualifier: row.get(6)?,
+                    visibility: row.get(7)?,
+                    container: row.get(8)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;

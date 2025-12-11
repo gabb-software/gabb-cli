@@ -2,6 +2,7 @@ use crate::store::{EdgeRecord, ReferenceRecord, SymbolRecord, normalize_path};
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::path::Path;
 use tree_sitter::{Language, Node, Parser, TreeCursor};
 
@@ -175,6 +176,8 @@ fn make_symbol(
     kind: &str,
     container: Option<String>,
 ) -> SymbolRecord {
+    let qualifier = Some(module_qualifier(path, &container));
+    let visibility = visibility(node, path);
     SymbolRecord {
         id: format!(
             "{}#{}-{}",
@@ -187,8 +190,31 @@ fn make_symbol(
         name: name.to_string(),
         start: node.start_byte() as i64,
         end: node.end_byte() as i64,
+        qualifier,
+        visibility,
         container,
     }
+}
+
+fn module_qualifier(path: &Path, container: &Option<String>) -> String {
+    let mut base = normalize_path(path);
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        let trim = ext.len() + 1;
+        if base.len() > trim {
+            base.truncate(base.len() - trim);
+        }
+    }
+    if let Some(c) = container {
+        base.push_str("::");
+        base.push_str(c);
+    }
+    base
+}
+
+fn visibility(node: &Node, path: &Path) -> Option<String> {
+    node.child_by_field_name("visibility")
+        .map(|vis| slice_file(path, &vis))
+        .filter(|s| !s.is_empty())
 }
 
 fn slice(source: &str, node: &Node) -> String {
@@ -198,4 +224,10 @@ fn slice(source: &str, node: &Node) -> String {
         .unwrap_or_default()
         .trim()
         .to_string()
+}
+
+fn slice_file(path: &Path, node: &Node) -> String {
+    // Best-effort visibility slice using the file contents; if missing, fall back to node text.
+    let source = fs::read_to_string(path).unwrap_or_default();
+    slice(&source, node)
 }

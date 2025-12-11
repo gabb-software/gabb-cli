@@ -229,6 +229,7 @@ fn make_symbol(
     kind: &str,
     container: Option<String>,
 ) -> SymbolRecord {
+    let qualifier = Some(module_qualifier(path, &container));
     SymbolRecord {
         id: format!(
             "{}#{}-{}",
@@ -241,8 +242,25 @@ fn make_symbol(
         name: name.to_string(),
         start: node.start_byte() as i64,
         end: node.end_byte() as i64,
+        qualifier,
+        visibility: None,
         container,
     }
+}
+
+fn module_qualifier(path: &Path, container: &Option<String>) -> String {
+    let mut base = normalize_path(path);
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        let trim = ext.len() + 1;
+        if base.len() > trim {
+            base.truncate(base.len() - trim);
+        }
+    }
+    if let Some(c) = container {
+        base.push_str("::");
+        base.push_str(c);
+    }
+    base
 }
 
 fn slice<'a>(source: &'a str, node: &Node) -> String {

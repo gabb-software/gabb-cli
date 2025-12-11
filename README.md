@@ -4,7 +4,7 @@ Gabb is a Rust CLI that builds a local code index so editors and AI coding assis
 
 ## Status
 - MVP: indexes TypeScript/TSX and Rust, storing results in a local SQLite database
-- Commands: `gabb daemon` (watches a workspace and keeps the index fresh)
+- Commands: `gabb daemon` (watches a workspace and keeps the index fresh), `gabb symbols` (list indexed symbols)
 - Outputs: symbol definitions, relationships (implements/extends), and references
 
 ## Quickstart
@@ -34,12 +34,17 @@ The daemon will crawl your workspace, index all `*.ts`/`*.tsx`/`*.rs` files, and
 ## Usage
 ```bash
 gabb daemon --root <workspace> --db <path/to/index.db> [-v|-vv]
+gabb symbols --db <path/to/index.db> [--file <path>] [--kind <kind>] [--limit <n>]
 ```
 
 Flags:
 - `--root`: workspace to index (defaults to current directory)
 - `--db`: SQLite database path (defaults to `.gabb/index.db`)
 - `-v`, `-vv`: increase log verbosity
+Symbols command filters:
+- `--file`: only show symbols from a given file path
+- `--kind`: filter by kind (`function`, `class`, `interface`, `method`, `struct`, `enum`, `trait`)
+- `--limit`: cap the number of rows returned
 
 What gets indexed:
 - Files: `*.ts`, `*.tsx`, `*.rs`

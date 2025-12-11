@@ -1,5 +1,6 @@
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::types::Value;
+use rusqlite::{Connection, params, params_from_iter};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fs;
@@ -193,6 +194,56 @@ impl IndexStore {
 
     pub fn db_path(&self) -> &Path {
         &self.db_path
+    }
+
+    pub fn list_symbols(
+        &self,
+        file: Option<&str>,
+        kind: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<SymbolRecord>> {
+        let file_norm = file.map(|f| normalize_path(Path::new(f)));
+        let mut sql =
+            String::from("SELECT id, file, kind, name, start, end, container FROM symbols");
+        let mut values: Vec<Value> = Vec::new();
+        let mut clauses: Vec<&str> = Vec::new();
+
+        if let Some(f) = file_norm {
+            clauses.push("file = ?");
+            values.push(Value::from(f));
+        }
+
+        if let Some(k) = kind {
+            clauses.push("kind = ?");
+            values.push(Value::from(k.to_string()));
+        }
+
+        if !clauses.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&clauses.join(" AND "));
+        }
+
+        if let Some(lim) = limit {
+            sql.push_str(" LIMIT ?");
+            values.push(Value::from(lim as i64));
+        }
+
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map(params_from_iter(values.iter()), |row| {
+                Ok(SymbolRecord {
+                    id: row.get(0)?,
+                    file: row.get(1)?,
+                    kind: row.get(2)?,
+                    name: row.get(3)?,
+                    start: row.get(4)?,
+                    end: row.get(5)?,
+                    container: row.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 }
 

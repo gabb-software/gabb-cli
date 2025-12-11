@@ -25,7 +25,10 @@ pub fn run(root: &Path, db_path: &Path) -> Result<()> {
     })?;
     watcher.watch(&root, RecursiveMode::Recursive)?;
 
-    info!("Watching {} for changes (TypeScript files)", root.display());
+    info!(
+        "Watching {} for changes (TypeScript and Rust files)",
+        root.display()
+    );
     loop {
         match rx.recv_timeout(Duration::from_secs(1)) {
             Ok(Ok(event)) => {

@@ -91,10 +91,19 @@ fn walk_symbols(
                             &class_id,
                             "implements",
                             edges,
+                            symbol_by_name,
                         );
                     }
                     if let Some(extends) = node.child_by_field_name("superclass") {
-                        collect_type_list(path, source, &extends, &class_id, "extends", edges);
+                        collect_type_list(
+                            path,
+                            source,
+                            &extends,
+                            &class_id,
+                            "extends",
+                            edges,
+                            symbol_by_name,
+                        );
                     }
                 }
             }
@@ -154,16 +163,20 @@ fn collect_type_list(
     src_id: &str,
     kind: &str,
     edges: &mut Vec<EdgeRecord>,
+    symbol_by_name: &HashMap<String, String>,
 ) {
     // Collect identifiers used in implements/extends clauses.
     for child in node.children(&mut node.walk()) {
         if child.kind() == "identifier" {
-            let dst_id = format!(
-                "{}#{}-{}",
-                normalize_path(path),
-                child.start_byte(),
-                child.end_byte()
-            );
+            let name = slice(_source, &child);
+            let dst_id = symbol_by_name.get(&name).cloned().unwrap_or_else(|| {
+                format!(
+                    "{}#{}-{}",
+                    normalize_path(path),
+                    child.start_byte(),
+                    child.end_byte()
+                )
+            });
             edges.push(EdgeRecord {
                 src: src_id.to_string(),
                 dst: dst_id,

@@ -35,6 +35,7 @@ The daemon will crawl your workspace, index all `*.ts`/`*.tsx`/`*.rs` files, and
 ```bash
 gabb daemon --root <workspace> --db <path/to/index.db> [-v|-vv]
 gabb symbols --db <path/to/index.db> [--file <path>] [--kind <kind>] [--limit <n>]
+gabb implementation --db <path/to/index.db> --file <path> --line <line> --character <char> [--limit <n>] [--kind <kind>]
 ```
 
 Flags:
@@ -45,6 +46,9 @@ Symbols command filters:
 - `--file`: only show symbols from a given file path
 - `--kind`: filter by kind (`function`, `class`, `interface`, `method`, `struct`, `enum`, `trait`)
 - `--limit`: cap the number of rows returned
+Implementation command:
+- Requires `--file`, `--line`, and `--character` to identify the symbol under the cursor
+- Tries to find implementations via recorded edges; falls back to same-name matches (best effort for now)
 
 What gets indexed:
 - Files: `*.ts`, `*.tsx`, `*.rs`

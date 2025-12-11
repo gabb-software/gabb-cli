@@ -251,6 +251,51 @@ impl IndexStore {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
+
+    pub fn edges_to(&self, dst: &str) -> Result<Vec<EdgeRecord>> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare("SELECT src, dst, kind FROM edges WHERE dst = ?1")?;
+        let edges = stmt
+            .query_map(params![dst], |row| {
+                Ok(EdgeRecord {
+                    src: row.get(0)?,
+                    dst: row.get(1)?,
+                    kind: row.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(edges)
+    }
+
+    pub fn symbols_by_ids(&self, ids: &[String]) -> Result<Vec<SymbolRecord>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = std::iter::repeat("?")
+            .take(ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT id, file, kind, name, start, end, container FROM symbols WHERE id IN ({})",
+            placeholders
+        );
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map(params_from_iter(ids.iter()), |row| {
+                Ok(SymbolRecord {
+                    id: row.get(0)?,
+                    file: row.get(1)?,
+                    kind: row.get(2)?,
+                    name: row.get(3)?,
+                    start: row.get(4)?,
+                    end: row.get(5)?,
+                    container: row.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
 }
 
 pub fn normalize_path(path: &Path) -> String {

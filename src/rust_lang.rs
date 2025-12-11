@@ -212,9 +212,22 @@ fn module_qualifier(path: &Path, container: &Option<String>) -> String {
 }
 
 fn visibility(node: &Node, path: &Path) -> Option<String> {
-    node.child_by_field_name("visibility")
-        .map(|vis| slice_file(path, &vis))
-        .filter(|s| !s.is_empty())
+    if let Some(vis) = node.child_by_field_name("visibility") {
+        let text = slice_file(path, &vis);
+        if !text.is_empty() {
+            return Some(text);
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "visibility_modifier" || child.kind() == "pub" {
+            let text = slice_file(path, &child);
+            if !text.is_empty() {
+                return Some(text);
+            }
+        }
+    }
+    None
 }
 
 fn slice(source: &str, node: &Node) -> String {
@@ -230,4 +243,36 @@ fn slice_file(path: &Path, node: &Node) -> String {
     // Best-effort visibility slice using the file contents; if missing, fall back to node text.
     let source = fs::read_to_string(path).unwrap_or_default();
     slice(&source, node)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn extracts_rust_symbols_and_visibility() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mod.rs");
+        let source = r#"
+            pub struct Thing;
+            impl Thing {
+                pub fn make() {}
+            }
+        "#;
+        fs::write(&path, source).unwrap();
+
+        let (symbols, _edges, _refs) = index_file(&path, source).unwrap();
+        let names: Vec<_> = symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"Thing"));
+        assert!(names.contains(&"make"));
+
+        let thing = symbols.iter().find(|s| s.name == "Thing").unwrap();
+        assert_eq!(thing.visibility.as_deref(), Some("pub"));
+        assert!(thing.qualifier.as_deref().unwrap().contains("mod"));
+
+        let make = symbols.iter().find(|s| s.name == "make").unwrap();
+        assert_eq!(make.kind, "function");
+    }
 }

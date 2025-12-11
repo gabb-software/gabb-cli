@@ -83,7 +83,10 @@ fn walk_symbols(
                         symbol_by_name.entry(name.clone()).or_insert(sym.id.clone());
                         symbols.push(sym);
                     }
-                    if let Some(implements) = node.child_by_field_name("implements") {
+                    let implements_node = node
+                        .child_by_field_name("implements")
+                        .or_else(|| find_child_kind(&node, "implements_clause"));
+                    if let Some(implements) = implements_node {
                         collect_type_list(
                             path,
                             source,
@@ -94,7 +97,10 @@ fn walk_symbols(
                             symbol_by_name,
                         );
                     }
-                    if let Some(extends) = node.child_by_field_name("superclass") {
+                    let extends_node = node
+                        .child_by_field_name("superclass")
+                        .or_else(|| find_child_kind(&node, "extends_clause"));
+                    if let Some(extends) = extends_node {
                         collect_type_list(
                             path,
                             source,
@@ -167,7 +173,7 @@ fn collect_type_list(
 ) {
     // Collect identifiers used in implements/extends clauses.
     for child in node.children(&mut node.walk()) {
-        if child.kind() == "identifier" {
+        if matches!(child.kind(), "identifier" | "type_identifier") {
             let name = slice(_source, &child);
             let dst_id = symbol_by_name.get(&name).cloned().unwrap_or_else(|| {
                 format!(
@@ -184,6 +190,20 @@ fn collect_type_list(
             });
         }
     }
+}
+
+fn find_child_kind<'a>(node: &'a Node<'a>, kind: &str) -> Option<Node<'a>> {
+    let mut stack = vec![*node];
+    while let Some(n) = stack.pop() {
+        if n.kind() == kind {
+            return Some(n);
+        }
+        let mut cursor = n.walk();
+        for child in n.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+    None
 }
 
 fn collect_references(
@@ -270,4 +290,43 @@ fn slice<'a>(source: &'a str, node: &Node) -> String {
         .unwrap_or_default()
         .trim()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn extracts_ts_symbols_and_edges() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("foo.ts");
+        let source = r#"
+            interface Foo {
+                doThing(): void;
+            }
+            class Bar implements Foo {
+                doThing() {}
+            }
+        "#;
+        fs::write(&path, source).unwrap();
+
+        let (symbols, edges, _refs) = index_file(&path, source).unwrap();
+        let names: Vec<_> = symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"Foo"));
+        assert!(names.contains(&"Bar"));
+        assert_eq!(symbols.len(), 4); // Foo, Foo.doThing, Bar, Bar.doThing
+
+        // qualifier should include module path without extension
+        let foo = symbols.iter().find(|s| s.name == "Foo").unwrap();
+        assert!(foo.qualifier.as_deref().unwrap().contains("foo"));
+
+        // implements edge should resolve to the interface symbol id
+        assert!(
+            edges.iter().any(|e| e.kind == "implements"),
+            "expected implements edge, got {:?}",
+            edges
+        );
+    }
 }

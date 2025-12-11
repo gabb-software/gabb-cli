@@ -42,6 +42,27 @@ enum Commands {
         /// Only show symbols of this kind (function, class, interface, method, struct, enum, trait)
         #[arg(long)]
         kind: Option<String>,
+        /// Only show symbols with this exact name
+        #[arg(long)]
+        name: Option<String>,
+        /// Limit the number of results
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Find implementations (name match) in the index
+    Implementation {
+        /// Path to the SQLite index database
+        #[arg(long, default_value = ".gabb/index.db")]
+        db: PathBuf,
+        /// Symbol name to match
+        #[arg(long)]
+        name: String,
+        /// Only show symbols of this kind (function, class, interface, method, struct, enum, trait)
+        #[arg(long)]
+        kind: Option<String>,
+        /// Only show symbols from this file
+        #[arg(long)]
+        file: Option<PathBuf>,
         /// Limit the number of results
         #[arg(long)]
         limit: Option<usize>,
@@ -58,8 +79,16 @@ fn main() -> Result<()> {
             db,
             file,
             kind,
+            name,
             limit,
-        } => list_symbols(&db, file.as_ref(), kind.as_deref(), limit),
+        } => list_symbols(&db, file.as_ref(), kind.as_deref(), name.as_deref(), limit),
+        Commands::Implementation {
+            db,
+            name,
+            kind,
+            file,
+            limit,
+        } => list_symbols(&db, file.as_ref(), kind.as_deref(), Some(&name), limit),
     }
 }
 
@@ -78,11 +107,12 @@ fn list_symbols(
     db: &PathBuf,
     file: Option<&PathBuf>,
     kind: Option<&str>,
+    name: Option<&str>,
     limit: Option<usize>,
 ) -> Result<()> {
     let store = store::IndexStore::open(db)?;
     let file_str = file.map(|p| p.to_string_lossy().to_string());
-    let symbols: Vec<SymbolRecord> = store.list_symbols(file_str.as_deref(), kind, limit)?;
+    let symbols: Vec<SymbolRecord> = store.list_symbols(file_str.as_deref(), kind, name, limit)?;
 
     for sym in symbols {
         let container = sym

@@ -200,6 +200,7 @@ impl IndexStore {
         &self,
         file: Option<&str>,
         kind: Option<&str>,
+        name: Option<&str>,
         limit: Option<usize>,
     ) -> Result<Vec<SymbolRecord>> {
         let file_norm = file.map(|f| normalize_path(Path::new(f)));
@@ -216,6 +217,11 @@ impl IndexStore {
         if let Some(k) = kind {
             clauses.push("kind = ?");
             values.push(Value::from(k.to_string()));
+        }
+
+        if let Some(n) = name {
+            clauses.push("name = ?");
+            values.push(Value::from(n.to_string()));
         }
 
         if !clauses.is_empty() {

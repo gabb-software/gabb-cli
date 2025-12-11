@@ -50,6 +50,7 @@ pub fn index_file(
     Ok((symbols, edges, references))
 }
 
+#[allow(clippy::too_many_arguments, clippy::only_used_in_recursion)]
 fn walk_symbols(
     path: &Path,
     source: &str,

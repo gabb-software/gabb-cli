@@ -7,7 +7,7 @@ mod ts;
 use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use store::SymbolRecord;
 
 #[derive(Parser, Debug)]
@@ -109,7 +109,7 @@ fn init_logging(verbosity: u8) {
 }
 
 fn list_symbols(
-    db: &PathBuf,
+    db: &Path,
     file: Option<&PathBuf>,
     kind: Option<&str>,
     name: Option<&str>,
@@ -135,7 +135,7 @@ fn list_symbols(
 }
 
 fn find_implementation(
-    db: &PathBuf,
+    db: &Path,
     file: &PathBuf,
     line: usize,
     character: usize,

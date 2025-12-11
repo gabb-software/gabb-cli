@@ -50,6 +50,7 @@ pub fn index_file(
     Ok((symbols, edges, references))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk_symbols(
     path: &Path,
     source: &str,
@@ -162,6 +163,7 @@ fn walk_symbols(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_type_list(
     path: &Path,
     _source: &str,
@@ -283,7 +285,7 @@ fn module_qualifier(path: &Path, container: &Option<String>) -> String {
     base
 }
 
-fn slice<'a>(source: &'a str, node: &Node) -> String {
+fn slice(source: &str, node: &Node) -> String {
     let bytes = node.byte_range();
     source
         .get(bytes.clone())

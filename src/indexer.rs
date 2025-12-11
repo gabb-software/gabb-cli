@@ -122,7 +122,7 @@ fn to_record(path: &Path, contents: &[u8]) -> Result<FileRecord> {
         .unwrap_or_default()
         .as_secs() as i64;
     let mut hasher = Hasher::new();
-    hasher.update(&contents);
+    hasher.update(contents);
     let hash = hasher.finalize().to_hex().to_string();
     Ok(FileRecord {
         path: normalize_path(path),

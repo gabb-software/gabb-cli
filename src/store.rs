@@ -344,3 +344,75 @@ pub fn now_unix() -> i64 {
         .unwrap_or_default()
         .as_secs() as i64
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn mk_file_record(path: &Path) -> FileRecord {
+        FileRecord {
+            path: normalize_path(path),
+            hash: "abc".into(),
+            mtime: 0,
+            indexed_at: now_unix(),
+        }
+    }
+
+    fn mk_symbol(path: &Path, name: &str) -> SymbolRecord {
+        SymbolRecord {
+            id: format!("{}#0-1", normalize_path(path)),
+            file: normalize_path(path),
+            kind: "function".into(),
+            name: name.into(),
+            start: 0,
+            end: 1,
+            qualifier: None,
+            visibility: None,
+            container: None,
+        }
+    }
+
+    #[test]
+    fn store_roundtrip_save_list_and_remove() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        let file_path = dir.path().join("foo.ts");
+        let file_rec = mk_file_record(&file_path);
+        let sym = mk_symbol(&file_path, "hello");
+        let edges = vec![EdgeRecord {
+            src: sym.id.clone(),
+            dst: "target".into(),
+            kind: "implements".into(),
+        }];
+        let refs = vec![ReferenceRecord {
+            file: sym.file.clone(),
+            start: 0,
+            end: 1,
+            symbol_id: sym.id.clone(),
+        }];
+
+        store
+            .save_file_index(&file_rec, &[sym.clone()], &edges, &refs)
+            .unwrap();
+
+        let paths = store.list_paths().unwrap();
+        assert!(paths.contains(&file_rec.path));
+
+        let symbols = store
+            .list_symbols(Some(&file_rec.path), None, Some("hello"), None)
+            .unwrap();
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "hello");
+
+        let edges_back = store.edges_to("target").unwrap();
+        assert_eq!(edges_back.len(), 1);
+        assert_eq!(edges_back[0].src, sym.id);
+
+        store.remove_file(&file_path).unwrap();
+        let paths_after = store.list_paths().unwrap();
+        assert!(!paths_after.contains(&file_rec.path));
+    }
+}

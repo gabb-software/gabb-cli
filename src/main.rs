@@ -232,3 +232,29 @@ fn line_char_to_offset(buf: &[u8], line: usize, character: usize) -> Option<usiz
     let col = character.saturating_sub(1).min(line_len);
     Some(idx + col)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::indexer;
+    use crate::store::IndexStore;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn resolves_symbol_at_position() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let file_path = root.join("sample.ts");
+        fs::write(&file_path, "function foo() {}\nfunction bar() {}\n").unwrap();
+        let file_path = file_path.canonicalize().unwrap();
+
+        let db_path = root.join(".gabb/index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+        indexer::build_full_index(root, &store).unwrap();
+
+        let symbol = resolve_symbol_at(&store, &file_path, 1, 10).unwrap();
+        assert_eq!(symbol.name, "foo");
+        assert_eq!(symbol.kind, "function");
+    }
+}

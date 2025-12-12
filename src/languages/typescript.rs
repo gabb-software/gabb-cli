@@ -2,11 +2,66 @@ use crate::store::{EdgeRecord, ReferenceRecord, SymbolRecord, normalize_path};
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tree_sitter::{Language, Node, Parser, TreeCursor};
 
 static TS_LANGUAGE: Lazy<Language> =
     Lazy::new(|| tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into());
+
+#[derive(Clone, Debug)]
+struct SymbolBinding {
+    id: String,
+    qualifier: Option<String>,
+}
+
+impl From<&SymbolRecord> for SymbolBinding {
+    fn from(value: &SymbolRecord) -> Self {
+        Self {
+            id: value.id.clone(),
+            qualifier: value.qualifier.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ImportBinding {
+    qualifier: Option<String>,
+    imported_name: Option<String>,
+}
+
+impl ImportBinding {
+    fn new(qualifier: Option<String>, imported_name: Option<String>) -> Self {
+        Self {
+            qualifier,
+            imported_name,
+        }
+    }
+
+    fn symbol_id(&self, fallback: &str) -> String {
+        let name = self.imported_name.as_deref().unwrap_or(fallback);
+        if let Some(q) = &self.qualifier {
+            format!("{q}::{name}")
+        } else {
+            fallback.to_string()
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedTarget {
+    id: String,
+    qualifier: Option<String>,
+}
+
+impl ResolvedTarget {
+    fn member_id(&self, member: &str) -> String {
+        if let Some(q) = &self.qualifier {
+            format!("{q}::{member}")
+        } else {
+            format!("{}::{member}", self.id)
+        }
+    }
+}
 
 pub fn index_file(
     path: &Path,
@@ -21,9 +76,9 @@ pub fn index_file(
         .context("failed to parse TypeScript file")?;
 
     let mut symbols = Vec::new();
-    let mut edges = Vec::new();
     let mut declared_spans: HashSet<(usize, usize)> = HashSet::new();
-    let mut symbol_by_name: HashMap<String, String> = HashMap::new();
+    let mut symbol_by_name: HashMap<String, SymbolBinding> = HashMap::new();
+    let (imports, mut edges) = collect_import_bindings(path, source, &tree.root_node());
 
     {
         let mut cursor = tree.walk();
@@ -36,6 +91,7 @@ pub fn index_file(
             &mut edges,
             &mut declared_spans,
             &mut symbol_by_name,
+            &imports,
         );
     }
 
@@ -46,6 +102,13 @@ pub fn index_file(
         &declared_spans,
         &symbol_by_name,
     );
+    edges.extend(collect_export_edges(
+        path,
+        source,
+        &tree.root_node(),
+        &symbol_by_name,
+        &imports,
+    ));
 
     Ok((symbols, edges, references))
 }
@@ -59,7 +122,8 @@ fn walk_symbols(
     symbols: &mut Vec<SymbolRecord>,
     edges: &mut Vec<EdgeRecord>,
     declared_spans: &mut HashSet<(usize, usize)>,
-    symbol_by_name: &mut HashMap<String, String>,
+    symbol_by_name: &mut HashMap<String, SymbolBinding>,
+    imports: &HashMap<String, ImportBinding>,
 ) {
     loop {
         let node = cursor.node();
@@ -69,48 +133,50 @@ fn walk_symbols(
                     let name = slice(source, &name_node);
                     let sym = make_symbol(path, &node, &name, "function", container.clone());
                     declared_spans.insert((sym.start as usize, sym.end as usize));
-                    symbol_by_name.entry(name.clone()).or_insert(sym.id.clone());
+                    symbol_by_name
+                        .entry(name.clone())
+                        .or_insert_with(|| SymbolBinding::from(&sym));
                     symbols.push(sym);
                 }
             }
             "class_declaration" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = slice(source, &name_node);
-                    let class_id;
-                    {
-                        let sym = make_symbol(path, &node, &name, "class", container.clone());
-                        class_id = sym.id.clone();
-                        declared_spans.insert((sym.start as usize, sym.end as usize));
-                        symbol_by_name.entry(name.clone()).or_insert(sym.id.clone());
-                        symbols.push(sym);
-                    }
+                    let sym = make_symbol(path, &node, &name, "class", container.clone());
+                    declared_spans.insert((sym.start as usize, sym.end as usize));
+                    symbol_by_name
+                        .entry(name.clone())
+                        .or_insert_with(|| SymbolBinding::from(&sym));
+                    let class_id = sym.id.clone();
+                    symbols.push(sym);
+
                     let implements_node = node
                         .child_by_field_name("implements")
                         .or_else(|| find_child_kind(&node, "implements_clause"));
                     if let Some(implements) = implements_node {
-                        collect_type_list(
-                            path,
-                            source,
-                            &implements,
-                            &class_id,
-                            "implements",
-                            edges,
-                            symbol_by_name,
-                        );
+                        for target in
+                            collect_type_targets(path, source, &implements, symbol_by_name, imports)
+                        {
+                            edges.push(EdgeRecord {
+                                src: class_id.clone(),
+                                dst: target.id,
+                                kind: "implements".to_string(),
+                            });
+                        }
                     }
                     let extends_node = node
                         .child_by_field_name("superclass")
                         .or_else(|| find_child_kind(&node, "extends_clause"));
                     if let Some(extends) = extends_node {
-                        collect_type_list(
-                            path,
-                            source,
-                            &extends,
-                            &class_id,
-                            "extends",
-                            edges,
-                            symbol_by_name,
-                        );
+                        for target in
+                            collect_type_targets(path, source, &extends, symbol_by_name, imports)
+                        {
+                            edges.push(EdgeRecord {
+                                src: class_id.clone(),
+                                dst: target.id,
+                                kind: "extends".to_string(),
+                            });
+                        }
                     }
                 }
             }
@@ -119,7 +185,9 @@ fn walk_symbols(
                     let name = slice(source, &name_node);
                     let sym = make_symbol(path, &node, &name, "interface", container.clone());
                     declared_spans.insert((sym.start as usize, sym.end as usize));
-                    symbol_by_name.entry(name.clone()).or_insert(sym.id.clone());
+                    symbol_by_name
+                        .entry(name.clone())
+                        .or_insert_with(|| SymbolBinding::from(&sym));
                     symbols.push(sym);
                 }
             }
@@ -128,7 +196,19 @@ fn walk_symbols(
                     let name = slice(source, &name_node);
                     let sym = make_symbol(path, &node, &name, "method", container.clone());
                     declared_spans.insert((sym.start as usize, sym.end as usize));
-                    symbol_by_name.entry(name.clone()).or_insert(sym.id.clone());
+                    symbol_by_name
+                        .entry(name.clone())
+                        .or_insert_with(|| SymbolBinding::from(&sym));
+                    add_override_edges(
+                        path,
+                        source,
+                        &node,
+                        &name,
+                        &sym.id,
+                        edges,
+                        symbol_by_name,
+                        imports,
+                    );
                     symbols.push(sym);
                 }
             }
@@ -153,6 +233,7 @@ fn walk_symbols(
                 edges,
                 declared_spans,
                 symbol_by_name,
+                imports,
             );
             cursor.goto_parent();
         }
@@ -163,35 +244,328 @@ fn walk_symbols(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn collect_type_list(
+fn collect_type_targets(
     path: &Path,
-    _source: &str,
+    source: &str,
     node: &Node,
-    src_id: &str,
-    kind: &str,
-    edges: &mut Vec<EdgeRecord>,
-    symbol_by_name: &HashMap<String, String>,
-) {
-    // Collect identifiers used in implements/extends clauses.
+    symbol_by_name: &HashMap<String, SymbolBinding>,
+    imports: &HashMap<String, ImportBinding>,
+) -> Vec<ResolvedTarget> {
+    let mut targets = Vec::new();
     for child in node.children(&mut node.walk()) {
-        if matches!(child.kind(), "identifier" | "type_identifier") {
-            let name = slice(_source, &child);
-            let dst_id = symbol_by_name.get(&name).cloned().unwrap_or_else(|| {
-                format!(
-                    "{}#{}-{}",
-                    normalize_path(path),
-                    child.start_byte(),
-                    child.end_byte()
-                )
-            });
+        if matches!(
+            child.kind(),
+            "identifier" | "type_identifier" | "nested_type_identifier"
+        ) {
+            targets.push(resolve_target(
+                path,
+                source,
+                &child,
+                symbol_by_name,
+                imports,
+            ));
+        }
+    }
+    targets
+}
+
+fn resolve_target(
+    path: &Path,
+    source: &str,
+    node: &Node,
+    symbol_by_name: &HashMap<String, SymbolBinding>,
+    imports: &HashMap<String, ImportBinding>,
+) -> ResolvedTarget {
+    let name = slice(source, node);
+    resolve_name(
+        &name,
+        Some((node.start_byte(), node.end_byte())),
+        path,
+        symbol_by_name,
+        imports,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_name(
+    name: &str,
+    span: Option<(usize, usize)>,
+    path: &Path,
+    symbol_by_name: &HashMap<String, SymbolBinding>,
+    imports: &HashMap<String, ImportBinding>,
+    qualifier_override: Option<String>,
+) -> ResolvedTarget {
+    if let Some(binding) = symbol_by_name.get(name) {
+        return ResolvedTarget {
+            id: binding.id.clone(),
+            qualifier: binding.qualifier.clone(),
+        };
+    }
+    if let Some(q) = qualifier_override {
+        return ResolvedTarget {
+            id: format!("{q}::{name}"),
+            qualifier: Some(q),
+        };
+    }
+    if let Some(binding) = imports.get(name) {
+        let id = binding.symbol_id(name);
+        return ResolvedTarget {
+            id,
+            qualifier: binding.qualifier.clone(),
+        };
+    }
+    let fallback = if let Some((start, end)) = span {
+        format!("{}#{}-{}", normalize_path(path), start, end)
+    } else {
+        format!("{}::{}", normalize_path(path), name)
+    };
+    ResolvedTarget {
+        id: fallback,
+        qualifier: None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_override_edges(
+    path: &Path,
+    source: &str,
+    node: &Node,
+    method_name: &str,
+    method_id: &str,
+    edges: &mut Vec<EdgeRecord>,
+    symbol_by_name: &HashMap<String, SymbolBinding>,
+    imports: &HashMap<String, ImportBinding>,
+) {
+    if let Some(class_node) = find_enclosing_class(node.parent()) {
+        let implements = class_node
+            .child_by_field_name("implements")
+            .or_else(|| find_child_kind(&class_node, "implements_clause"))
+            .map(|n| collect_type_targets(path, source, &n, symbol_by_name, imports))
+            .unwrap_or_default();
+        let supers = class_node
+            .child_by_field_name("superclass")
+            .or_else(|| find_child_kind(&class_node, "extends_clause"))
+            .map(|n| collect_type_targets(path, source, &n, symbol_by_name, imports))
+            .unwrap_or_default();
+
+        for target in implements.iter().chain(supers.iter()) {
             edges.push(EdgeRecord {
-                src: src_id.to_string(),
-                dst: dst_id,
-                kind: kind.to_string(),
+                src: method_id.to_string(),
+                dst: target.member_id(method_name),
+                kind: "overrides".to_string(),
             });
         }
     }
+}
+
+fn find_enclosing_class(mut node: Option<Node>) -> Option<Node> {
+    while let Some(n) = node {
+        if n.kind() == "class_declaration" {
+            return Some(n);
+        }
+        node = n.parent();
+    }
+    None
+}
+
+fn collect_import_bindings(
+    path: &Path,
+    source: &str,
+    root: &Node,
+) -> (HashMap<String, ImportBinding>, Vec<EdgeRecord>) {
+    let mut imports = HashMap::new();
+    let mut edges = Vec::new();
+    let mut stack = vec![*root];
+
+    while let Some(node) = stack.pop() {
+        if node.kind() == "import_statement" {
+            let qualifier = node
+                .child_by_field_name("source")
+                .map(|s| slice(source, &s))
+                .map(|raw| import_qualifier(path, &raw));
+            let mut import_stack = vec![node];
+            while let Some(n) = import_stack.pop() {
+                match n.kind() {
+                    "import_specifier" => {
+                        let imported_node = n.child_by_field_name("name").unwrap_or(n);
+                        let alias_node = n.child_by_field_name("alias").unwrap_or(imported_node);
+                        let imported_name = slice(source, &imported_node);
+                        let local_name = if let Some(alias) = n.child_by_field_name("alias") {
+                            slice(source, &alias)
+                        } else {
+                            imported_name.clone()
+                        };
+                        let binding = ImportBinding::new(qualifier.clone(), Some(imported_name));
+                        add_import_binding(
+                            path,
+                            &alias_node,
+                            local_name,
+                            binding,
+                            &mut imports,
+                            &mut edges,
+                        );
+                        continue;
+                    }
+                    "identifier" => {
+                        let name = slice(source, &n);
+                        let binding = ImportBinding::new(qualifier.clone(), None);
+                        add_import_binding(path, &n, name, binding, &mut imports, &mut edges);
+                        continue;
+                    }
+                    "namespace_import" => {
+                        if let Some(name_node) = n.child_by_field_name("name") {
+                            let name = slice(source, &name_node);
+                            let binding = ImportBinding::new(qualifier.clone(), None);
+                            add_import_binding(
+                                path,
+                                &name_node,
+                                name,
+                                binding,
+                                &mut imports,
+                                &mut edges,
+                            );
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
+
+                let mut cursor = n.walk();
+                for child in n.children(&mut cursor) {
+                    import_stack.push(child);
+                }
+            }
+            continue;
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+
+    (imports, edges)
+}
+
+fn add_import_binding(
+    path: &Path,
+    alias_node: &Node,
+    local_name: String,
+    binding: ImportBinding,
+    imports: &mut HashMap<String, ImportBinding>,
+    edges: &mut Vec<EdgeRecord>,
+) {
+    imports.entry(local_name.clone()).or_insert(binding.clone());
+    if binding.qualifier.is_some() {
+        edges.push(EdgeRecord {
+            src: import_edge_id(path, alias_node),
+            dst: binding.symbol_id(&local_name),
+            kind: "import".to_string(),
+        });
+    }
+}
+
+fn import_edge_id(path: &Path, node: &Node) -> String {
+    format!("{}#import-{}", normalize_path(path), node.start_byte())
+}
+
+fn export_edge_id(path: &Path, node: &Node) -> String {
+    format!("{}#export-{}", normalize_path(path), node.start_byte())
+}
+
+fn import_qualifier(path: &Path, raw: &str) -> String {
+    let cleaned = raw.trim().trim_matches('"').trim_matches('\'');
+    let mut target = PathBuf::from(cleaned);
+    if target.is_relative() {
+        if let Some(parent) = path.parent() {
+            target = parent.join(target);
+        }
+    }
+    let mut qualifier = normalize_path(&target);
+    if let Some(ext) = target.extension().and_then(|e| e.to_str()) {
+        let trim = ext.len() + 1;
+        if qualifier.len() > trim {
+            qualifier.truncate(qualifier.len() - trim);
+        }
+    }
+    qualifier
+}
+
+fn collect_export_edges(
+    path: &Path,
+    source: &str,
+    root: &Node,
+    symbol_by_name: &HashMap<String, SymbolBinding>,
+    imports: &HashMap<String, ImportBinding>,
+) -> Vec<EdgeRecord> {
+    let mut edges = Vec::new();
+    let mut stack = vec![*root];
+
+    while let Some(node) = stack.pop() {
+        if node.kind() == "export_statement" {
+            let qualifier_override = node
+                .child_by_field_name("source")
+                .map(|s| slice(source, &s))
+                .map(|raw| import_qualifier(path, &raw));
+            let mut produced = false;
+            let mut export_stack = vec![node];
+            while let Some(n) = export_stack.pop() {
+                if n.kind() == "export_specifier" {
+                    let name_node = n.child_by_field_name("name").unwrap_or(n);
+                    let alias = n
+                        .child_by_field_name("alias")
+                        .map(|al| slice(source, &al))
+                        .unwrap_or_else(|| slice(source, &name_node));
+                    let resolved = resolve_name(
+                        &slice(source, &name_node),
+                        Some((name_node.start_byte(), name_node.end_byte())),
+                        path,
+                        symbol_by_name,
+                        imports,
+                        qualifier_override.clone(),
+                    );
+                    let target_id = resolved.id.clone();
+                    edges.push(EdgeRecord {
+                        src: export_edge_id(path, &name_node),
+                        dst: target_id.clone(),
+                        kind: "export".to_string(),
+                    });
+                    if alias != slice(source, &name_node) {
+                        edges.push(EdgeRecord {
+                            src: export_edge_id(path, &n),
+                            dst: target_id,
+                            kind: "export".to_string(),
+                        });
+                    }
+                    produced = true;
+                    continue;
+                }
+                let mut cursor = n.walk();
+                for child in n.children(&mut cursor) {
+                    export_stack.push(child);
+                }
+            }
+
+            if !produced {
+                if let Some(q) = qualifier_override {
+                    edges.push(EdgeRecord {
+                        src: export_edge_id(path, &node),
+                        dst: format!("{q}::*"),
+                        kind: "export".to_string(),
+                    });
+                }
+            }
+            continue;
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+
+    edges
 }
 
 fn find_child_kind<'a>(node: &'a Node<'a>, kind: &str) -> Option<Node<'a>> {
@@ -213,7 +587,7 @@ fn collect_references(
     source: &str,
     root: &Node,
     declared_spans: &HashSet<(usize, usize)>,
-    symbol_by_name: &HashMap<String, String>,
+    symbol_by_name: &HashMap<String, SymbolBinding>,
 ) -> Vec<ReferenceRecord> {
     let mut refs = Vec::new();
     let mut stack = vec![*root];
@@ -224,12 +598,12 @@ fn collect_references(
             let span = (node.start_byte(), node.end_byte());
             if !declared_spans.contains(&span) {
                 let name = slice(source, &node);
-                if let Some(sym_id) = symbol_by_name.get(&name) {
+                if let Some(sym) = symbol_by_name.get(&name) {
                     refs.push(ReferenceRecord {
                         file: file.clone(),
                         start: node.start_byte() as i64,
                         end: node.end_byte() as i64,
-                        symbol_id: sym_id.clone(),
+                        symbol_id: sym.id.clone(),
                     });
                 }
             }
@@ -328,6 +702,11 @@ mod tests {
             "expected implements edge, got {:?}",
             edges
         );
+        assert!(
+            edges.iter().any(|e| e.kind == "overrides"),
+            "expected method override edge, got {:?}",
+            edges
+        );
     }
 
     #[test]
@@ -360,5 +739,35 @@ mod tests {
             "expected extends edge pointing to Base"
         );
         // We do not resolve cross-file edges yet; just assert we recorded an extends relationship.
+    }
+
+    #[test]
+    fn records_import_export_edges() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("use.ts");
+        let source = r#"
+            import { Foo as Renamed } from "./defs";
+            export { Renamed as Visible };
+            export * from "./defs";
+        "#;
+        fs::write(&path, source).unwrap();
+
+        let (_symbols, edges, _refs) = index_file(&path, source).unwrap();
+        let import_edges: Vec<_> = edges
+            .iter()
+            .filter(|e| e.kind == "import")
+            .map(|e| e.dst.clone())
+            .collect();
+        assert!(
+            import_edges.iter().any(|d| d.ends_with("defs::Foo")),
+            "expected import edge to defs::Foo, got {:?}",
+            import_edges
+        );
+
+        let export_edges: Vec<_> = edges.iter().filter(|e| e.kind == "export").collect();
+        assert!(
+            !export_edges.is_empty(),
+            "expected export edges for re-exports"
+        );
     }
 }

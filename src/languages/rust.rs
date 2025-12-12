@@ -105,6 +105,7 @@ fn walk_symbols(
 
         if cursor.goto_first_child() {
             let child_container = if node.kind() == "impl_item" {
+                add_trait_impl_edge(path, source, &node, edges, &symbol_by_name);
                 impl_container_name(source, &node).or(container.clone())
             } else {
                 container.clone()
@@ -168,6 +169,37 @@ fn impl_container_name(source: &str, node: &Node) -> Option<String> {
     node.child_by_field_name("type")
         .map(|ty| slice(source, &ty))
         .filter(|s| !s.is_empty())
+}
+
+fn add_trait_impl_edge(
+    path: &Path,
+    source: &str,
+    node: &Node,
+    edges: &mut Vec<EdgeRecord>,
+    symbol_by_name: &HashMap<String, String>,
+) {
+    let ty_name = node
+        .child_by_field_name("type")
+        .map(|ty| slice(source, &ty));
+    let trait_name = node
+        .child_by_field_name("trait")
+        .map(|tr| slice(source, &tr));
+
+    if let (Some(ty), Some(tr)) = (ty_name, trait_name) {
+        let src_id = symbol_by_name
+            .get(&ty)
+            .cloned()
+            .unwrap_or_else(|| format!("{}#impl-{}", normalize_path(path), node.start_byte()));
+        let dst_id = symbol_by_name
+            .get(&tr)
+            .cloned()
+            .unwrap_or_else(|| format!("{}#trait-{}", normalize_path(path), node.start_byte()));
+        edges.push(EdgeRecord {
+            src: src_id,
+            dst: dst_id,
+            kind: "trait_impl".to_string(),
+        });
+    }
 }
 
 fn make_symbol(
@@ -302,9 +334,8 @@ mod tests {
         assert!(person.id.starts_with(path_str.as_ref()));
         assert!(greeter.id.starts_with(path_str.as_ref()));
         assert!(
-            edges.is_empty(),
-            "trait edges not yet implemented; expected none, got {:?}",
-            edges
+            edges.iter().any(|e| e.kind == "trait_impl"),
+            "expected trait_impl edge"
         );
     }
 }

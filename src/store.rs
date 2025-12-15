@@ -98,9 +98,9 @@ impl IndexStore {
                 dst TEXT NOT NULL,
                 kind TEXT NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS edges_src_idx ON edges(src);
-            CREATE INDEX IF NOT EXISTS edges_dst_idx ON edges(dst);
-            CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
+            -- Covering indices for edges table (include all columns for index-only scans)
+            CREATE INDEX IF NOT EXISTS idx_edges_src_covering ON edges(src, dst, kind);
+            CREATE INDEX IF NOT EXISTS idx_edges_dst_covering ON edges(dst, src, kind);
 
             CREATE TABLE IF NOT EXISTS references_tbl (
                 file TEXT NOT NULL,
@@ -108,8 +108,9 @@ impl IndexStore {
                 end INTEGER NOT NULL,
                 symbol_id TEXT NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS references_symbol_idx ON references_tbl(symbol_id);
-            CREATE INDEX IF NOT EXISTS idx_refs_file_position ON references_tbl(file, start, end);
+            -- Covering index for reference lookups by symbol_id (includes all columns)
+            CREATE INDEX IF NOT EXISTS idx_refs_symbol_covering ON references_tbl(symbol_id, file, start, end);
+            CREATE INDEX IF NOT EXISTS idx_refs_file_position ON references_tbl(file, start, end, symbol_id);
             "#,
         )?;
         self.ensure_column("symbols", "qualifier", "TEXT")?;
@@ -508,6 +509,22 @@ mod tests {
             "Missing idx_refs_file_position index for reference lookups. Found: {:?}",
             indices
         );
+        // Verify covering indices for index-only scans
+        assert!(
+            indices.iter().any(|n| n == "idx_edges_src_covering"),
+            "Missing idx_edges_src_covering covering index. Found: {:?}",
+            indices
+        );
+        assert!(
+            indices.iter().any(|n| n == "idx_edges_dst_covering"),
+            "Missing idx_edges_dst_covering covering index. Found: {:?}",
+            indices
+        );
+        assert!(
+            indices.iter().any(|n| n == "idx_refs_symbol_covering"),
+            "Missing idx_refs_symbol_covering covering index. Found: {:?}",
+            indices
+        );
     }
 
     /// Test that symbol name lookup uses the index (O(log n))
@@ -624,6 +641,92 @@ mod tests {
         assert!(
             plan.contains("idx_symbols_kind_name") || plan.contains("USING INDEX"),
             "Kind+name query not using compound index. Query plan: {}",
+            plan
+        );
+    }
+
+    /// Test that reference lookups use covering index for symbol_id queries
+    #[test]
+    fn reference_symbol_lookup_uses_covering_index() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        let conn = store.conn.borrow();
+
+        // Query for references by symbol_id - this should use the covering index
+        let mut stmt = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT file, start, end, symbol_id FROM references_tbl WHERE symbol_id = ?",
+            )
+            .unwrap();
+        let plan: String = stmt
+            .query_map(["test_sym"], |row| row.get::<_, String>(3))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+
+        // Must show "COVERING INDEX" to avoid table lookups
+        assert!(
+            plan.contains("COVERING INDEX"),
+            "Reference symbol lookup must use COVERING INDEX to avoid table lookups. Query plan: {}",
+            plan
+        );
+    }
+
+    /// Test that edges lookup by dst achieves index-only scan
+    #[test]
+    fn edges_dst_lookup_uses_covering_index() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        let conn = store.conn.borrow();
+
+        // Query edges by dst - should use covering index
+        let mut stmt = conn
+            .prepare("EXPLAIN QUERY PLAN SELECT src, dst, kind FROM edges WHERE dst = ?")
+            .unwrap();
+        let plan: String = stmt
+            .query_map(["target"], |row| row.get::<_, String>(3))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+
+        // Must show "COVERING INDEX" to avoid table lookups
+        assert!(
+            plan.contains("COVERING INDEX"),
+            "Edges dst lookup must use COVERING INDEX to avoid table lookups. Query plan: {}",
+            plan
+        );
+    }
+
+    /// Test that edges lookup by src achieves index-only scan
+    #[test]
+    fn edges_src_lookup_uses_covering_index() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        let conn = store.conn.borrow();
+
+        // Query edges by src - should use covering index
+        let mut stmt = conn
+            .prepare("EXPLAIN QUERY PLAN SELECT src, dst, kind FROM edges WHERE src = ?")
+            .unwrap();
+        let plan: String = stmt
+            .query_map(["source"], |row| row.get::<_, String>(3))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+
+        // Must show "COVERING INDEX" to avoid table lookups
+        assert!(
+            plan.contains("COVERING INDEX"),
+            "Edges src lookup must use COVERING INDEX to avoid table lookups. Query plan: {}",
             plan
         );
     }

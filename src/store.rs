@@ -92,6 +92,8 @@ impl IndexStore {
             CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
             CREATE INDEX IF NOT EXISTS idx_symbols_position ON symbols(file, start, end);
             CREATE INDEX IF NOT EXISTS idx_symbols_kind_name ON symbols(kind, name);
+            -- Compound index for multi-filter queries (file + kind + name)
+            CREATE INDEX IF NOT EXISTS idx_symbols_file_kind_name ON symbols(file, kind, name);
 
             CREATE TABLE IF NOT EXISTS edges (
                 src TEXT NOT NULL,
@@ -525,6 +527,12 @@ mod tests {
             "Missing idx_refs_symbol_covering covering index. Found: {:?}",
             indices
         );
+        // Verify compound index for multi-filter queries
+        assert!(
+            indices.iter().any(|n| n == "idx_symbols_file_kind_name"),
+            "Missing idx_symbols_file_kind_name compound index. Found: {:?}",
+            indices
+        );
     }
 
     /// Test that symbol name lookup uses the index (O(log n))
@@ -727,6 +735,94 @@ mod tests {
         assert!(
             plan.contains("COVERING INDEX"),
             "Edges src lookup must use COVERING INDEX to avoid table lookups. Query plan: {}",
+            plan
+        );
+    }
+
+    /// Test compound index for file+name queries (common pattern in resolve_symbol_at)
+    #[test]
+    fn file_and_name_query_uses_index() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        let conn = store.conn.borrow();
+
+        // Query by file and name - should use an index
+        let mut stmt = conn
+            .prepare("EXPLAIN QUERY PLAN SELECT * FROM symbols WHERE file = ? AND name = ?")
+            .unwrap();
+        let plan: String = stmt
+            .query_map(["test.ts", "foo"], |row| row.get::<_, String>(3))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+
+        // Should use an index, not full table scan
+        assert!(
+            plan.contains("USING INDEX") || plan.contains("SEARCH"),
+            "File+name query should use index. Query plan: {}",
+            plan
+        );
+    }
+
+    /// Test compound index for file+kind queries
+    #[test]
+    fn file_and_kind_query_uses_index() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        let conn = store.conn.borrow();
+
+        // Query by file and kind - should use an index
+        let mut stmt = conn
+            .prepare("EXPLAIN QUERY PLAN SELECT * FROM symbols WHERE file = ? AND kind = ?")
+            .unwrap();
+        let plan: String = stmt
+            .query_map(["test.ts", "function"], |row| row.get::<_, String>(3))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+
+        // Should use an index, not full table scan
+        assert!(
+            plan.contains("USING INDEX") || plan.contains("SEARCH"),
+            "File+kind query should use index. Query plan: {}",
+            plan
+        );
+    }
+
+    /// Test compound index for three-way filter (file + kind + name)
+    #[test]
+    fn file_kind_name_query_uses_compound_index() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        let conn = store.conn.borrow();
+
+        // Query by file, kind, and name - should use the compound index
+        let mut stmt = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT * FROM symbols WHERE file = ? AND kind = ? AND name = ?",
+            )
+            .unwrap();
+        let plan: String = stmt
+            .query_map(["test.ts", "function", "foo"], |row| {
+                row.get::<_, String>(3)
+            })
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+
+        // Should use the compound index for best performance
+        assert!(
+            plan.contains("idx_symbols_file_kind_name"),
+            "File+kind+name query should use compound index idx_symbols_file_kind_name. Query plan: {}",
             plan
         );
     }

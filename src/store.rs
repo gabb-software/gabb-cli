@@ -464,6 +464,80 @@ impl IndexStore {
         Ok(rows)
     }
 
+    /// Topologically sort files for rebuild ordering.
+    /// Returns files in an order where dependencies come before dependents.
+    /// Uses Kahn's algorithm with O(V + E) complexity.
+    /// Files with cycles are appended at the end in arbitrary order.
+    pub fn topological_sort(&self, files: &[String]) -> Result<Vec<String>> {
+        use std::collections::{HashMap, VecDeque};
+
+        if files.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Build adjacency list and in-degree count for the subgraph
+        let file_set: HashSet<String> = files.iter().cloned().collect();
+        let mut in_degree: HashMap<String, usize> = HashMap::new();
+        let mut adjacency: HashMap<String, Vec<String>> = HashMap::new();
+
+        // Initialize all files with 0 in-degree
+        for file in files {
+            in_degree.entry(file.clone()).or_insert(0);
+            adjacency.entry(file.clone()).or_insert_with(Vec::new);
+        }
+
+        // Build graph from dependencies (only within the file set)
+        for file in files {
+            let deps = self.get_file_dependencies(file)?;
+            for dep in deps {
+                // Only count edges where both files are in our set
+                if file_set.contains(&dep.to_file) {
+                    // from_file depends on to_file, so to_file -> from_file edge
+                    adjacency
+                        .entry(dep.to_file.clone())
+                        .or_default()
+                        .push(file.clone());
+                    *in_degree.entry(file.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+
+        // Kahn's algorithm
+        let mut queue: VecDeque<String> = VecDeque::new();
+        let mut result = Vec::new();
+
+        // Start with nodes that have no dependencies (in-degree 0)
+        for (file, &degree) in &in_degree {
+            if degree == 0 {
+                queue.push_back(file.clone());
+            }
+        }
+
+        while let Some(file) = queue.pop_front() {
+            result.push(file.clone());
+
+            if let Some(dependents) = adjacency.get(&file) {
+                for dependent in dependents {
+                    if let Some(degree) = in_degree.get_mut(dependent) {
+                        *degree -= 1;
+                        if *degree == 0 {
+                            queue.push_back(dependent.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Handle any remaining files (cycles) by appending them
+        for file in files {
+            if !result.contains(file) {
+                result.push(file.clone());
+            }
+        }
+
+        Ok(result)
+    }
+
     pub fn list_symbols(
         &self,
         file: Option<&str>,
@@ -1752,6 +1826,117 @@ mod tests {
         let deps = store.get_file_dependencies("src/main.ts").unwrap();
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].to_file, "src/new.ts");
+    }
+
+    /// Test topological sort orders dependencies before dependents
+    #[test]
+    fn topological_sort_orders_dependencies_first() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        // Create dependency chain: main -> utils -> types
+        let deps = vec![FileDependency {
+            from_file: "main.ts".into(),
+            to_file: "utils.ts".into(),
+            kind: "import".into(),
+        }];
+        store.save_file_dependencies("main.ts", &deps).unwrap();
+
+        let deps = vec![FileDependency {
+            from_file: "utils.ts".into(),
+            to_file: "types.ts".into(),
+            kind: "import".into(),
+        }];
+        store.save_file_dependencies("utils.ts", &deps).unwrap();
+
+        store.save_file_dependencies("types.ts", &[]).unwrap();
+
+        // Sort all three files
+        let files = vec!["main.ts".into(), "utils.ts".into(), "types.ts".into()];
+        let sorted = store.topological_sort(&files).unwrap();
+
+        // types.ts must come before utils.ts, which must come before main.ts
+        let types_pos = sorted.iter().position(|f| f == "types.ts").unwrap();
+        let utils_pos = sorted.iter().position(|f| f == "utils.ts").unwrap();
+        let main_pos = sorted.iter().position(|f| f == "main.ts").unwrap();
+
+        assert!(
+            types_pos < utils_pos,
+            "types.ts should come before utils.ts"
+        );
+        assert!(utils_pos < main_pos, "utils.ts should come before main.ts");
+    }
+
+    /// Test topological sort handles independent files
+    #[test]
+    fn topological_sort_handles_independent_files() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        // No dependencies between files
+        store.save_file_dependencies("a.ts", &[]).unwrap();
+        store.save_file_dependencies("b.ts", &[]).unwrap();
+        store.save_file_dependencies("c.ts", &[]).unwrap();
+
+        let files = vec!["a.ts".into(), "b.ts".into(), "c.ts".into()];
+        let sorted = store.topological_sort(&files).unwrap();
+
+        // All files should be present
+        assert_eq!(sorted.len(), 3);
+        assert!(sorted.contains(&"a.ts".into()));
+        assert!(sorted.contains(&"b.ts".into()));
+        assert!(sorted.contains(&"c.ts".into()));
+    }
+
+    /// Test topological sort handles cycles gracefully
+    #[test]
+    fn topological_sort_handles_cycles() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        // Create a cycle: a -> b -> c -> a
+        store
+            .save_file_dependencies(
+                "a.ts",
+                &[FileDependency {
+                    from_file: "a.ts".into(),
+                    to_file: "b.ts".into(),
+                    kind: "import".into(),
+                }],
+            )
+            .unwrap();
+        store
+            .save_file_dependencies(
+                "b.ts",
+                &[FileDependency {
+                    from_file: "b.ts".into(),
+                    to_file: "c.ts".into(),
+                    kind: "import".into(),
+                }],
+            )
+            .unwrap();
+        store
+            .save_file_dependencies(
+                "c.ts",
+                &[FileDependency {
+                    from_file: "c.ts".into(),
+                    to_file: "a.ts".into(),
+                    kind: "import".into(),
+                }],
+            )
+            .unwrap();
+
+        let files = vec!["a.ts".into(), "b.ts".into(), "c.ts".into()];
+        let sorted = store.topological_sort(&files).unwrap();
+
+        // All files should still be present (cycles handled gracefully)
+        assert_eq!(sorted.len(), 3);
+        assert!(sorted.contains(&"a.ts".into()));
+        assert!(sorted.contains(&"b.ts".into()));
+        assert!(sorted.contains(&"c.ts".into()));
     }
 
     /// Test dependencies are cleaned up when file is removed

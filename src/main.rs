@@ -5,6 +5,7 @@ mod store;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use store::SymbolRecord;
@@ -157,6 +158,7 @@ fn find_implementation(
     if let Some(k) = kind {
         impl_symbols.retain(|s| s.kind == k);
     }
+    dedup_symbols(&mut impl_symbols);
     if let Some(lim) = limit {
         impl_symbols.truncate(lim);
     }
@@ -269,6 +271,11 @@ fn identifier_matches_symbol(ident: &str, sym: &SymbolRecord) -> bool {
         ident,
         "fn" | "function" | "class" | "interface" | "enum" | "struct" | "impl"
     )
+}
+
+fn dedup_symbols(symbols: &mut Vec<SymbolRecord>) {
+    let mut seen = HashSet::new();
+    symbols.retain(|s| seen.insert(s.id.clone()));
 }
 
 fn line_char_to_offset(buf: &[u8], line: usize, character: usize) -> Option<usize> {

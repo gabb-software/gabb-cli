@@ -75,6 +75,24 @@ fn symbols_and_implementation_commands_work() {
         String::from_utf8_lossy(&symbols.stdout)
     );
 
+    // symbol should dump details about foo
+    let symbol_detail = Command::new(bin)
+        .args(["symbol", "--db", db_path.to_str().unwrap(), "--name", "foo"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        symbol_detail.status.success(),
+        "symbol exited {:?}, stderr: {}",
+        symbol_detail.status,
+        String::from_utf8_lossy(&symbol_detail.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&symbol_detail.stdout).contains("Symbol:"),
+        "symbol output: {}",
+        String::from_utf8_lossy(&symbol_detail.stdout)
+    );
+
     // implementation should resolve the symbol under the cursor
     let impl_out = Command::new(bin)
         .args([

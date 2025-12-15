@@ -229,7 +229,12 @@ fn find_usages(
         refs = search_usages_by_name(&store, &target)?;
     }
     let mut seen = HashSet::new();
-    refs.retain(|r| seen.insert((r.file.clone(), r.start, r.end)));
+    refs.retain(|r| {
+        if r.file == target.file && r.start >= target.start && r.end <= target.end {
+            return false;
+        }
+        seen.insert((r.file.clone(), r.start, r.end))
+    });
     if let Some(lim) = limit {
         refs.truncate(lim);
     }
@@ -240,13 +245,17 @@ fn find_usages(
         "Target: {} {} {} [{}:{}-{}:{}]",
         target.kind, target.name, target.file, t_line, t_col, t_end_line, t_end_col
     );
-    for r in refs {
-        let (line, col) = offset_to_line_char_in_file(&r.file, r.start)?;
-        let (end_line, end_col) = offset_to_line_char_in_file(&r.file, r.end)?;
-        println!(
-            "{:<10} {:<30} {} [{}:{}-{}:{}]",
-            "usage", target.name, r.file, line, col, end_line, end_col
-        );
+    if refs.is_empty() {
+        println!("No usages found.");
+    } else {
+        for r in refs {
+            let (line, col) = offset_to_line_char_in_file(&r.file, r.start)?;
+            let (end_line, end_col) = offset_to_line_char_in_file(&r.file, r.end)?;
+            println!(
+                "{:<10} {:<30} {} [{}:{}-{}:{}]",
+                "usage", target.name, r.file, line, col, end_line, end_col
+            );
+        }
     }
 
     Ok(())
@@ -368,7 +377,7 @@ fn search_usages_by_name(
             let abs = idx + pos;
             let start = abs as i64;
             let end = (abs + target.name.len()) as i64;
-            if path == target.file && start == target.start && end == target.end {
+            if path == target.file && start >= target.start && end <= target.end {
                 idx += pos + target.name.len();
                 continue;
             }
@@ -503,6 +512,29 @@ mod tests {
         let symbol = resolve_symbol_at(&store, &caller_path, line, character).unwrap();
         assert_eq!(symbol.name, "build_full_index");
         assert!(symbol.file.ends_with("indexer.rs"));
+    }
+
+    #[test]
+    fn usages_skip_definition_span() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let file_path = root.join("foo.ts");
+        let source = "function foo() {}\nfoo();\n";
+        fs::write(&file_path, source).unwrap();
+        let file_path = file_path.canonicalize().unwrap();
+
+        let db_path = root.join(".gabb/index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+        indexer::build_full_index(root, &store).unwrap();
+
+        let symbol = resolve_symbol_at(&store, &file_path, 1, 10).unwrap();
+        let refs = super::search_usages_by_name(&store, &symbol).unwrap();
+        assert!(
+            refs.iter().all(|r| !(r.file == symbol.file
+                && r.start >= symbol.start
+                && r.end <= symbol.end)),
+            "should not return reference within definition"
+        );
     }
 
     #[test]

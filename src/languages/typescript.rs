@@ -1,4 +1,4 @@
-use crate::store::{EdgeRecord, ReferenceRecord, SymbolRecord, normalize_path};
+use crate::store::{EdgeRecord, FileDependency, ReferenceRecord, SymbolRecord, normalize_path};
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
@@ -63,10 +63,16 @@ impl ResolvedTarget {
     }
 }
 
+/// Index a TypeScript/TSX file, returning symbols, edges, references, and file dependencies.
 pub fn index_file(
     path: &Path,
     source: &str,
-) -> Result<(Vec<SymbolRecord>, Vec<EdgeRecord>, Vec<ReferenceRecord>)> {
+) -> Result<(
+    Vec<SymbolRecord>,
+    Vec<EdgeRecord>,
+    Vec<ReferenceRecord>,
+    Vec<FileDependency>,
+)> {
     let mut parser = Parser::new();
     parser
         .set_language(&TS_LANGUAGE)
@@ -78,7 +84,8 @@ pub fn index_file(
     let mut symbols = Vec::new();
     let mut declared_spans: HashSet<(usize, usize)> = HashSet::new();
     let mut symbol_by_name: HashMap<String, SymbolBinding> = HashMap::new();
-    let (imports, mut edges) = collect_import_bindings(path, source, &tree.root_node());
+    let (imports, mut edges, dependencies) =
+        collect_import_bindings(path, source, &tree.root_node());
 
     {
         let mut cursor = tree.walk();
@@ -101,6 +108,7 @@ pub fn index_file(
         &tree.root_node(),
         &declared_spans,
         &symbol_by_name,
+        &imports,
     );
     edges.extend(collect_export_edges(
         path,
@@ -110,7 +118,7 @@ pub fn index_file(
         &imports,
     ));
 
-    Ok((symbols, edges, references))
+    Ok((symbols, edges, references, dependencies))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -373,17 +381,40 @@ fn collect_import_bindings(
     path: &Path,
     source: &str,
     root: &Node,
-) -> (HashMap<String, ImportBinding>, Vec<EdgeRecord>) {
+) -> (
+    HashMap<String, ImportBinding>,
+    Vec<EdgeRecord>,
+    Vec<FileDependency>,
+) {
     let mut imports = HashMap::new();
     let mut edges = Vec::new();
+    let mut dependencies = Vec::new();
+    let mut seen_deps: HashSet<String> = HashSet::new();
     let mut stack = vec![*root];
+    let from_file = normalize_path(path);
 
     while let Some(node) = stack.pop() {
         if node.kind() == "import_statement" {
-            let qualifier = node
+            let raw_source = node
                 .child_by_field_name("source")
-                .map(|s| slice(source, &s))
-                .map(|raw| import_qualifier(path, &raw));
+                .map(|s| slice(source, &s));
+
+            let qualifier = raw_source.as_ref().map(|raw| import_qualifier(path, raw));
+
+            // Record file dependency with resolved path
+            if let Some(ref raw) = raw_source {
+                if let Some(resolved) = resolve_import_path(path, raw) {
+                    if !seen_deps.contains(&resolved) {
+                        seen_deps.insert(resolved.clone());
+                        dependencies.push(FileDependency {
+                            from_file: from_file.clone(),
+                            to_file: resolved,
+                            kind: "import".to_string(),
+                        });
+                    }
+                }
+            }
+
             let mut import_stack = vec![node];
             while let Some(n) = import_stack.pop() {
                 match n.kind() {
@@ -445,7 +476,7 @@ fn collect_import_bindings(
         }
     }
 
-    (imports, edges)
+    (imports, edges, dependencies)
 }
 
 fn add_import_binding(
@@ -490,6 +521,40 @@ fn import_qualifier(path: &Path, raw: &str) -> String {
         }
     }
     qualifier
+}
+
+/// Resolve import specifier to actual file path for dependency tracking
+fn resolve_import_path(importing_file: &Path, specifier: &str) -> Option<String> {
+    let cleaned = specifier.trim().trim_matches('"').trim_matches('\'');
+
+    // Skip non-relative imports (node_modules, etc.)
+    if !cleaned.starts_with('.') && !cleaned.starts_with('/') {
+        return None;
+    }
+
+    let parent = importing_file.parent()?;
+    let base_path = parent.join(cleaned);
+
+    // Try common TypeScript extensions
+    let extensions = ["", ".ts", ".tsx", "/index.ts", "/index.tsx"];
+    for ext in extensions {
+        let candidate = if ext.is_empty() {
+            base_path.clone()
+        } else if ext.starts_with('/') {
+            base_path.join(&ext[1..])
+        } else {
+            PathBuf::from(format!("{}{}", base_path.display(), ext))
+        };
+
+        if candidate.exists() {
+            if let Ok(canonical) = candidate.canonicalize() {
+                return Some(normalize_path(&canonical));
+            }
+        }
+    }
+
+    // Return best-effort normalized path even if file doesn't exist
+    Some(normalize_path(&base_path))
 }
 
 fn collect_export_edges(
@@ -588,6 +653,7 @@ fn collect_references(
     root: &Node,
     declared_spans: &HashSet<(usize, usize)>,
     symbol_by_name: &HashMap<String, SymbolBinding>,
+    imports: &HashMap<String, ImportBinding>,
 ) -> Vec<ReferenceRecord> {
     let mut refs = Vec::new();
     let mut stack = vec![*root];
@@ -598,12 +664,21 @@ fn collect_references(
             let span = (node.start_byte(), node.end_byte());
             if !declared_spans.contains(&span) {
                 let name = slice(source, &node);
+                // First try local symbols
                 if let Some(sym) = symbol_by_name.get(&name) {
                     refs.push(ReferenceRecord {
                         file: file.clone(),
                         start: node.start_byte() as i64,
                         end: node.end_byte() as i64,
                         symbol_id: sym.id.clone(),
+                    });
+                } else if let Some(import) = imports.get(&name) {
+                    // Cross-file reference via import
+                    refs.push(ReferenceRecord {
+                        file: file.clone(),
+                        start: node.start_byte() as i64,
+                        end: node.end_byte() as i64,
+                        symbol_id: import.symbol_id(&name),
                     });
                 }
             }
@@ -688,7 +763,7 @@ mod tests {
         "#;
         fs::write(&path, source).unwrap();
 
-        let (symbols, edges, _refs) = index_file(&path, source).unwrap();
+        let (symbols, edges, _refs, _deps) = index_file(&path, source).unwrap();
         let names: Vec<_> = symbols.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"Foo"));
         assert!(names.contains(&"Bar"));
@@ -730,8 +805,8 @@ mod tests {
         fs::write(&iface_path, iface_src).unwrap();
         fs::write(&impl_path, impl_src).unwrap();
 
-        let (iface_symbols, _, _) = index_file(&iface_path, iface_src).unwrap();
-        let (_, impl_edges, _) = index_file(&impl_path, impl_src).unwrap();
+        let (iface_symbols, _, _, _) = index_file(&iface_path, iface_src).unwrap();
+        let (_, impl_edges, _, _) = index_file(&impl_path, impl_src).unwrap();
 
         let _base = iface_symbols.iter().find(|s| s.name == "Base").unwrap();
         assert!(
@@ -752,7 +827,7 @@ mod tests {
         "#;
         fs::write(&path, source).unwrap();
 
-        let (_symbols, edges, _refs) = index_file(&path, source).unwrap();
+        let (_symbols, edges, _refs, _deps) = index_file(&path, source).unwrap();
         let import_edges: Vec<_> = edges
             .iter()
             .filter(|e| e.kind == "import")

@@ -4,6 +4,74 @@ use std::process::Command;
 use gabb_cli::{indexer, store::IndexStore};
 use tempfile::tempdir;
 
+#[test]
+fn cross_file_usages_via_dependency_graph() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    // Create a file that exports a function
+    let utils_path = root.join("utils.ts");
+    fs::write(&utils_path, "export function helper() { return 42; }\n").unwrap();
+
+    // Create a file that imports and uses the function
+    let main_path = root.join("main.ts");
+    fs::write(
+        &main_path,
+        "import { helper } from './utils';\nconst result = helper();\n",
+    )
+    .unwrap();
+
+    let db_path = root.join(".gabb/index.db");
+    let store = IndexStore::open(&db_path).unwrap();
+    indexer::build_full_index(root, &store).unwrap();
+
+    // Verify dependencies are recorded
+    let deps = store.get_all_dependencies().unwrap();
+    assert!(
+        !deps.is_empty(),
+        "expected file dependencies to be recorded"
+    );
+
+    // Verify file dependency was correctly resolved with .ts extension
+    let utils_canonical = utils_path.canonicalize().unwrap();
+    let utils_str = utils_canonical.to_string_lossy().to_string();
+    let dependents = store.get_dependents(&utils_str).unwrap();
+    assert!(
+        !dependents.is_empty(),
+        "expected dependents for utils.ts, deps: {:?}",
+        deps
+    );
+
+    let bin = env!("CARGO_BIN_EXE_gabb-cli");
+
+    // Find usages of 'helper' - should find the usage in main.ts
+    let usages_out = Command::new(bin)
+        .args([
+            "usages",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--file",
+            &format!("{}:1:17", utils_path.display()), // position of 'helper' in utils.ts
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    assert!(
+        usages_out.status.success(),
+        "usages exited {:?}, stderr: {}",
+        usages_out.status,
+        String::from_utf8_lossy(&usages_out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&usages_out.stdout);
+    assert!(
+        stdout.contains("main.ts"),
+        "expected usage in main.ts, got: {}",
+        stdout
+    );
+}
+
 fn offset_to_line_char(buf: &[u8], offset: usize) -> Option<(usize, usize)> {
     let mut line = 1usize;
     let mut col = 1usize;

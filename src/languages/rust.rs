@@ -1,4 +1,4 @@
-use crate::store::{EdgeRecord, ReferenceRecord, SymbolRecord, normalize_path};
+use crate::store::{EdgeRecord, FileDependency, ReferenceRecord, SymbolRecord, normalize_path};
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
@@ -39,10 +39,16 @@ impl ResolvedTarget {
     }
 }
 
+/// Index a Rust file, returning symbols, edges, references, and file dependencies.
 pub fn index_file(
     path: &Path,
     source: &str,
-) -> Result<(Vec<SymbolRecord>, Vec<EdgeRecord>, Vec<ReferenceRecord>)> {
+) -> Result<(
+    Vec<SymbolRecord>,
+    Vec<EdgeRecord>,
+    Vec<ReferenceRecord>,
+    Vec<FileDependency>,
+)> {
     let mut parser = Parser::new();
     parser
         .set_language(&RUST_LANGUAGE)
@@ -80,7 +86,67 @@ pub fn index_file(
         &symbol_by_name,
     );
 
-    Ok((symbols, edges, references))
+    // Extract file dependencies from mod declarations
+    let dependencies = collect_mod_dependencies(path, source, &tree.root_node());
+
+    Ok((symbols, edges, references, dependencies))
+}
+
+/// Extract file dependencies from `mod` declarations (e.g., `mod foo;`).
+/// These indicate that this file depends on foo.rs or foo/mod.rs.
+fn collect_mod_dependencies(path: &Path, source: &str, root: &Node) -> Vec<FileDependency> {
+    let mut dependencies = Vec::new();
+    let mut seen = HashSet::new();
+    let from_file = normalize_path(path);
+    let parent = path.parent();
+
+    let mut stack = vec![*root];
+    while let Some(node) = stack.pop() {
+        // Look for `mod foo;` declarations (without body)
+        if node.kind() == "mod_item" {
+            let has_body = node
+                .children(&mut node.walk())
+                .any(|c| c.kind() == "declaration_list");
+            if !has_body {
+                // This is a `mod foo;` declaration - it references an external file
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let mod_name = slice(source, &name_node);
+                    if !mod_name.is_empty() && !seen.contains(&mod_name) {
+                        seen.insert(mod_name.clone());
+
+                        // Try to resolve the module file path
+                        if let Some(parent_dir) = parent {
+                            // Try mod_name.rs
+                            let mod_file = parent_dir.join(format!("{}.rs", mod_name));
+                            let mod_dir_file = parent_dir.join(&mod_name).join("mod.rs");
+
+                            let to_file = if mod_file.exists() {
+                                normalize_path(&mod_file)
+                            } else if mod_dir_file.exists() {
+                                normalize_path(&mod_dir_file)
+                            } else {
+                                // Use the expected path even if it doesn't exist
+                                normalize_path(&mod_file)
+                            };
+
+                            dependencies.push(FileDependency {
+                                from_file: from_file.clone(),
+                                to_file,
+                                kind: "mod".to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+
+    dependencies
 }
 
 #[allow(clippy::too_many_arguments, clippy::only_used_in_recursion)]
@@ -438,7 +504,7 @@ mod tests {
         "#;
         fs::write(&path, source).unwrap();
 
-        let (symbols, edges, _refs) = index_file(&path, source).unwrap();
+        let (symbols, edges, _refs, _deps) = index_file(&path, source).unwrap();
         let names: Vec<_> = symbols.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"Thing"));
         assert!(names.contains(&"make"));
@@ -470,7 +536,7 @@ mod tests {
         "#;
         fs::write(&path, source).unwrap();
 
-        let (symbols, edges, _refs) = index_file(&path, source).unwrap();
+        let (symbols, edges, _refs, _deps) = index_file(&path, source).unwrap();
         let person = symbols.iter().find(|s| s.name == "Person").unwrap();
         let greeter = symbols.iter().find(|s| s.name == "Greeter").unwrap();
 

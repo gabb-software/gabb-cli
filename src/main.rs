@@ -10,7 +10,6 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use store::{SymbolRecord, normalize_path};
-use walkdir::WalkDir;
 
 #[derive(Parser, Debug)]
 #[command(name = "gabb", about = "Gabb CLI indexing daemon")]
@@ -208,7 +207,19 @@ fn find_implementation(
     let mut impl_symbols = store.symbols_by_ids(&impl_ids)?;
 
     if impl_symbols.is_empty() {
-        impl_symbols = store.list_symbols(None, kind, Some(&target.name), limit)?;
+        // Use dependency graph: implementations would be in files that depend on the target's file
+        let dependents = store.get_dependents(&target.file)?;
+        if dependents.is_empty() {
+            // No dependency info - fall back to searching all files
+            impl_symbols = store.list_symbols(None, kind, Some(&target.name), limit)?;
+        } else {
+            // Search only in dependent files plus the target's own file
+            for dep_file in dependents.iter().chain(std::iter::once(&target.file)) {
+                let file_symbols =
+                    store.list_symbols(Some(dep_file), kind, Some(&target.name), limit)?;
+                impl_symbols.extend(file_symbols);
+            }
+        }
     }
 
     if let Some(k) = kind {
@@ -260,16 +271,25 @@ fn find_usages(
     });
 
     let mut refs = store.references_for_symbol(&target.id)?;
-    if refs.is_empty() {
-        refs = search_usages_by_name(&store, &target, &workspace_root)?;
-    }
     let mut seen = HashSet::new();
+    // Filter out the definition span and deduplicate
     refs.retain(|r| {
         if r.file == target.file && r.start >= target.start && r.end <= target.end {
             return false;
         }
         seen.insert((r.file.clone(), r.start, r.end))
     });
+    // If no useful references found, try name-based search
+    if refs.is_empty() {
+        refs = search_usages_by_name(&store, &target, &workspace_root)?;
+        // Filter out definition span for fallback results too
+        refs.retain(|r| {
+            if r.file == target.file && r.start >= target.start && r.end <= target.end {
+                return false;
+            }
+            seen.insert((r.file.clone(), r.start, r.end))
+        });
+    }
     if let Some(lim) = limit {
         refs.truncate(lim);
     }
@@ -368,9 +388,10 @@ fn resolve_symbol_at(
     line: usize,
     character: usize,
 ) -> Result<SymbolRecord> {
-    let file_str = file.to_string_lossy().to_string();
+    let canonical_file = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+    let file_str = normalize_path(&canonical_file);
     let symbols = store.list_symbols(Some(&file_str), None, None, None)?;
-    let contents = fs::read(file)?;
+    let contents = fs::read(&canonical_file)?;
     let offset = line_char_to_offset(&contents, line, character)
         .ok_or_else(|| anyhow!("could not map line/character to byte offset"))?
         as i64;
@@ -457,20 +478,21 @@ fn dedup_symbols(symbols: &mut Vec<SymbolRecord>) {
 fn search_usages_by_name(
     store: &store::IndexStore,
     target: &SymbolRecord,
-    workspace_root: &Path,
+    _workspace_root: &Path,
 ) -> Result<Vec<store::ReferenceRecord>> {
     let mut refs = Vec::new();
-    let mut paths: Vec<PathBuf> = store.list_paths()?.into_iter().map(PathBuf::from).collect();
-    for entry in WalkDir::new(workspace_root)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file() && indexer::is_indexed_file(e.path()))
-    {
-        let p = entry.path().to_path_buf();
-        if !paths.contains(&p) {
-            paths.push(p);
-        }
-    }
+
+    // Use dependency graph: only search files that depend on the target's file
+    let dependents = store.get_dependents(&target.file)?;
+    let paths: Vec<PathBuf> = if dependents.is_empty() {
+        // No dependency info - fall back to all indexed files
+        store.list_paths()?.into_iter().map(PathBuf::from).collect()
+    } else {
+        // Search dependents plus the target's own file
+        let mut paths: Vec<PathBuf> = dependents.into_iter().map(PathBuf::from).collect();
+        paths.push(PathBuf::from(&target.file));
+        paths
+    };
 
     for path in paths {
         let canonical = path.canonicalize().unwrap_or(path.clone());

@@ -55,7 +55,7 @@ pub fn index_one(path: &Path, store: &IndexStore) -> Result<String> {
     let contents = fs::read(path)?;
     let source = String::from_utf8_lossy(&contents).to_string();
     let record = to_record(path, &contents)?;
-    let (symbols, edges, references) = if is_ts_file(path) {
+    let (symbols, edges, references, dependencies) = if is_ts_file(path) {
         typescript::index_file(path, &source)?
     } else if is_rust_file(path) {
         rust::index_file(path, &source)?
@@ -63,12 +63,14 @@ pub fn index_one(path: &Path, store: &IndexStore) -> Result<String> {
         bail!("unsupported file type: {}", path.display());
     };
     store.save_file_index(&record, &symbols, &edges, &references)?;
+    store.save_file_dependencies(&record.path, &dependencies)?;
     debug!(
-        "Indexed {} symbols={} edges={} refs={}",
+        "Indexed {} symbols={} edges={} refs={} deps={}",
         record.path,
         symbols.len(),
         edges.len(),
-        references.len()
+        references.len(),
+        dependencies.len()
     );
     Ok(record.path)
 }

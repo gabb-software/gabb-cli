@@ -70,6 +70,8 @@ impl IndexStore {
             PRAGMA synchronous = NORMAL;
             PRAGMA cache_size = -64000;
             PRAGMA mmap_size = 268435456;
+            PRAGMA page_size = 4096;
+            PRAGMA temp_store = MEMORY;
             CREATE TABLE IF NOT EXISTS files (
                 path TEXT PRIMARY KEY,
                 hash TEXT NOT NULL,
@@ -442,6 +444,85 @@ impl IndexStore {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Query symbols with cursor-based pagination for streaming large result sets.
+    /// Returns (results, next_cursor) where next_cursor can be used to fetch the next page.
+    pub fn list_symbols_paginated(
+        &self,
+        file: Option<&str>,
+        kind: Option<&str>,
+        name: Option<&str>,
+        cursor: Option<&str>,
+        page_size: usize,
+    ) -> Result<(Vec<SymbolRecord>, Option<String>)> {
+        let file_norm = file.map(|f| normalize_path(Path::new(f)));
+        let mut sql = String::from(
+            "SELECT id, file, kind, name, start, end, qualifier, visibility, container FROM symbols",
+        );
+        let mut values: Vec<Value> = Vec::new();
+        let mut clauses: Vec<&str> = Vec::new();
+
+        if let Some(f) = &file_norm {
+            clauses.push("file = ?");
+            values.push(Value::from(f.clone()));
+        }
+
+        if let Some(k) = kind {
+            clauses.push("kind = ?");
+            values.push(Value::from(k.to_string()));
+        }
+
+        if let Some(n) = name {
+            clauses.push("name = ?");
+            values.push(Value::from(n.to_string()));
+        }
+
+        // Cursor-based pagination using id as cursor (keyset pagination)
+        if let Some(c) = cursor {
+            clauses.push("id > ?");
+            values.push(Value::from(c.to_string()));
+        }
+
+        if !clauses.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&clauses.join(" AND "));
+        }
+
+        // Order by id for consistent pagination
+        sql.push_str(" ORDER BY id");
+
+        // Fetch one extra to determine if there's a next page
+        sql.push_str(" LIMIT ?");
+        values.push(Value::from((page_size + 1) as i64));
+
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows: Vec<SymbolRecord> = stmt
+            .query_map(params_from_iter(values.iter()), |row| {
+                Ok(SymbolRecord {
+                    id: row.get(0)?,
+                    file: row.get(1)?,
+                    kind: row.get(2)?,
+                    name: row.get(3)?,
+                    start: row.get(4)?,
+                    end: row.get(5)?,
+                    qualifier: row.get(6)?,
+                    visibility: row.get(7)?,
+                    container: row.get(8)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        // Determine next cursor
+        let next_cursor = if rows.len() > page_size {
+            rows.pop(); // Remove the extra row
+            rows.last().map(|r| r.id.clone())
+        } else {
+            None
+        };
+
+        Ok((rows, next_cursor))
     }
 }
 
@@ -1163,5 +1244,103 @@ mod tests {
             "Should find 2 symbols starting with 'get'"
         );
         assert!(results.iter().all(|s| s.name.starts_with("get")));
+    }
+
+    /// Test cursor-based pagination for streaming large result sets
+    #[test]
+    fn pagination_streams_results_in_pages() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        // Insert 10 test symbols
+        let file_path = dir.path().join("test.ts");
+        let file_rec = mk_file_record(&file_path);
+        let symbols: Vec<SymbolRecord> = (0..10)
+            .map(|i| SymbolRecord {
+                id: format!("sym_{:02}", i), // Zero-padded for consistent ordering
+                file: normalize_path(&file_path),
+                kind: "function".into(),
+                name: format!("func_{}", i),
+                start: i * 10,
+                end: i * 10 + 5,
+                qualifier: None,
+                visibility: None,
+                container: None,
+            })
+            .collect();
+
+        store
+            .save_file_index(&file_rec, &symbols, &[], &[])
+            .unwrap();
+
+        // First page (3 items)
+        let (page1, cursor1) = store
+            .list_symbols_paginated(None, None, None, None, 3)
+            .unwrap();
+        assert_eq!(page1.len(), 3, "First page should have 3 items");
+        assert!(cursor1.is_some(), "Should have cursor for next page");
+
+        // Second page using cursor
+        let (page2, cursor2) = store
+            .list_symbols_paginated(None, None, None, cursor1.as_deref(), 3)
+            .unwrap();
+        assert_eq!(page2.len(), 3, "Second page should have 3 items");
+        assert!(cursor2.is_some(), "Should have cursor for next page");
+
+        // Verify no overlap between pages
+        let page1_ids: Vec<_> = page1.iter().map(|s| &s.id).collect();
+        let page2_ids: Vec<_> = page2.iter().map(|s| &s.id).collect();
+        assert!(
+            page1_ids.iter().all(|id| !page2_ids.contains(id)),
+            "Pages should not overlap"
+        );
+
+        // Continue until exhausted
+        let (page3, cursor3) = store
+            .list_symbols_paginated(None, None, None, cursor2.as_deref(), 3)
+            .unwrap();
+        assert_eq!(page3.len(), 3, "Third page should have 3 items");
+
+        let (page4, cursor4) = store
+            .list_symbols_paginated(None, None, None, cursor3.as_deref(), 3)
+            .unwrap();
+        assert_eq!(page4.len(), 1, "Fourth page should have 1 item");
+        assert!(cursor4.is_none(), "No more pages");
+    }
+
+    /// Test that SQLite pragmas are configured for performance
+    #[test]
+    fn sqlite_performance_pragmas_configured() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        let conn = store.conn.borrow();
+
+        // Check WAL mode
+        let journal_mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal_mode.to_lowercase(), "wal", "Should use WAL mode");
+
+        // Check mmap is enabled (non-zero)
+        let mmap_size: i64 = conn
+            .query_row("PRAGMA mmap_size", [], |row| row.get(0))
+            .unwrap();
+        assert!(
+            mmap_size > 0,
+            "mmap should be enabled for memory-mapped I/O"
+        );
+
+        // Check cache size is configured
+        let cache_size: i64 = conn
+            .query_row("PRAGMA cache_size", [], |row| row.get(0))
+            .unwrap();
+        assert!(
+            cache_size < 0 || cache_size > 1000,
+            "Cache should be configured (got {})",
+            cache_size
+        );
     }
 }

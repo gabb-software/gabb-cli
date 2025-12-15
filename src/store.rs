@@ -64,6 +64,93 @@ pub struct FileDependency {
     pub kind: String,
 }
 
+use std::collections::HashMap;
+
+/// In-memory dependency cache for O(1) lookups.
+/// Caches both forward (file -> dependencies) and reverse (file -> dependents) mappings.
+#[derive(Debug, Default)]
+pub struct DependencyCache {
+    /// Forward dependencies: file -> files it depends on
+    forward: HashMap<String, Vec<String>>,
+    /// Reverse dependencies: file -> files that depend on it
+    reverse: HashMap<String, Vec<String>>,
+    /// Whether the cache is populated
+    populated: bool,
+}
+
+impl DependencyCache {
+    /// Create a new empty cache.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Check if cache is populated.
+    pub fn is_populated(&self) -> bool {
+        self.populated
+    }
+
+    /// Get files that a file depends on (O(1) lookup).
+    pub fn get_dependencies(&self, file: &str) -> Option<&Vec<String>> {
+        self.forward.get(file)
+    }
+
+    /// Get files that depend on a file (O(1) lookup).
+    pub fn get_dependents(&self, file: &str) -> Option<&Vec<String>> {
+        self.reverse.get(file)
+    }
+
+    /// Clear the cache.
+    pub fn clear(&mut self) {
+        self.forward.clear();
+        self.reverse.clear();
+        self.populated = false;
+    }
+
+    /// Populate cache from a list of dependencies.
+    pub fn populate(&mut self, dependencies: &[FileDependency]) {
+        self.clear();
+
+        for dep in dependencies {
+            // Forward mapping
+            self.forward
+                .entry(dep.from_file.clone())
+                .or_default()
+                .push(dep.to_file.clone());
+
+            // Reverse mapping
+            self.reverse
+                .entry(dep.to_file.clone())
+                .or_default()
+                .push(dep.from_file.clone());
+        }
+
+        self.populated = true;
+    }
+
+    /// Invalidate cache entries for a specific file (when it changes).
+    pub fn invalidate_file(&mut self, file: &str) {
+        // Remove forward dependencies
+        if let Some(deps) = self.forward.remove(file) {
+            // Also remove from reverse mappings
+            for dep in deps {
+                if let Some(rev) = self.reverse.get_mut(&dep) {
+                    rev.retain(|f| f != file);
+                }
+            }
+        }
+
+        // Remove reverse dependencies
+        if let Some(dependents) = self.reverse.remove(file) {
+            // Also remove from forward mappings
+            for dependent in dependents {
+                if let Some(fwd) = self.forward.get_mut(&dependent) {
+                    fwd.retain(|f| f != file);
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct IndexStore {
     conn: RefCell<Connection>,
@@ -579,6 +666,15 @@ impl IndexStore {
 
         let files: Vec<String> = all_files.into_iter().collect();
         self.topological_sort(&files)
+    }
+
+    /// Load all dependencies into a DependencyCache for O(1) lookups.
+    /// Call this once at startup for long-running processes.
+    pub fn load_dependency_cache(&self) -> Result<DependencyCache> {
+        let deps = self.get_all_dependencies()?;
+        let mut cache = DependencyCache::new();
+        cache.populate(&deps);
+        Ok(cache)
     }
 
     pub fn list_symbols(
@@ -2016,6 +2112,114 @@ mod tests {
 
         // All four files should be invalidated
         assert_eq!(invalidated.len(), 4);
+    }
+
+    /// Test DependencyCache provides O(1) lookups
+    #[test]
+    fn dependency_cache_provides_o1_lookup() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        // Create dependencies
+        store
+            .save_file_dependencies(
+                "main.ts",
+                &[
+                    FileDependency {
+                        from_file: "main.ts".into(),
+                        to_file: "utils.ts".into(),
+                        kind: "import".into(),
+                    },
+                    FileDependency {
+                        from_file: "main.ts".into(),
+                        to_file: "types.ts".into(),
+                        kind: "import".into(),
+                    },
+                ],
+            )
+            .unwrap();
+        store
+            .save_file_dependencies(
+                "utils.ts",
+                &[FileDependency {
+                    from_file: "utils.ts".into(),
+                    to_file: "types.ts".into(),
+                    kind: "import".into(),
+                }],
+            )
+            .unwrap();
+
+        // Load cache
+        let cache = store.load_dependency_cache().unwrap();
+        assert!(cache.is_populated());
+
+        // O(1) forward lookup
+        let main_deps = cache.get_dependencies("main.ts").unwrap();
+        assert_eq!(main_deps.len(), 2);
+        assert!(main_deps.contains(&"utils.ts".to_string()));
+        assert!(main_deps.contains(&"types.ts".to_string()));
+
+        // O(1) reverse lookup
+        let types_dependents = cache.get_dependents("types.ts").unwrap();
+        assert_eq!(types_dependents.len(), 2);
+        assert!(types_dependents.contains(&"main.ts".to_string()));
+        assert!(types_dependents.contains(&"utils.ts".to_string()));
+    }
+
+    /// Test DependencyCache invalidation
+    #[test]
+    fn dependency_cache_invalidates_correctly() {
+        let mut cache = DependencyCache::new();
+        let deps = vec![
+            FileDependency {
+                from_file: "a.ts".into(),
+                to_file: "b.ts".into(),
+                kind: "import".into(),
+            },
+            FileDependency {
+                from_file: "b.ts".into(),
+                to_file: "c.ts".into(),
+                kind: "import".into(),
+            },
+        ];
+        cache.populate(&deps);
+
+        // Verify initial state
+        assert!(cache.get_dependencies("a.ts").is_some());
+        assert!(cache.get_dependents("b.ts").is_some());
+
+        // Invalidate b.ts
+        cache.invalidate_file("b.ts");
+
+        // b.ts should have no entries
+        assert!(cache.get_dependencies("b.ts").is_none());
+        assert!(cache.get_dependents("b.ts").is_none());
+
+        // a.ts forward deps should no longer include b.ts
+        let a_deps = cache.get_dependencies("a.ts");
+        assert!(a_deps.is_none() || a_deps.unwrap().is_empty());
+
+        // c.ts reverse deps should no longer include b.ts
+        let c_dependents = cache.get_dependents("c.ts");
+        assert!(c_dependents.is_none() || c_dependents.unwrap().is_empty());
+    }
+
+    /// Test DependencyCache clear
+    #[test]
+    fn dependency_cache_clears_all_entries() {
+        let mut cache = DependencyCache::new();
+        let deps = vec![FileDependency {
+            from_file: "a.ts".into(),
+            to_file: "b.ts".into(),
+            kind: "import".into(),
+        }];
+        cache.populate(&deps);
+        assert!(cache.is_populated());
+
+        cache.clear();
+        assert!(!cache.is_populated());
+        assert!(cache.get_dependencies("a.ts").is_none());
     }
 
     /// Test invalidation handles diamond dependency pattern

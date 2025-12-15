@@ -29,6 +29,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Build
@@ -116,11 +117,81 @@ jobs:
     name: Update Homebrew Formula
     runs-on: ubuntu-latest
     needs: release
+    if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
     steps:
-      - name: Trigger homebrew tap update
+      - name: Download SHA256SUMS
         run: |
-          echo "Release complete! To update homebrew tap:"
-          echo "1. Get SHA256 from release assets"
-          echo "2. Update formula in homebrew-tap repo"
-          echo ""
-          echo "Or set up automatic updates with a PAT and repository_dispatch"
+          VERSION="${GITHUB_REF#refs/tags/}"
+          curl -L "https://github.com/gabb-software/gabb-cli/releases/download/${VERSION}/SHA256SUMS.txt" -o SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Extract SHA256 hashes
+        id: sha
+        run: |
+          echo "aarch64=$(grep aarch64-apple-darwin SHA256SUMS.txt | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "x86_64=$(grep x86_64-apple-darwin SHA256SUMS.txt | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "linux=$(grep x86_64-unknown-linux-gnu SHA256SUMS.txt | awk '{print $1}')" >> $GITHUB_OUTPUT
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: gabb-software/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update formula
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          cat > homebrew-tap/Formula/gabb-cli.rb << 'EOF'
+          # typed: false
+          # frozen_string_literal: true
+
+          class GabbCli < Formula
+            desc "Fast local code indexing CLI for TypeScript and Rust projects"
+            homepage "https://github.com/gabb-software/gabb-cli"
+            version "VERSION_PLACEHOLDER"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/gabb-software/gabb-cli/releases/download/v#{version}/gabb-cli-aarch64-apple-darwin.tar.gz"
+                sha256 "AARCH64_PLACEHOLDER"
+              else
+                url "https://github.com/gabb-software/gabb-cli/releases/download/v#{version}/gabb-cli-x86_64-apple-darwin.tar.gz"
+                sha256 "X86_64_PLACEHOLDER"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.intel?
+                url "https://github.com/gabb-software/gabb-cli/releases/download/v#{version}/gabb-cli-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "LINUX_PLACEHOLDER"
+              end
+            end
+
+            def install
+              bin.install "gabb-cli"
+            end
+
+            test do
+              assert_match "gabb-cli", shell_output("#{bin}/gabb-cli --version")
+            end
+          end
+          EOF
+
+          # Replace placeholders
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/" homebrew-tap/Formula/gabb-cli.rb
+          sed -i "s/AARCH64_PLACEHOLDER/${{ steps.sha.outputs.aarch64 }}/" homebrew-tap/Formula/gabb-cli.rb
+          sed -i "s/X86_64_PLACEHOLDER/${{ steps.sha.outputs.x86_64 }}/" homebrew-tap/Formula/gabb-cli.rb
+          sed -i "s/LINUX_PLACEHOLDER/${{ steps.sha.outputs.linux }}/" homebrew-tap/Formula/gabb-cli.rb
+
+          cat homebrew-tap/Formula/gabb-cli.rb
+
+      - name: Commit and push
+        run: |
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/gabb-cli.rb
+          git commit -m "Update gabb-cli to ${GITHUB_REF#refs/tags/v}"
+          git push

@@ -422,9 +422,10 @@ impl IndexStore {
         Ok(rows)
     }
 
+    /// Query edges by destination with cached prepared statement.
     pub fn edges_to(&self, dst: &str) -> Result<Vec<EdgeRecord>> {
         let conn = self.conn.borrow();
-        let mut stmt = conn.prepare("SELECT src, dst, kind FROM edges WHERE dst = ?1")?;
+        let mut stmt = conn.prepare_cached("SELECT src, dst, kind FROM edges WHERE dst = ?1")?;
         let edges = stmt
             .query_map(params![dst], |row| {
                 Ok(EdgeRecord {
@@ -437,9 +438,10 @@ impl IndexStore {
         Ok(edges)
     }
 
+    /// Query edges by source with cached prepared statement.
     pub fn edges_from(&self, src: &str) -> Result<Vec<EdgeRecord>> {
         let conn = self.conn.borrow();
-        let mut stmt = conn.prepare("SELECT src, dst, kind FROM edges WHERE src = ?1")?;
+        let mut stmt = conn.prepare_cached("SELECT src, dst, kind FROM edges WHERE src = ?1")?;
         let edges = stmt
             .query_map(params![src], |row| {
                 Ok(EdgeRecord {
@@ -483,9 +485,10 @@ impl IndexStore {
         Ok(rows)
     }
 
+    /// Query references by symbol ID with cached prepared statement.
     pub fn references_for_symbol(&self, symbol_id: &str) -> Result<Vec<ReferenceRecord>> {
         let conn = self.conn.borrow();
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT file, start, end, symbol_id FROM references_tbl WHERE symbol_id = ?1",
         )?;
         let rows = stmt
@@ -503,9 +506,10 @@ impl IndexStore {
 
     /// Search symbols using FTS5 full-text search.
     /// Supports prefix queries (e.g., "getUser*") and substring matching via trigram tokenization.
+    /// Uses cached prepared statement for repeated searches.
     pub fn search_symbols_fts(&self, query: &str) -> Result<Vec<SymbolRecord>> {
         let conn = self.conn.borrow();
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             r#"
             SELECT s.id, s.file, s.kind, s.name, s.start, s.end, s.qualifier, s.visibility, s.container
             FROM symbols s
@@ -1573,6 +1577,62 @@ mod tests {
         assert_eq!(total.symbol_count, 8);
         assert_eq!(total.function_count, 5);
         assert_eq!(total.class_count, 3);
+    }
+
+    /// Test that repeated queries use statement caching for better performance
+    #[test]
+    fn query_plan_caching_improves_repeated_query_performance() {
+        use std::time::Instant;
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        // Insert test data
+        let file_path = dir.path().join("test.ts");
+        let file_rec = mk_file_record(&file_path);
+        let symbols: Vec<SymbolRecord> = (0..100)
+            .map(|i| SymbolRecord {
+                id: format!("sym_{:03}", i),
+                file: normalize_path(&file_path),
+                kind: "function".into(),
+                name: format!("func_{}", i),
+                start: i * 10,
+                end: i * 10 + 5,
+                qualifier: None,
+                visibility: None,
+                container: None,
+            })
+            .collect();
+
+        let edges: Vec<EdgeRecord> = (0..50)
+            .map(|i| EdgeRecord {
+                src: format!("sym_{:03}", i),
+                dst: format!("sym_{:03}", i + 50),
+                kind: "implements".into(),
+            })
+            .collect();
+
+        store
+            .save_file_index(&file_rec, &symbols, &edges, &[])
+            .unwrap();
+
+        // Warm up (first query compiles statement)
+        let _ = store.edges_to("sym_050");
+
+        // Time repeated cached queries (should be faster than compilation)
+        let start = Instant::now();
+        for i in 50..100 {
+            let _ = store.edges_to(&format!("sym_{:03}", i));
+        }
+        let cached_duration = start.elapsed();
+
+        // 50 cached queries should complete very quickly
+        assert!(
+            cached_duration.as_millis() < 100,
+            "50 cached queries should complete quickly, took {}ms",
+            cached_duration.as_millis()
+        );
     }
 
     /// Test file stats are cleaned up on file removal

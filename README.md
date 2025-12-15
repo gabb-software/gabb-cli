@@ -4,7 +4,7 @@ Gabb is a Rust CLI that builds a local code index so editors and AI coding assis
 
 ## Status
 - MVP: indexes TypeScript/TSX and Rust, storing results in a local SQLite database
-- Commands: `gabb daemon` (watches a workspace and keeps the index fresh), `gabb symbols` (list indexed symbols), `gabb implementation` (find implementations for a symbol), `gabb usages` (find call sites/usages for a symbol)
+- Commands: `gabb daemon` (watches a workspace and keeps the index fresh), `gabb symbols` (list indexed symbols), `gabb symbol` (show details for a symbol), `gabb implementation` (find implementations for a symbol), `gabb usages` (find call sites/usages for a symbol)
 - Outputs: symbol definitions, relationships (implements/extends), and references
 
 ## Quickstart
@@ -33,8 +33,9 @@ The daemon will crawl your workspace, index all `*.ts`/`*.tsx`/`*.rs` files, and
 
 ## Usage
 ```bash
-gabb daemon --root <workspace> --db <path/to/index.db> [-v|-vv]
+gabb daemon --root <workspace> --db <path/to/index.db> [--rebuild] [-v|-vv]
 gabb symbols --db <path/to/index.db> [--file <path>] [--kind <kind>] [--limit <n>]
+gabb symbol --db <path/to/index.db> --name <name> [--file <path>] [--kind <kind>] [--limit <n>]
 gabb implementation --db <path/to/index.db> --file <path[:line:char]> [--line <line>] [--character <char>] [--limit <n>] [--kind <kind>]
 gabb usages --db <path/to/index.db> --file <path[:line:char]> [--line <line>] [--character <char>] [--limit <n>]
 ```
@@ -42,6 +43,7 @@ gabb usages --db <path/to/index.db> --file <path[:line:char]> [--line <line>] [-
 Flags:
 - `--root`: workspace to index (defaults to current directory)
 - `--db`: SQLite database path (defaults to `.gabb/index.db`)
+- `--rebuild`: delete any existing DB at `--db` and perform a full reindex before watching
 - `-v`, `-vv`: increase log verbosity
 Symbols command filters:
 - `--file`: only show symbols from a given file path
@@ -55,6 +57,10 @@ Usages command:
 - Identify the symbol under the cursor (same options as above)
 - Lists recorded references from the index; if none are present (e.g., cross-file Rust calls not yet linked), falls back to a best-effort name scan across all indexed files in the workspace root
 - Skips matches that overlap the symbol’s own definition span
+
+Symbol command:
+- Look up symbols by exact name (optional file/kind filters)
+- Shows definition location (line/col), qualifier, visibility, container, incoming/outgoing edges, and recorded references for each match
 
 What gets indexed:
 - Files: `*.ts`, `*.tsx`, `*.rs`

@@ -33,6 +33,9 @@ enum Commands {
         /// Path to the SQLite index database
         #[arg(long, default_value = ".gabb/index.db")]
         db: PathBuf,
+        /// If set, delete any existing DB and rebuild the index from scratch before watching
+        #[arg(long)]
+        rebuild: bool,
     },
     /// List symbols from an existing index
     Symbols {
@@ -91,6 +94,24 @@ enum Commands {
         #[arg(long)]
         limit: Option<usize>,
     },
+    /// Show details for symbols with a given name
+    Symbol {
+        /// Path to the SQLite index database
+        #[arg(long, default_value = ".gabb/index.db")]
+        db: PathBuf,
+        /// Symbol name to look up
+        #[arg(long)]
+        name: String,
+        /// Only show symbols from this file
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Only show symbols of this kind (function, class, interface, method, struct, enum, trait)
+        #[arg(long)]
+        kind: Option<String>,
+        /// Limit the number of results
+        #[arg(long)]
+        limit: Option<usize>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -98,7 +119,7 @@ fn main() -> Result<()> {
     init_logging(cli.verbose);
 
     match cli.command {
-        Commands::Daemon { root, db } => daemon::run(&root, &db),
+        Commands::Daemon { root, db, rebuild } => daemon::run(&root, &db, rebuild),
         Commands::Symbols {
             db,
             file,
@@ -121,6 +142,13 @@ fn main() -> Result<()> {
             character,
             limit,
         } => find_usages(&db, &file, line, character, limit),
+        Commands::Symbol {
+            db,
+            name,
+            file,
+            kind,
+            limit,
+        } => show_symbol(&db, &name, file.as_ref(), kind.as_deref(), limit),
     }
 }
 
@@ -262,6 +290,66 @@ fn find_usages(
                 "{:<10} {:<30} {} [{}:{}-{}:{}]",
                 "usage", target.name, r.file, line, col, end_line, end_col
             );
+        }
+    }
+
+    Ok(())
+}
+
+fn show_symbol(
+    db: &Path,
+    name: &str,
+    file: Option<&PathBuf>,
+    kind: Option<&str>,
+    limit: Option<usize>,
+) -> Result<()> {
+    let store = store::IndexStore::open(db)?;
+    let file_str = file.map(|p| p.to_string_lossy().to_string());
+    let symbols = store.list_symbols(file_str.as_deref(), kind, Some(name), limit)?;
+
+    if symbols.is_empty() {
+        println!("No symbols found for name '{}'.", name);
+        return Ok(());
+    }
+
+    for sym in symbols.iter() {
+        let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start)?;
+        let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end)?;
+        let qualifier = sym.qualifier.as_deref().unwrap_or("");
+        let visibility = sym.visibility.as_deref().unwrap_or("");
+        let container = sym.container.as_deref().unwrap_or("");
+        println!(
+            "Symbol: {} {} {} [{}:{}-{}:{}] vis={} container={}",
+            sym.kind, sym.name, sym.file, line, col, end_line, end_col, visibility, container
+        );
+        if !qualifier.is_empty() {
+            println!("  qualifier: {}", qualifier);
+        }
+        let outgoing = store.edges_from(&sym.id)?;
+        if !outgoing.is_empty() {
+            println!("  outgoing edges:");
+            for e in outgoing {
+                println!("    {} -> {} ({})", e.src, e.dst, e.kind);
+            }
+        }
+        let incoming = store.edges_to(&sym.id)?;
+        if !incoming.is_empty() {
+            println!("  incoming edges:");
+            for e in incoming {
+                println!("    {} -> {} ({})", e.src, e.dst, e.kind);
+            }
+        }
+        let refs = store.references_for_symbol(&sym.id)?;
+        if !refs.is_empty() {
+            println!("  references:");
+            for r in refs {
+                let (r_line, r_col) = offset_to_line_char_in_file(&r.file, r.start)?;
+                let (r_end_line, r_end_col) = offset_to_line_char_in_file(&r.file, r.end)?;
+                println!(
+                    "    {} [{}:{}-{}:{}]",
+                    r.file, r_line, r_col, r_end_line, r_end_col
+                );
+            }
         }
     }
 

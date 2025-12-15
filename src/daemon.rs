@@ -4,15 +4,20 @@ use anyhow::{Context, Result};
 use log::{debug, info, warn};
 use notify::event::{ModifyKind, RenameMode};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
-pub fn run(root: &Path, db_path: &Path) -> Result<()> {
+pub fn run(root: &Path, db_path: &Path, rebuild: bool) -> Result<()> {
     let root = root
         .canonicalize()
         .with_context(|| format!("failed to canonicalize root {}", root.display()))?;
     info!("Opening index at {}", db_path.display());
+    if rebuild && db_path.exists() {
+        info!("Rebuild requested; deleting {}", db_path.display());
+        let _ = fs::remove_file(db_path);
+    }
     let store = IndexStore::open(db_path)?;
 
     build_full_index(&root, &store)?;

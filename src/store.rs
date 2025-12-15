@@ -301,6 +301,21 @@ impl IndexStore {
         Ok(edges)
     }
 
+    pub fn edges_from(&self, src: &str) -> Result<Vec<EdgeRecord>> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare("SELECT src, dst, kind FROM edges WHERE src = ?1")?;
+        let edges = stmt
+            .query_map(params![src], |row| {
+                Ok(EdgeRecord {
+                    src: row.get(0)?,
+                    dst: row.get(1)?,
+                    kind: row.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(edges)
+    }
+
     pub fn symbols_by_ids(&self, ids: &[String]) -> Result<Vec<SymbolRecord>> {
         if ids.is_empty() {
             return Ok(Vec::new());
@@ -427,6 +442,10 @@ mod tests {
         let edges_back = store.edges_to("target").unwrap();
         assert_eq!(edges_back.len(), 1);
         assert_eq!(edges_back[0].src, sym.id);
+
+        let edges_out = store.edges_from(&sym.id).unwrap();
+        assert_eq!(edges_out.len(), 1);
+        assert_eq!(edges_out[0].dst, "target");
 
         store.remove_file(&file_path).unwrap();
         let paths_after = store.list_paths().unwrap();

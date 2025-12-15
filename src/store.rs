@@ -538,6 +538,49 @@ impl IndexStore {
         Ok(result)
     }
 
+    /// Get all files that need to be invalidated when a file changes.
+    /// Returns the transitive closure of reverse dependencies.
+    /// Useful for incremental rebuilds when a source file is modified.
+    pub fn get_invalidation_set(&self, changed_file: &str) -> Result<Vec<String>> {
+        let file_norm = normalize_path(Path::new(changed_file));
+        let mut visited = HashSet::new();
+        let mut to_visit = vec![file_norm.clone()];
+        let mut result = Vec::new();
+
+        while let Some(file) = to_visit.pop() {
+            if visited.contains(&file) {
+                continue;
+            }
+            visited.insert(file.clone());
+            result.push(file.clone());
+
+            // Get all files that depend on this file
+            let dependents = self.get_dependents(&file)?;
+            for dependent in dependents {
+                if !visited.contains(&dependent) {
+                    to_visit.push(dependent);
+                }
+            }
+        }
+
+        // Sort topologically for proper rebuild order
+        self.topological_sort(&result)
+    }
+
+    /// Get files that need invalidation for multiple changed files.
+    /// Returns the union of invalidation sets, topologically sorted.
+    pub fn get_batch_invalidation_set(&self, changed_files: &[String]) -> Result<Vec<String>> {
+        let mut all_files = HashSet::new();
+
+        for file in changed_files {
+            let invalidated = self.get_invalidation_set(file)?;
+            all_files.extend(invalidated);
+        }
+
+        let files: Vec<String> = all_files.into_iter().collect();
+        self.topological_sort(&files)
+    }
+
     pub fn list_symbols(
         &self,
         file: Option<&str>,
@@ -1888,6 +1931,148 @@ mod tests {
         assert!(sorted.contains(&"a.ts".into()));
         assert!(sorted.contains(&"b.ts".into()));
         assert!(sorted.contains(&"c.ts".into()));
+    }
+
+    /// Test invalidation propagation finds all affected files
+    #[test]
+    fn invalidation_propagates_through_dependency_chain() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        // Create chain: main -> utils -> types
+        store
+            .save_file_dependencies(
+                "main.ts",
+                &[FileDependency {
+                    from_file: "main.ts".into(),
+                    to_file: "utils.ts".into(),
+                    kind: "import".into(),
+                }],
+            )
+            .unwrap();
+        store
+            .save_file_dependencies(
+                "utils.ts",
+                &[FileDependency {
+                    from_file: "utils.ts".into(),
+                    to_file: "types.ts".into(),
+                    kind: "import".into(),
+                }],
+            )
+            .unwrap();
+        store.save_file_dependencies("types.ts", &[]).unwrap();
+
+        // When types.ts changes, all three files need reindexing
+        let invalidated = store.get_invalidation_set("types.ts").unwrap();
+        assert_eq!(invalidated.len(), 3);
+        assert!(invalidated.contains(&"types.ts".to_string()));
+        assert!(invalidated.contains(&"utils.ts".to_string()));
+        assert!(invalidated.contains(&"main.ts".to_string()));
+
+        // When main.ts changes, only main.ts needs reindexing
+        let invalidated = store.get_invalidation_set("main.ts").unwrap();
+        assert_eq!(invalidated.len(), 1);
+        assert_eq!(invalidated[0], "main.ts");
+    }
+
+    /// Test batch invalidation handles multiple changed files
+    #[test]
+    fn batch_invalidation_unions_affected_files() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        // Create two independent chains
+        // chain1: a -> b
+        // chain2: c -> d
+        store
+            .save_file_dependencies(
+                "a.ts",
+                &[FileDependency {
+                    from_file: "a.ts".into(),
+                    to_file: "b.ts".into(),
+                    kind: "import".into(),
+                }],
+            )
+            .unwrap();
+        store.save_file_dependencies("b.ts", &[]).unwrap();
+
+        store
+            .save_file_dependencies(
+                "c.ts",
+                &[FileDependency {
+                    from_file: "c.ts".into(),
+                    to_file: "d.ts".into(),
+                    kind: "import".into(),
+                }],
+            )
+            .unwrap();
+        store.save_file_dependencies("d.ts", &[]).unwrap();
+
+        // When both b.ts and d.ts change
+        let changed = vec!["b.ts".into(), "d.ts".into()];
+        let invalidated = store.get_batch_invalidation_set(&changed).unwrap();
+
+        // All four files should be invalidated
+        assert_eq!(invalidated.len(), 4);
+    }
+
+    /// Test invalidation handles diamond dependency pattern
+    #[test]
+    fn invalidation_handles_diamond_dependencies() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        // Diamond: main -> [utils, helpers] -> shared
+        store
+            .save_file_dependencies(
+                "main.ts",
+                &[
+                    FileDependency {
+                        from_file: "main.ts".into(),
+                        to_file: "utils.ts".into(),
+                        kind: "import".into(),
+                    },
+                    FileDependency {
+                        from_file: "main.ts".into(),
+                        to_file: "helpers.ts".into(),
+                        kind: "import".into(),
+                    },
+                ],
+            )
+            .unwrap();
+        store
+            .save_file_dependencies(
+                "utils.ts",
+                &[FileDependency {
+                    from_file: "utils.ts".into(),
+                    to_file: "shared.ts".into(),
+                    kind: "import".into(),
+                }],
+            )
+            .unwrap();
+        store
+            .save_file_dependencies(
+                "helpers.ts",
+                &[FileDependency {
+                    from_file: "helpers.ts".into(),
+                    to_file: "shared.ts".into(),
+                    kind: "import".into(),
+                }],
+            )
+            .unwrap();
+        store.save_file_dependencies("shared.ts", &[]).unwrap();
+
+        // When shared.ts changes, all four files need reindexing
+        let invalidated = store.get_invalidation_set("shared.ts").unwrap();
+        assert_eq!(invalidated.len(), 4);
+
+        // Verify topological order: shared before utils/helpers before main
+        let shared_pos = invalidated.iter().position(|f| f == "shared.ts").unwrap();
+        let main_pos = invalidated.iter().position(|f| f == "main.ts").unwrap();
+        assert!(shared_pos < main_pos, "shared.ts must come before main.ts");
     }
 
     /// Test topological sort handles cycles gracefully

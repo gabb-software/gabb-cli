@@ -193,7 +193,7 @@ fn list_symbols(
 
 fn find_implementation(
     db: &Path,
-    file: &PathBuf,
+    file: &Path,
     line: Option<usize>,
     character: Option<usize>,
     limit: Option<usize>,
@@ -245,7 +245,7 @@ fn find_implementation(
 
 fn find_usages(
     db: &Path,
-    file: &PathBuf,
+    file: &Path,
     line: Option<usize>,
     character: Option<usize>,
     limit: Option<usize>,
@@ -312,6 +312,9 @@ fn show_symbol(
         return Ok(());
     }
 
+    let workspace_root = workspace_root_from_db(db)
+        .unwrap_or_else(|_| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
     for sym in symbols.iter() {
         let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start)?;
         let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end)?;
@@ -339,7 +342,10 @@ fn show_symbol(
                 println!("    {} -> {} ({})", e.src, e.dst, e.kind);
             }
         }
-        let refs = store.references_for_symbol(&sym.id)?;
+        let mut refs = store.references_for_symbol(&sym.id)?;
+        if refs.is_empty() {
+            refs = search_usages_by_name(&store, sym, &workspace_root)?;
+        }
         if !refs.is_empty() {
             println!("  references:");
             for r in refs {
@@ -358,7 +364,7 @@ fn show_symbol(
 
 fn resolve_symbol_at(
     store: &store::IndexStore,
-    file: &PathBuf,
+    file: &Path,
     line: usize,
     character: usize,
 ) -> Result<SymbolRecord> {
@@ -657,10 +663,7 @@ mod tests {
         indexer::build_full_index(root, &store).unwrap();
 
         let symbol = resolve_symbol_at(&store, &file_path, 1, 10).unwrap();
-        let root = db_path
-            .parent()
-            .and_then(|p| p.parent())
-            .unwrap_or_else(|| root);
+        let root = db_path.parent().and_then(|p| p.parent()).unwrap_or(root);
         let refs = super::search_usages_by_name(&store, &symbol, root).unwrap();
         assert!(
             refs.iter().all(|r| !(r.file == symbol.file
@@ -713,13 +716,14 @@ mod tests {
     #[test]
     fn parses_line_character_from_file_arg() {
         let file = PathBuf::from("src/daemon.rs:18:5");
-        let (path, line, character) = parse_file_position(&file, None, None).unwrap();
+        let (path, line, character) = parse_file_position(file.as_path(), None, None).unwrap();
         assert_eq!(path, PathBuf::from("src/daemon.rs"));
         assert_eq!(line, 18);
         assert_eq!(character, 5);
 
         // Explicit args override embedded position.
-        let (path2, line2, character2) = parse_file_position(&file, Some(1), Some(2)).unwrap();
+        let (path2, line2, character2) =
+            parse_file_position(file.as_path(), Some(1), Some(2)).unwrap();
         assert_eq!(path2, PathBuf::from("src/daemon.rs"));
         assert_eq!(line2, 1);
         assert_eq!(character2, 2);
@@ -747,7 +751,7 @@ mod tests {
     }
 }
 fn parse_file_position(
-    file: &PathBuf,
+    file: &Path,
     line: Option<usize>,
     character: Option<usize>,
 ) -> Result<(PathBuf, usize, usize)> {
@@ -764,7 +768,7 @@ fn parse_file_position(
     ))
 }
 
-fn split_file_and_embedded_position(file: &PathBuf) -> (PathBuf, Option<(usize, usize)>) {
+fn split_file_and_embedded_position(file: &Path) -> (PathBuf, Option<(usize, usize)>) {
     let raw = file.to_string_lossy();
     let parts: Vec<&str> = raw.split(':').collect();
     if parts.len() >= 3 {
@@ -776,5 +780,5 @@ fn split_file_and_embedded_position(file: &PathBuf) -> (PathBuf, Option<(usize, 
             return (PathBuf::from(base), Some((line, character)));
         }
     }
-    (file.clone(), None)
+    (file.to_path_buf(), None)
 }

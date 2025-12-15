@@ -360,27 +360,52 @@ fn find_usages(
         refs.truncate(lim);
     }
 
+    // Group references by file
+    let mut by_file: std::collections::BTreeMap<String, Vec<&store::ReferenceRecord>> =
+        std::collections::BTreeMap::new();
+    for r in &refs {
+        by_file.entry(r.file.clone()).or_default().push(r);
+    }
+
     if json_output {
         let (t_line, t_col) = offset_to_line_char_in_file(&target.file, target.start)?;
         let (t_end_line, t_end_col) = offset_to_line_char_in_file(&target.file, target.end)?;
-        let json_usages: Vec<serde_json::Value> = refs
+
+        let mut test_count = 0;
+        let mut prod_count = 0;
+        let mut total_usages = 0;
+
+        let json_files: Vec<serde_json::Value> = by_file
             .iter()
-            .filter_map(|r| {
-                let (line, col) = offset_to_line_char_in_file(&r.file, r.start).ok()?;
-                let (end_line, end_col) = offset_to_line_char_in_file(&r.file, r.end).ok()?;
-                let is_test = is_test_file(&r.file);
+            .filter_map(|(file, file_refs)| {
+                let is_test = is_test_file(file);
+                let usages: Vec<serde_json::Value> = file_refs
+                    .iter()
+                    .filter_map(|r| {
+                        let (line, col) = offset_to_line_char_in_file(&r.file, r.start).ok()?;
+                        let (end_line, end_col) = offset_to_line_char_in_file(&r.file, r.end).ok()?;
+                        Some(serde_json::json!({
+                            "start": { "line": line, "character": col },
+                            "end": { "line": end_line, "character": end_col }
+                        }))
+                    })
+                    .collect();
+
+                if is_test {
+                    test_count += usages.len();
+                } else {
+                    prod_count += usages.len();
+                }
+                total_usages += usages.len();
+
                 Some(serde_json::json!({
-                    "file": r.file,
-                    "start": { "line": line, "character": col },
-                    "end": { "line": end_line, "character": end_col },
-                    "context": if is_test { "test" } else { "prod" }
+                    "file": file,
+                    "context": if is_test { "test" } else { "prod" },
+                    "count": usages.len(),
+                    "usages": usages
                 }))
             })
             .collect();
-
-        // Count test vs prod usages
-        let test_count = json_usages.iter().filter(|u| u["context"] == "test").count();
-        let prod_count = json_usages.len() - test_count;
 
         let output = serde_json::json!({
             "target": {
@@ -391,9 +416,10 @@ fn find_usages(
                 "start": { "line": t_line, "character": t_col },
                 "end": { "line": t_end_line, "character": t_end_col }
             },
-            "usages": json_usages,
+            "files": json_files,
             "summary": {
-                "total": json_usages.len(),
+                "total": total_usages,
+                "files": by_file.len(),
                 "prod": prod_count,
                 "test": test_count
             }
@@ -413,22 +439,30 @@ fn find_usages(
     } else {
         let mut test_count = 0;
         let mut prod_count = 0;
-        for r in &refs {
-            let (line, col) = offset_to_line_char_in_file(&r.file, r.start)?;
-            let (end_line, end_col) = offset_to_line_char_in_file(&r.file, r.end)?;
-            let is_test = is_test_file(&r.file);
+
+        for (file, file_refs) in &by_file {
+            let is_test = is_test_file(file);
             let context = if is_test { "[test]" } else { "[prod]" };
             if is_test {
-                test_count += 1;
+                test_count += file_refs.len();
             } else {
-                prod_count += 1;
+                prod_count += file_refs.len();
             }
-            println!(
-                "{:<10} {:<6} {:<30} {} [{}:{}-{}:{}]",
-                "usage", context, target.name, r.file, line, col, end_line, end_col
-            );
+
+            println!("\n{} {} ({} usages)", context, file, file_refs.len());
+            for r in file_refs {
+                let (line, col) = offset_to_line_char_in_file(&r.file, r.start)?;
+                let (end_line, end_col) = offset_to_line_char_in_file(&r.file, r.end)?;
+                println!("  {}:{}-{}:{}", line, col, end_line, end_col);
+            }
         }
-        println!("\nSummary: {} total ({} prod, {} test)", refs.len(), prod_count, test_count);
+        println!(
+            "\nSummary: {} usages in {} files ({} prod, {} test)",
+            refs.len(),
+            by_file.len(),
+            prod_count,
+            test_count
+        );
     }
 
     Ok(())

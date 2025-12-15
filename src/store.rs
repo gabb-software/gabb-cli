@@ -53,6 +53,17 @@ pub struct FileStats {
     pub interface_count: i64,
 }
 
+/// File dependency record for tracking imports/includes.
+#[derive(Debug, Clone)]
+pub struct FileDependency {
+    /// The file that contains the import/use statement
+    pub from_file: String,
+    /// The file being imported
+    pub to_file: String,
+    /// Type of dependency (e.g., "import", "use", "include")
+    pub kind: String,
+}
+
 #[derive(Debug)]
 pub struct IndexStore {
     conn: RefCell<Connection>,
@@ -146,6 +157,16 @@ impl IndexStore {
                 interface_count INTEGER NOT NULL DEFAULT 0
             );
 
+            -- File dependency graph for incremental rebuild ordering
+            CREATE TABLE IF NOT EXISTS file_dependencies (
+                from_file TEXT NOT NULL,
+                to_file TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                PRIMARY KEY (from_file, to_file)
+            );
+            -- Index for reverse dependency lookups (find all files that depend on X)
+            CREATE INDEX IF NOT EXISTS idx_deps_to_file ON file_dependencies(to_file, from_file);
+
             -- Triggers to keep FTS5 index in sync with symbols table
             CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
                 INSERT INTO symbols_fts(rowid, name, qualifier)
@@ -200,9 +221,14 @@ impl IndexStore {
             "DELETE FROM symbols WHERE file = ?1",
             params![path_str.clone()],
         )?;
-        self.conn
-            .borrow()
-            .execute("DELETE FROM file_stats WHERE file = ?1", params![path_str])?;
+        self.conn.borrow().execute(
+            "DELETE FROM file_stats WHERE file = ?1",
+            params![path_str.clone()],
+        )?;
+        self.conn.borrow().execute(
+            "DELETE FROM file_dependencies WHERE from_file = ?1 OR to_file = ?1",
+            params![path_str],
+        )?;
         Ok(())
     }
 
@@ -361,6 +387,81 @@ impl IndexStore {
             class_count: row.get(2)?,
             interface_count: row.get(3)?,
         })
+    }
+
+    /// Save file dependencies for a source file, replacing any existing dependencies.
+    pub fn save_file_dependencies(
+        &self,
+        from_file: &str,
+        dependencies: &[FileDependency],
+    ) -> Result<()> {
+        let from_norm = normalize_path(Path::new(from_file));
+        let conn = &mut *self.conn.borrow_mut();
+        let tx = conn.transaction()?;
+
+        // Remove existing dependencies for this file
+        tx.execute(
+            "DELETE FROM file_dependencies WHERE from_file = ?1",
+            params![from_norm],
+        )?;
+
+        // Insert new dependencies
+        for dep in dependencies {
+            tx.execute(
+                "INSERT OR REPLACE INTO file_dependencies(from_file, to_file, kind) VALUES (?1, ?2, ?3)",
+                params![from_norm, normalize_path(Path::new(&dep.to_file)), dep.kind],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Get files that a given file depends on (imports/uses).
+    pub fn get_file_dependencies(&self, file: &str) -> Result<Vec<FileDependency>> {
+        let file_norm = normalize_path(Path::new(file));
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare_cached(
+            "SELECT from_file, to_file, kind FROM file_dependencies WHERE from_file = ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![file_norm], |row| {
+                Ok(FileDependency {
+                    from_file: row.get(0)?,
+                    to_file: row.get(1)?,
+                    kind: row.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Get files that depend on a given file (reverse dependencies for invalidation).
+    pub fn get_dependents(&self, file: &str) -> Result<Vec<String>> {
+        let file_norm = normalize_path(Path::new(file));
+        let conn = self.conn.borrow();
+        let mut stmt =
+            conn.prepare_cached("SELECT from_file FROM file_dependencies WHERE to_file = ?1")?;
+        let rows = stmt
+            .query_map(params![file_norm], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Get all file dependencies in the workspace.
+    pub fn get_all_dependencies(&self) -> Result<Vec<FileDependency>> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare("SELECT from_file, to_file, kind FROM file_dependencies")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(FileDependency {
+                    from_file: row.get(0)?,
+                    to_file: row.get(1)?,
+                    kind: row.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     pub fn list_symbols(
@@ -1577,6 +1678,147 @@ mod tests {
         assert_eq!(total.symbol_count, 8);
         assert_eq!(total.function_count, 5);
         assert_eq!(total.class_count, 3);
+    }
+
+    /// Test file dependency graph basic operations
+    #[test]
+    fn file_dependency_graph_save_and_query() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        // Save dependencies for main.ts -> [utils.ts, types.ts]
+        let main_deps = vec![
+            FileDependency {
+                from_file: "src/main.ts".into(),
+                to_file: "src/utils.ts".into(),
+                kind: "import".into(),
+            },
+            FileDependency {
+                from_file: "src/main.ts".into(),
+                to_file: "src/types.ts".into(),
+                kind: "import".into(),
+            },
+        ];
+        store
+            .save_file_dependencies("src/main.ts", &main_deps)
+            .unwrap();
+
+        // Save dependencies for utils.ts -> [types.ts]
+        let utils_deps = vec![FileDependency {
+            from_file: "src/utils.ts".into(),
+            to_file: "src/types.ts".into(),
+            kind: "import".into(),
+        }];
+        store
+            .save_file_dependencies("src/utils.ts", &utils_deps)
+            .unwrap();
+
+        // Query dependencies of main.ts
+        let main_imports = store.get_file_dependencies("src/main.ts").unwrap();
+        assert_eq!(main_imports.len(), 2);
+
+        // Query reverse dependencies (what files depend on types.ts)
+        let types_dependents = store.get_dependents("src/types.ts").unwrap();
+        assert_eq!(types_dependents.len(), 2);
+        assert!(types_dependents.contains(&"src/main.ts".to_string()));
+        assert!(types_dependents.contains(&"src/utils.ts".to_string()));
+    }
+
+    /// Test dependency graph replacement on re-index
+    #[test]
+    fn file_dependency_replaces_on_reindex() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        // Initial dependencies
+        let deps1 = vec![FileDependency {
+            from_file: "src/main.ts".into(),
+            to_file: "src/old.ts".into(),
+            kind: "import".into(),
+        }];
+        store.save_file_dependencies("src/main.ts", &deps1).unwrap();
+
+        // Re-index with new dependencies
+        let deps2 = vec![FileDependency {
+            from_file: "src/main.ts".into(),
+            to_file: "src/new.ts".into(),
+            kind: "import".into(),
+        }];
+        store.save_file_dependencies("src/main.ts", &deps2).unwrap();
+
+        // Verify old dependencies are replaced
+        let deps = store.get_file_dependencies("src/main.ts").unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].to_file, "src/new.ts");
+    }
+
+    /// Test dependencies are cleaned up when file is removed
+    #[test]
+    fn file_dependencies_removed_with_file() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        // Create a file to remove
+        let file_path = dir.path().join("removeme.ts");
+        let file_rec = mk_file_record(&file_path);
+        let sym = mk_symbol(&file_path, "test");
+        store.save_file_index(&file_rec, &[sym], &[], &[]).unwrap();
+
+        // Add dependencies both directions
+        let deps = vec![FileDependency {
+            from_file: normalize_path(&file_path),
+            to_file: "other.ts".into(),
+            kind: "import".into(),
+        }];
+        store
+            .save_file_dependencies(&normalize_path(&file_path), &deps)
+            .unwrap();
+
+        // Also make another file depend on removeme.ts
+        let other_deps = vec![FileDependency {
+            from_file: "depends_on_removeme.ts".into(),
+            to_file: normalize_path(&file_path),
+            kind: "import".into(),
+        }];
+        store
+            .save_file_dependencies("depends_on_removeme.ts", &other_deps)
+            .unwrap();
+
+        // Verify dependencies exist
+        assert_eq!(
+            store
+                .get_file_dependencies(&normalize_path(&file_path))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .get_dependents(&normalize_path(&file_path))
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Remove file
+        store.remove_file(&file_path).unwrap();
+
+        // Verify both directions of dependencies are cleaned up
+        assert!(
+            store
+                .get_file_dependencies(&normalize_path(&file_path))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .get_dependents(&normalize_path(&file_path))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     /// Test that repeated queries use statement caching for better performance

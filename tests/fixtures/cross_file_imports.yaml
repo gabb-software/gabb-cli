@@ -1,0 +1,29 @@
+name: cross_file_imports
+description: Tests cross-file import resolution in TypeScript
+
+files:
+  utils.ts: |
+    export function helper() { return 42; }
+    export interface Config { debug: boolean; }
+
+  main.ts: |
+    import { helper, Config } from './utils';
+    const result = helper();
+    const config: Config = { debug: true };
+
+  aliased.ts: |
+    import { helper as h } from './utils';
+    const x = h();
+
+expected:
+  symbols:
+    - name: helper
+      kind: function
+      file: utils.ts
+    - name: Config
+      kind: interface
+      file: utils.ts
+
+  dependencies:
+    main.ts: [utils.ts]
+    aliased.ts: [utils.ts]

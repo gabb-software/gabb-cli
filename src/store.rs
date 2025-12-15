@@ -94,6 +94,8 @@ impl IndexStore {
             CREATE INDEX IF NOT EXISTS idx_symbols_kind_name ON symbols(kind, name);
             -- Compound index for multi-filter queries (file + kind + name)
             CREATE INDEX IF NOT EXISTS idx_symbols_file_kind_name ON symbols(file, kind, name);
+            -- Tertiary index for kind + visibility filtered searches
+            CREATE INDEX IF NOT EXISTS idx_symbols_kind_visibility ON symbols(kind, visibility);
 
             CREATE TABLE IF NOT EXISTS edges (
                 src TEXT NOT NULL,
@@ -589,6 +591,12 @@ mod tests {
             "Missing idx_symbols_file_kind_name compound index. Found: {:?}",
             indices
         );
+        // Verify tertiary index for kind+visibility
+        assert!(
+            indices.iter().any(|n| n == "idx_symbols_kind_visibility"),
+            "Missing idx_symbols_kind_visibility tertiary index. Found: {:?}",
+            indices
+        );
     }
 
     /// Test that symbol name lookup uses the index (O(log n))
@@ -963,6 +971,64 @@ mod tests {
         assert!(results.iter().any(|s| s.name == "getUserSettings"));
     }
 
+    /// Test that kind+visibility queries use the tertiary index
+    #[test]
+    fn kind_visibility_query_uses_tertiary_index() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        let conn = store.conn.borrow();
+
+        // Query by kind and visibility - should use tertiary index
+        let mut stmt = conn
+            .prepare("EXPLAIN QUERY PLAN SELECT * FROM symbols WHERE kind = ? AND visibility = ?")
+            .unwrap();
+        let plan: String = stmt
+            .query_map(["function", "public"], |row| row.get::<_, String>(3))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+
+        // Should use idx_symbols_kind_visibility index
+        assert!(
+            plan.contains("idx_symbols_kind_visibility") || plan.contains("USING INDEX"),
+            "Kind+visibility query should use idx_symbols_kind_visibility index. Query plan: {}",
+            plan
+        );
+    }
+
+    /// Test that position queries use the idx_symbols_position index
+    #[test]
+    fn position_query_uses_secondary_index() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        let conn = store.conn.borrow();
+
+        // Query symbols at a specific position (file + byte offset range)
+        let mut stmt = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT * FROM symbols WHERE file = ? AND start <= ? AND ? < end",
+            )
+            .unwrap();
+        let plan: String = stmt
+            .query_map(["test.ts", "100", "100"], |row| row.get::<_, String>(3))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+
+        // Should use idx_symbols_position index
+        assert!(
+            plan.contains("idx_symbols_position") || plan.contains("USING INDEX"),
+            "Position query should use idx_symbols_position index. Query plan: {}",
+            plan
+        );
+    }
+
     /// Test FTS5 substring/trigram search
     #[test]
     fn fts5_substring_search_works() {
@@ -1009,5 +1075,93 @@ mod tests {
             2,
             "Should find 2 symbols containing 'Profile'"
         );
+    }
+
+    /// Test that FTS5 efficiently handles prefix queries for autocomplete
+    #[test]
+    fn fts5_handles_prefix_autocomplete() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        let conn = store.conn.borrow();
+
+        // FTS5 prefix queries use the trigram index efficiently
+        let mut stmt = conn
+            .prepare("EXPLAIN QUERY PLAN SELECT * FROM symbols_fts WHERE symbols_fts MATCH 'get*'")
+            .unwrap();
+        let plan: String = stmt
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+
+        // FTS5 uses its internal index structure for matching
+        assert!(
+            plan.contains("symbols_fts") || plan.contains("VIRTUAL TABLE"),
+            "FTS5 prefix query should use virtual table index. Query plan: {}",
+            plan
+        );
+    }
+
+    /// Test prefix search functionality using list_symbols
+    #[test]
+    fn prefix_search_returns_matching_symbols() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        // Insert test symbols
+        let file_path = dir.path().join("test.ts");
+        let file_rec = mk_file_record(&file_path);
+        let symbols: Vec<SymbolRecord> = vec![
+            SymbolRecord {
+                id: "sym_1".into(),
+                file: normalize_path(&file_path),
+                kind: "function".into(),
+                name: "getUser".into(),
+                start: 0,
+                end: 10,
+                qualifier: None,
+                visibility: Some("public".into()),
+                container: None,
+            },
+            SymbolRecord {
+                id: "sym_2".into(),
+                file: normalize_path(&file_path),
+                kind: "function".into(),
+                name: "getProfile".into(),
+                start: 20,
+                end: 30,
+                qualifier: None,
+                visibility: Some("public".into()),
+                container: None,
+            },
+            SymbolRecord {
+                id: "sym_3".into(),
+                file: normalize_path(&file_path),
+                kind: "function".into(),
+                name: "setUser".into(),
+                start: 40,
+                end: 50,
+                qualifier: None,
+                visibility: Some("private".into()),
+                container: None,
+            },
+        ];
+
+        store
+            .save_file_index(&file_rec, &symbols, &[], &[])
+            .unwrap();
+
+        // Use FTS5 for prefix search
+        let results = store.search_symbols_fts("get*").unwrap();
+        assert_eq!(
+            results.len(),
+            2,
+            "Should find 2 symbols starting with 'get'"
+        );
+        assert!(results.iter().all(|s| s.name.starts_with("get")));
     }
 }

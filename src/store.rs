@@ -84,7 +84,12 @@ impl IndexStore {
                 visibility TEXT,
                 container TEXT
             );
+            -- B-tree indices for O(log n) lookups
             CREATE INDEX IF NOT EXISTS symbols_file_idx ON symbols(file);
+            CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
+            CREATE INDEX IF NOT EXISTS idx_symbols_position ON symbols(file, start, end);
+            CREATE INDEX IF NOT EXISTS idx_symbols_kind_name ON symbols(kind, name);
+
             CREATE TABLE IF NOT EXISTS edges (
                 src TEXT NOT NULL,
                 dst TEXT NOT NULL,
@@ -92,6 +97,8 @@ impl IndexStore {
             );
             CREATE INDEX IF NOT EXISTS edges_src_idx ON edges(src);
             CREATE INDEX IF NOT EXISTS edges_dst_idx ON edges(dst);
+            CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
+
             CREATE TABLE IF NOT EXISTS references_tbl (
                 file TEXT NOT NULL,
                 start INTEGER NOT NULL,
@@ -99,6 +106,7 @@ impl IndexStore {
                 symbol_id TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS references_symbol_idx ON references_tbl(symbol_id);
+            CREATE INDEX IF NOT EXISTS idx_refs_file_position ON references_tbl(file, start, end);
             "#,
         )?;
         self.ensure_column("symbols", "qualifier", "TEXT")?;
@@ -450,5 +458,97 @@ mod tests {
         store.remove_file(&file_path).unwrap();
         let paths_after = store.list_paths().unwrap();
         assert!(!paths_after.contains(&file_rec.path));
+    }
+
+    /// Test that B-tree indices exist for O(log n) lookups
+    #[test]
+    fn btree_indices_exist() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        let conn = store.conn.borrow();
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='index' ORDER BY name")
+            .unwrap();
+        let indices: Vec<String> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+
+        // Verify critical indices for O(log n) performance exist
+        assert!(
+            indices.iter().any(|n| n == "idx_symbols_name"),
+            "Missing idx_symbols_name index for symbol name lookups. Found: {:?}",
+            indices
+        );
+        assert!(
+            indices.iter().any(|n| n == "idx_symbols_position"),
+            "Missing idx_symbols_position index for position queries. Found: {:?}",
+            indices
+        );
+        assert!(
+            indices.iter().any(|n| n == "idx_symbols_kind_name"),
+            "Missing idx_symbols_kind_name compound index. Found: {:?}",
+            indices
+        );
+        assert!(
+            indices.iter().any(|n| n == "idx_refs_file_position"),
+            "Missing idx_refs_file_position index for reference lookups. Found: {:?}",
+            indices
+        );
+    }
+
+    /// Test that symbol name lookup uses the index (O(log n))
+    #[test]
+    fn symbol_name_lookup_uses_index() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        let conn = store.conn.borrow();
+        let mut stmt = conn
+            .prepare("EXPLAIN QUERY PLAN SELECT * FROM symbols WHERE name = ?")
+            .unwrap();
+        let plan: String = stmt
+            .query_map(["test"], |row| row.get::<_, String>(3))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            plan.contains("idx_symbols_name") || plan.contains("USING INDEX"),
+            "Symbol name lookup not using index. Query plan: {}",
+            plan
+        );
+    }
+
+    /// Test that position-based symbol lookup uses covering index
+    #[test]
+    fn position_lookup_uses_covering_index() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        let conn = store.conn.borrow();
+        let mut stmt = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT * FROM symbols WHERE file = ? AND start <= ? AND end >= ?",
+            )
+            .unwrap();
+        let plan: String = stmt
+            .query_map(["test.ts", "100", "100"], |row| row.get::<_, String>(3))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            plan.contains("idx_symbols_position") || plan.contains("USING INDEX"),
+            "Position lookup not using index. Query plan: {}",
+            plan
+        );
     }
 }

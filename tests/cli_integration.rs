@@ -214,3 +214,122 @@ fn symbols_and_implementation_commands_work() {
         usages_stdout
     );
 }
+
+#[test]
+fn file_modification_identifies_dependents() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    // Create a base module
+    let base_path = root.join("base.ts");
+    fs::write(&base_path, "export interface Base { id: number; }\n").unwrap();
+
+    // Create a module that imports from base
+    let derived_path = root.join("derived.ts");
+    fs::write(
+        &derived_path,
+        "import { Base } from './base';\nexport interface Derived extends Base { name: string; }\n",
+    )
+    .unwrap();
+
+    // Create a module that imports from derived
+    let consumer_path = root.join("consumer.ts");
+    fs::write(
+        &consumer_path,
+        "import { Derived } from './derived';\nconst obj: Derived = { id: 1, name: 'test' };\n",
+    )
+    .unwrap();
+
+    let db_path = root.join(".gabb/index.db");
+    let store = IndexStore::open(&db_path).unwrap();
+    indexer::build_full_index(root, &store).unwrap();
+
+    // Get the invalidation set for base.ts - should include derived.ts
+    let base_canonical = base_path.canonicalize().unwrap();
+    let base_str = base_canonical.to_string_lossy().to_string();
+    let invalidation_set = store.get_invalidation_set(&base_str).unwrap();
+
+    // Verify that derived.ts is in the invalidation set
+    let derived_canonical = derived_path.canonicalize().unwrap();
+    let derived_str = derived_canonical.to_string_lossy().to_string();
+    assert!(
+        invalidation_set.contains(&derived_str),
+        "expected derived.ts in invalidation set for base.ts, got: {:?}",
+        invalidation_set
+    );
+
+    // Verify transitive invalidation - consumer.ts should also be affected
+    // when base.ts changes (via derived.ts)
+    let consumer_canonical = consumer_path.canonicalize().unwrap();
+    let consumer_str = consumer_canonical.to_string_lossy().to_string();
+    assert!(
+        invalidation_set.contains(&consumer_str),
+        "expected consumer.ts in invalidation set (transitive), got: {:?}",
+        invalidation_set
+    );
+}
+
+#[test]
+fn circular_dependency_handling() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    // Create files with circular imports
+    // a.ts imports from b.ts
+    let a_path = root.join("a.ts");
+    fs::write(
+        &a_path,
+        "import { funcB } from './b';\nexport function funcA() { return funcB(); }\n",
+    )
+    .unwrap();
+
+    // b.ts imports from a.ts (circular!)
+    let b_path = root.join("b.ts");
+    fs::write(
+        &b_path,
+        "import { funcA } from './a';\nexport function funcB() { return 42; }\nexport function useA() { return funcA(); }\n",
+    )
+    .unwrap();
+
+    let db_path = root.join(".gabb/index.db");
+    let store = IndexStore::open(&db_path).unwrap();
+
+    // Indexing should complete without hanging or crashing
+    indexer::build_full_index(root, &store).unwrap();
+
+    // Verify both files were indexed
+    let symbols = store.list_symbols(None, None, None, None).unwrap();
+    assert!(
+        symbols.iter().any(|s| s.name == "funcA"),
+        "funcA should be indexed"
+    );
+    assert!(
+        symbols.iter().any(|s| s.name == "funcB"),
+        "funcB should be indexed"
+    );
+
+    // Verify dependencies were recorded (both directions)
+    let deps = store.get_all_dependencies().unwrap();
+    assert!(deps.len() >= 2, "expected at least 2 dependencies for circular imports");
+
+    // Verify topological sort handles cycles gracefully
+    let all_files: Vec<String> = deps.iter().map(|d| d.from_file.clone()).collect();
+    let sorted = store.topological_sort(&all_files).unwrap();
+    assert!(
+        !sorted.is_empty(),
+        "topological sort should return files even with cycles"
+    );
+
+    // Verify invalidation set doesn't infinite loop
+    let a_canonical = a_path.canonicalize().unwrap();
+    let a_str = a_canonical.to_string_lossy().to_string();
+    let invalidation_set = store.get_invalidation_set(&a_str).unwrap();
+
+    // Both files should be in each other's invalidation sets
+    let b_canonical = b_path.canonicalize().unwrap();
+    let b_str = b_canonical.to_string_lossy().to_string();
+    assert!(
+        invalidation_set.contains(&b_str),
+        "b.ts should be in a.ts invalidation set"
+    );
+}

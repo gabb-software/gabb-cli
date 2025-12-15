@@ -86,55 +86,62 @@ pub fn index_file(
         &symbol_by_name,
     );
 
-    // Extract file dependencies from mod declarations
-    let dependencies = collect_mod_dependencies(path, source, &tree.root_node());
+    // Extract file dependencies from mod and use declarations
+    let dependencies = collect_dependencies(path, source, &tree.root_node());
 
     Ok((symbols, edges, references, dependencies))
 }
 
-/// Extract file dependencies from `mod` declarations (e.g., `mod foo;`).
-/// These indicate that this file depends on foo.rs or foo/mod.rs.
-fn collect_mod_dependencies(path: &Path, source: &str, root: &Node) -> Vec<FileDependency> {
+/// Extract file dependencies from `mod` and `use` declarations.
+/// - `mod foo;` indicates dependency on foo.rs or foo/mod.rs
+/// - `use crate::foo::Bar;` indicates dependency on the foo module
+fn collect_dependencies(path: &Path, source: &str, root: &Node) -> Vec<FileDependency> {
     let mut dependencies = Vec::new();
     let mut seen = HashSet::new();
     let from_file = normalize_path(path);
     let parent = path.parent();
 
+    // Find the crate root directory (where Cargo.toml or lib.rs/main.rs is)
+    let crate_root = find_crate_root(path);
+
     let mut stack = vec![*root];
     while let Some(node) = stack.pop() {
-        // Look for `mod foo;` declarations (without body)
+        // Handle `mod foo;` declarations (without body)
         if node.kind() == "mod_item" {
             let has_body = node
                 .children(&mut node.walk())
                 .any(|c| c.kind() == "declaration_list");
             if !has_body {
-                // This is a `mod foo;` declaration - it references an external file
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let mod_name = slice(source, &name_node);
-                    if !mod_name.is_empty() && !seen.contains(&mod_name) {
-                        seen.insert(mod_name.clone());
-
-                        // Try to resolve the module file path
-                        if let Some(parent_dir) = parent {
-                            // Try mod_name.rs
-                            let mod_file = parent_dir.join(format!("{}.rs", mod_name));
-                            let mod_dir_file = parent_dir.join(&mod_name).join("mod.rs");
-
-                            let to_file = if mod_file.exists() {
-                                normalize_path(&mod_file)
-                            } else if mod_dir_file.exists() {
-                                normalize_path(&mod_dir_file)
-                            } else {
-                                // Use the expected path even if it doesn't exist
-                                normalize_path(&mod_file)
-                            };
-
+                    let key = format!("mod:{}", mod_name);
+                    if !mod_name.is_empty() && !seen.contains(&key) {
+                        seen.insert(key);
+                        if let Some(to_file) = resolve_mod_path(parent, &mod_name) {
                             dependencies.push(FileDependency {
                                 from_file: from_file.clone(),
                                 to_file,
                                 kind: "mod".to_string(),
                             });
                         }
+                    }
+                }
+            }
+        }
+
+        // Handle `use` declarations
+        if node.kind() == "use_declaration" {
+            if let Some(use_path) = extract_use_path(source, &node) {
+                // Only handle crate-local paths (crate::, super::, self::)
+                if let Some(resolved) = resolve_use_path(&use_path, path, crate_root.as_deref()) {
+                    let key = format!("use:{}", resolved);
+                    if !seen.contains(&key) {
+                        seen.insert(key.clone());
+                        dependencies.push(FileDependency {
+                            from_file: from_file.clone(),
+                            to_file: resolved,
+                            kind: "use".to_string(),
+                        });
                     }
                 }
             }
@@ -147,6 +154,114 @@ fn collect_mod_dependencies(path: &Path, source: &str, root: &Node) -> Vec<FileD
     }
 
     dependencies
+}
+
+/// Resolve a mod declaration to a file path
+fn resolve_mod_path(parent: Option<&Path>, mod_name: &str) -> Option<String> {
+    let parent_dir = parent?;
+    let mod_file = parent_dir.join(format!("{}.rs", mod_name));
+    let mod_dir_file = parent_dir.join(mod_name).join("mod.rs");
+
+    if mod_file.exists() {
+        Some(normalize_path(&mod_file))
+    } else if mod_dir_file.exists() {
+        Some(normalize_path(&mod_dir_file))
+    } else {
+        // Use the expected path even if it doesn't exist
+        Some(normalize_path(&mod_file))
+    }
+}
+
+/// Extract the path from a use declaration
+fn extract_use_path(source: &str, node: &Node) -> Option<String> {
+    // Find the use path - could be scoped_identifier, identifier, or use_wildcard
+    let mut stack = vec![*node];
+    while let Some(n) = stack.pop() {
+        match n.kind() {
+            "scoped_identifier" | "identifier" | "scoped_use_list" => {
+                return Some(slice(source, &n));
+            }
+            _ => {
+                let mut cursor = n.walk();
+                for child in n.children(&mut cursor) {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Resolve a use path to a file path
+/// Handles crate::, super::, and self:: prefixes
+fn resolve_use_path(use_path: &str, current_file: &Path, crate_root: Option<&Path>) -> Option<String> {
+    let parts: Vec<&str> = use_path.split("::").collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let first = parts[0];
+    let parent = current_file.parent()?;
+
+    match first {
+        "crate" => {
+            // crate:: paths start from crate root
+            let root = crate_root?;
+            if parts.len() < 2 {
+                return None;
+            }
+            // Take the first module after crate::
+            let module_name = parts[1];
+            resolve_mod_path(Some(root), module_name)
+        }
+        "super" => {
+            // super:: paths go up one directory
+            let grandparent = parent.parent()?;
+            if parts.len() < 2 {
+                // Just `use super::*` - depend on parent mod.rs
+                let mod_file = grandparent.join("mod.rs");
+                if mod_file.exists() {
+                    return Some(normalize_path(&mod_file));
+                }
+                return None;
+            }
+            let module_name = parts[1];
+            resolve_mod_path(Some(grandparent), module_name)
+        }
+        "self" => {
+            // self:: paths are in current module - no external dependency
+            None
+        }
+        _ => {
+            // External crate or other - no local file dependency
+            None
+        }
+    }
+}
+
+/// Find the crate root directory (where src/lib.rs or src/main.rs is)
+fn find_crate_root(path: &Path) -> Option<std::path::PathBuf> {
+    let mut current = path.parent()?;
+
+    // Walk up looking for src directory with lib.rs or main.rs
+    for _ in 0..10 {
+        // Check if we're in a src directory
+        if current.file_name().and_then(|n| n.to_str()) == Some("src") {
+            return Some(current.to_path_buf());
+        }
+
+        // Check if there's a Cargo.toml here (we're at crate root)
+        if current.join("Cargo.toml").exists() {
+            let src = current.join("src");
+            if src.exists() {
+                return Some(src);
+            }
+            return Some(current.to_path_buf());
+        }
+
+        current = current.parent()?;
+    }
+    None
 }
 
 #[allow(clippy::too_many_arguments, clippy::only_used_in_recursion)]

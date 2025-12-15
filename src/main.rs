@@ -55,15 +55,15 @@ enum Commands {
         /// Path to the SQLite index database
         #[arg(long, default_value = ".gabb/index.db")]
         db: PathBuf,
-        /// Source file containing the reference
+        /// Source file containing the reference. You can optionally append :line:character (1-based), e.g. ./src/daemon.rs:18:5
         #[arg(long)]
         file: PathBuf,
-        /// 1-based line number within the file
+        /// 1-based line number within the file (optional if provided in --file)
         #[arg(long)]
-        line: usize,
-        /// 1-based character offset within the line
+        line: Option<usize>,
+        /// 1-based character offset within the line (optional if provided in --file)
         #[arg(long, alias = "col")]
-        character: usize,
+        character: Option<usize>,
         /// Limit the number of results
         #[arg(long)]
         limit: Option<usize>,
@@ -139,13 +139,14 @@ fn list_symbols(
 fn find_implementation(
     db: &Path,
     file: &PathBuf,
-    line: usize,
-    character: usize,
+    line: Option<usize>,
+    character: Option<usize>,
     limit: Option<usize>,
     kind: Option<&str>,
 ) -> Result<()> {
     let store = store::IndexStore::open(db)?;
-    let target = resolve_symbol_at(&store, file, line, character)?;
+    let (file, line, character) = parse_file_position(file, line, character)?;
+    let target = resolve_symbol_at(&store, &file, line, character)?;
 
     let mut impl_edges = store.edges_to(&target.id)?;
     let impl_ids: Vec<String> = impl_edges.drain(..).map(|e| e.src).collect();
@@ -384,6 +385,21 @@ mod tests {
         assert!(symbol.file.ends_with("indexer.rs"));
     }
 
+    #[test]
+    fn parses_line_character_from_file_arg() {
+        let file = PathBuf::from("src/daemon.rs:18:5");
+        let (path, line, character) = parse_file_position(&file, None, None).unwrap();
+        assert_eq!(path, PathBuf::from("src/daemon.rs"));
+        assert_eq!(line, 18);
+        assert_eq!(character, 5);
+
+        // Explicit args override embedded position.
+        let (path2, line2, character2) = parse_file_position(&file, Some(1), Some(2)).unwrap();
+        assert_eq!(path2, PathBuf::from("src/daemon.rs"));
+        assert_eq!(line2, 1);
+        assert_eq!(character2, 2);
+    }
+
     fn offset_to_line_char(buf: &[u8], offset: usize) -> Option<(usize, usize)> {
         let mut line = 1usize;
         let mut col = 1usize;
@@ -404,4 +420,35 @@ mod tests {
             None
         }
     }
+}
+fn parse_file_position(
+    file: &PathBuf,
+    line: Option<usize>,
+    character: Option<usize>,
+) -> Result<(PathBuf, usize, usize)> {
+    let (base, embedded) = split_file_and_embedded_position(file);
+    if let (Some(l), Some(c)) = (line, character) {
+        return Ok((base, l, c));
+    }
+    if let Some((l, c)) = embedded {
+        return Ok((base, l, c));
+    }
+
+    Err(anyhow!(
+        "must provide --line and --character or include :line:character in --file"
+    ))
+}
+
+fn split_file_and_embedded_position(file: &PathBuf) -> (PathBuf, Option<(usize, usize)>) {
+    let raw = file.to_string_lossy();
+    let mut parts = raw.rsplitn(3, ':');
+    let c_str = parts.next();
+    let l_str = parts.next();
+    let rest = parts.next();
+    if let (Some(rest), Some(l), Some(c)) = (rest, l_str, c_str) {
+        if let (Ok(line), Ok(character)) = (l.parse::<usize>(), c.parse::<usize>()) {
+            return (PathBuf::from(rest), Some((line, character)));
+        }
+    }
+    (file.clone(), None)
 }

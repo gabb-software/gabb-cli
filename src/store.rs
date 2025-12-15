@@ -43,6 +43,16 @@ pub struct ReferenceRecord {
     pub symbol_id: String,
 }
 
+/// Pre-computed file statistics for O(1) aggregate queries.
+#[derive(Debug, Clone)]
+pub struct FileStats {
+    pub file: String,
+    pub symbol_count: i64,
+    pub function_count: i64,
+    pub class_count: i64,
+    pub interface_count: i64,
+}
+
 #[derive(Debug)]
 pub struct IndexStore {
     conn: RefCell<Connection>,
@@ -127,6 +137,15 @@ impl IndexStore {
                 tokenize='trigram'
             );
 
+            -- Pre-computed aggregates for instant file statistics
+            CREATE TABLE IF NOT EXISTS file_stats (
+                file TEXT PRIMARY KEY,
+                symbol_count INTEGER NOT NULL DEFAULT 0,
+                function_count INTEGER NOT NULL DEFAULT 0,
+                class_count INTEGER NOT NULL DEFAULT 0,
+                interface_count INTEGER NOT NULL DEFAULT 0
+            );
+
             -- Triggers to keep FTS5 index in sync with symbols table
             CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
                 INSERT INTO symbols_fts(rowid, name, qualifier)
@@ -177,9 +196,13 @@ impl IndexStore {
             "DELETE FROM edges WHERE src IN (SELECT id FROM symbols WHERE file = ?1)",
             params![path_str.clone()],
         )?;
+        self.conn.borrow().execute(
+            "DELETE FROM symbols WHERE file = ?1",
+            params![path_str.clone()],
+        )?;
         self.conn
             .borrow()
-            .execute("DELETE FROM symbols WHERE file = ?1", params![path_str])?;
+            .execute("DELETE FROM file_stats WHERE file = ?1", params![path_str])?;
         Ok(())
     }
 
@@ -262,6 +285,31 @@ impl IndexStore {
             ],
         )?;
 
+        // Update pre-computed aggregates for file statistics
+        let symbol_count = symbols.len() as i64;
+        let function_count = symbols.iter().filter(|s| s.kind == "function").count() as i64;
+        let class_count = symbols.iter().filter(|s| s.kind == "class").count() as i64;
+        let interface_count = symbols.iter().filter(|s| s.kind == "interface").count() as i64;
+
+        tx.execute(
+            r#"
+            INSERT INTO file_stats(file, symbol_count, function_count, class_count, interface_count)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(file) DO UPDATE SET
+                symbol_count = excluded.symbol_count,
+                function_count = excluded.function_count,
+                class_count = excluded.class_count,
+                interface_count = excluded.interface_count
+            "#,
+            params![
+                file_record.path,
+                symbol_count,
+                function_count,
+                class_count,
+                interface_count
+            ],
+        )?;
+
         tx.commit()?;
         Ok(())
     }
@@ -275,6 +323,44 @@ impl IndexStore {
     pub fn analyze(&self) -> Result<()> {
         self.conn.borrow().execute_batch("ANALYZE")?;
         Ok(())
+    }
+
+    /// Get pre-computed statistics for a file (O(1) lookup).
+    pub fn get_file_stats(&self, file: &str) -> Result<Option<FileStats>> {
+        let file_norm = normalize_path(Path::new(file));
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(
+            "SELECT file, symbol_count, function_count, class_count, interface_count FROM file_stats WHERE file = ?1",
+        )?;
+        let mut rows = stmt.query(params![file_norm])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(FileStats {
+                file: row.get(0)?,
+                symbol_count: row.get(1)?,
+                function_count: row.get(2)?,
+                class_count: row.get(3)?,
+                interface_count: row.get(4)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Get total symbol counts across all indexed files (O(1) aggregate).
+    pub fn get_total_stats(&self) -> Result<FileStats> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(SUM(symbol_count), 0), COALESCE(SUM(function_count), 0), COALESCE(SUM(class_count), 0), COALESCE(SUM(interface_count), 0) FROM file_stats",
+        )?;
+        let mut rows = stmt.query([])?;
+        let row = rows.next()?.expect("aggregate query always returns a row");
+        Ok(FileStats {
+            file: "".into(),
+            symbol_count: row.get(0)?,
+            function_count: row.get(1)?,
+            class_count: row.get(2)?,
+            interface_count: row.get(3)?,
+        })
     }
 
     pub fn list_symbols(
@@ -1307,6 +1393,219 @@ mod tests {
             .unwrap();
         assert_eq!(page4.len(), 1, "Fourth page should have 1 item");
         assert!(cursor4.is_none(), "No more pages");
+    }
+
+    /// Test cold-start query performance (<50ms requirement)
+    #[test]
+    fn cold_start_query_completes_under_50ms() {
+        use std::time::Instant;
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+
+        // Create and populate index with substantial data
+        {
+            let store = IndexStore::open(&db_path).unwrap();
+            let file_path = dir.path().join("test.ts");
+            let file_rec = mk_file_record(&file_path);
+
+            // Insert 1000 symbols to simulate a real codebase
+            let symbols: Vec<SymbolRecord> = (0..1000)
+                .map(|i| SymbolRecord {
+                    id: format!("sym_{:04}", i),
+                    file: normalize_path(&file_path),
+                    kind: if i % 3 == 0 {
+                        "function"
+                    } else if i % 3 == 1 {
+                        "class"
+                    } else {
+                        "interface"
+                    }
+                    .into(),
+                    name: format!("symbol_{}", i),
+                    start: i * 100,
+                    end: i * 100 + 50,
+                    qualifier: Some(format!("module{}", i % 10)),
+                    visibility: Some(if i % 2 == 0 { "public" } else { "private" }.into()),
+                    container: None,
+                })
+                .collect();
+
+            store
+                .save_file_index(&file_rec, &symbols, &[], &[])
+                .unwrap();
+            store.analyze().unwrap();
+        } // Close the store to simulate cold start
+
+        // Cold start: open fresh connection and query
+        let start = Instant::now();
+        let store = IndexStore::open(&db_path).unwrap();
+
+        // Perform typical queries
+        let _symbols = store.list_symbols(None, Some("function"), None, Some(10));
+        let _search = store.search_symbols_fts("symbol*");
+        let _paginated = store.list_symbols_paginated(None, None, None, None, 10);
+
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_millis() < 50,
+            "Cold-start queries should complete in <50ms, took {}ms",
+            elapsed.as_millis()
+        );
+    }
+
+    /// Test pre-computed file statistics are maintained correctly
+    #[test]
+    fn file_stats_aggregates_computed_on_index() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        let file_path = dir.path().join("test.ts");
+        let file_rec = mk_file_record(&file_path);
+        let symbols: Vec<SymbolRecord> = vec![
+            SymbolRecord {
+                id: "sym_1".into(),
+                file: normalize_path(&file_path),
+                kind: "function".into(),
+                name: "func1".into(),
+                start: 0,
+                end: 10,
+                qualifier: None,
+                visibility: None,
+                container: None,
+            },
+            SymbolRecord {
+                id: "sym_2".into(),
+                file: normalize_path(&file_path),
+                kind: "function".into(),
+                name: "func2".into(),
+                start: 20,
+                end: 30,
+                qualifier: None,
+                visibility: None,
+                container: None,
+            },
+            SymbolRecord {
+                id: "sym_3".into(),
+                file: normalize_path(&file_path),
+                kind: "class".into(),
+                name: "MyClass".into(),
+                start: 40,
+                end: 50,
+                qualifier: None,
+                visibility: None,
+                container: None,
+            },
+            SymbolRecord {
+                id: "sym_4".into(),
+                file: normalize_path(&file_path),
+                kind: "interface".into(),
+                name: "MyInterface".into(),
+                start: 60,
+                end: 70,
+                qualifier: None,
+                visibility: None,
+                container: None,
+            },
+        ];
+
+        store
+            .save_file_index(&file_rec, &symbols, &[], &[])
+            .unwrap();
+
+        // Verify file stats
+        let stats = store
+            .get_file_stats(&normalize_path(&file_path))
+            .unwrap()
+            .expect("file stats should exist");
+        assert_eq!(stats.symbol_count, 4);
+        assert_eq!(stats.function_count, 2);
+        assert_eq!(stats.class_count, 1);
+        assert_eq!(stats.interface_count, 1);
+    }
+
+    /// Test total stats aggregate across multiple files
+    #[test]
+    fn total_stats_aggregates_all_files() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        // Index first file
+        let file1 = dir.path().join("file1.ts");
+        let rec1 = mk_file_record(&file1);
+        let syms1: Vec<SymbolRecord> = (0..5)
+            .map(|i| SymbolRecord {
+                id: format!("f1_sym_{}", i),
+                file: normalize_path(&file1),
+                kind: "function".into(),
+                name: format!("func_{}", i),
+                start: i * 10,
+                end: i * 10 + 5,
+                qualifier: None,
+                visibility: None,
+                container: None,
+            })
+            .collect();
+        store.save_file_index(&rec1, &syms1, &[], &[]).unwrap();
+
+        // Index second file
+        let file2 = dir.path().join("file2.ts");
+        let rec2 = mk_file_record(&file2);
+        let syms2: Vec<SymbolRecord> = (0..3)
+            .map(|i| SymbolRecord {
+                id: format!("f2_sym_{}", i),
+                file: normalize_path(&file2),
+                kind: "class".into(),
+                name: format!("Class_{}", i),
+                start: i * 10,
+                end: i * 10 + 5,
+                qualifier: None,
+                visibility: None,
+                container: None,
+            })
+            .collect();
+        store.save_file_index(&rec2, &syms2, &[], &[]).unwrap();
+
+        // Verify total stats
+        let total = store.get_total_stats().unwrap();
+        assert_eq!(total.symbol_count, 8);
+        assert_eq!(total.function_count, 5);
+        assert_eq!(total.class_count, 3);
+    }
+
+    /// Test file stats are cleaned up on file removal
+    #[test]
+    fn file_stats_removed_with_file() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        let file_path = dir.path().join("test.ts");
+        let file_rec = mk_file_record(&file_path);
+        let sym = mk_symbol(&file_path, "test");
+
+        store.save_file_index(&file_rec, &[sym], &[], &[]).unwrap();
+
+        // Verify stats exist
+        assert!(
+            store
+                .get_file_stats(&normalize_path(&file_path))
+                .unwrap()
+                .is_some()
+        );
+
+        // Remove file
+        store.remove_file(&file_path).unwrap();
+
+        // Verify stats removed
+        assert!(
+            store
+                .get_file_stats(&normalize_path(&file_path))
+                .unwrap()
+                .is_none()
+        );
     }
 
     /// Test that SQLite pragmas are configured for performance

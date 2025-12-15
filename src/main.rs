@@ -368,13 +368,20 @@ fn find_usages(
             .filter_map(|r| {
                 let (line, col) = offset_to_line_char_in_file(&r.file, r.start).ok()?;
                 let (end_line, end_col) = offset_to_line_char_in_file(&r.file, r.end).ok()?;
+                let is_test = is_test_file(&r.file);
                 Some(serde_json::json!({
                     "file": r.file,
                     "start": { "line": line, "character": col },
-                    "end": { "line": end_line, "character": end_col }
+                    "end": { "line": end_line, "character": end_col },
+                    "context": if is_test { "test" } else { "prod" }
                 }))
             })
             .collect();
+
+        // Count test vs prod usages
+        let test_count = json_usages.iter().filter(|u| u["context"] == "test").count();
+        let prod_count = json_usages.len() - test_count;
+
         let output = serde_json::json!({
             "target": {
                 "id": target.id,
@@ -384,7 +391,12 @@ fn find_usages(
                 "start": { "line": t_line, "character": t_col },
                 "end": { "line": t_end_line, "character": t_end_col }
             },
-            "usages": json_usages
+            "usages": json_usages,
+            "summary": {
+                "total": json_usages.len(),
+                "prod": prod_count,
+                "test": test_count
+            }
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(());
@@ -399,14 +411,24 @@ fn find_usages(
     if refs.is_empty() {
         println!("No usages found.");
     } else {
-        for r in refs {
+        let mut test_count = 0;
+        let mut prod_count = 0;
+        for r in &refs {
             let (line, col) = offset_to_line_char_in_file(&r.file, r.start)?;
             let (end_line, end_col) = offset_to_line_char_in_file(&r.file, r.end)?;
+            let is_test = is_test_file(&r.file);
+            let context = if is_test { "[test]" } else { "[prod]" };
+            if is_test {
+                test_count += 1;
+            } else {
+                prod_count += 1;
+            }
             println!(
-                "{:<10} {:<30} {} [{}:{}-{}:{}]",
-                "usage", target.name, r.file, line, col, end_line, end_col
+                "{:<10} {:<6} {:<30} {} [{}:{}-{}:{}]",
+                "usage", context, target.name, r.file, line, col, end_line, end_col
             );
         }
+        println!("\nSummary: {} total ({} prod, {} test)", refs.len(), prod_count, test_count);
     }
 
     Ok(())
@@ -725,6 +747,47 @@ fn line_char_to_offset(buf: &[u8], line: usize, character: usize) -> Option<usiz
     Some(idx + col)
 }
 
+/// Check if a file path indicates a test file based on common conventions.
+/// Returns true for:
+/// - Files in `tests/`, `__tests__/`, `test/` directories
+/// - Files matching `*_test.rs`, `*_spec.rs` (Rust)
+/// - Files matching `*.test.ts`, `*.spec.ts`, `*.test.tsx`, `*.spec.tsx` (TypeScript)
+fn is_test_file(path: &str) -> bool {
+    let path_lower = path.to_lowercase();
+
+    // Check directory patterns
+    if path_lower.contains("/tests/")
+        || path_lower.contains("/__tests__/")
+        || path_lower.contains("/test/")
+        || path_lower.contains("/spec/")
+    {
+        return true;
+    }
+
+    // Check file name patterns
+    if let Some(file_name) = path.rsplit('/').next() {
+        let name_lower = file_name.to_lowercase();
+        // Rust patterns
+        if name_lower.ends_with("_test.rs") || name_lower.ends_with("_spec.rs") {
+            return true;
+        }
+        // TypeScript/JavaScript patterns
+        if name_lower.ends_with(".test.ts")
+            || name_lower.ends_with(".spec.ts")
+            || name_lower.ends_with(".test.tsx")
+            || name_lower.ends_with(".spec.tsx")
+            || name_lower.ends_with(".test.js")
+            || name_lower.ends_with(".spec.js")
+            || name_lower.ends_with(".test.jsx")
+            || name_lower.ends_with(".spec.jsx")
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
 fn offset_to_line_char_in_file(path: &str, offset: i64) -> Result<(usize, usize)> {
     let buf = fs::read(path).with_context(|| format!("failed to read {}", path))?;
     offset_to_line_char_in_buf(&buf, offset as usize)
@@ -925,6 +988,38 @@ mod tests {
         } else {
             None
         }
+    }
+
+    #[test]
+    fn detects_test_files_correctly() {
+        // Directory-based patterns
+        assert!(is_test_file("/project/tests/foo.rs"));
+        assert!(is_test_file("/project/src/__tests__/component.test.ts"));
+        assert!(is_test_file("/project/test/helper.ts"));
+        assert!(is_test_file("/project/spec/models.spec.ts"));
+
+        // Rust file patterns
+        assert!(is_test_file("/project/src/indexer_test.rs"));
+        assert!(is_test_file("/project/src/store_spec.rs"));
+
+        // TypeScript/JavaScript file patterns
+        assert!(is_test_file("/project/src/utils.test.ts"));
+        assert!(is_test_file("/project/src/utils.spec.ts"));
+        assert!(is_test_file("/project/src/component.test.tsx"));
+        assert!(is_test_file("/project/src/component.spec.tsx"));
+        assert!(is_test_file("/project/src/helper.test.js"));
+        assert!(is_test_file("/project/src/helper.spec.jsx"));
+
+        // Production files (should return false)
+        assert!(!is_test_file("/project/src/main.rs"));
+        assert!(!is_test_file("/project/src/lib.rs"));
+        assert!(!is_test_file("/project/src/utils.ts"));
+        assert!(!is_test_file("/project/src/component.tsx"));
+        assert!(!is_test_file("/project/src/index.js"));
+
+        // Edge cases
+        assert!(!is_test_file("/project/src/testing.ts")); // "testing" != "test"
+        assert!(!is_test_file("/project/src/contest.ts")); // contains "test" but not a test file
     }
 }
 fn parse_file_position(

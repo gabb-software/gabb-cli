@@ -18,6 +18,10 @@ struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     verbose: u8,
 
+    /// Output results as JSON (for agent integration)
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -116,6 +120,7 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     init_logging(cli.verbose);
+    let json_output = cli.json;
 
     match cli.command {
         Commands::Daemon { root, db, rebuild } => daemon::run(&root, &db, rebuild),
@@ -125,7 +130,7 @@ fn main() -> Result<()> {
             kind,
             name,
             limit,
-        } => list_symbols(&db, file.as_ref(), kind.as_deref(), name.as_deref(), limit),
+        } => list_symbols(&db, file.as_ref(), kind.as_deref(), name.as_deref(), limit, json_output),
         Commands::Implementation {
             db,
             file,
@@ -133,21 +138,21 @@ fn main() -> Result<()> {
             character,
             limit,
             kind,
-        } => find_implementation(&db, &file, line, character, limit, kind.as_deref()),
+        } => find_implementation(&db, &file, line, character, limit, kind.as_deref(), json_output),
         Commands::Usages {
             db,
             file,
             line,
             character,
             limit,
-        } => find_usages(&db, &file, line, character, limit),
+        } => find_usages(&db, &file, line, character, limit, json_output),
         Commands::Symbol {
             db,
             name,
             file,
             kind,
             limit,
-        } => show_symbol(&db, &name, file.as_ref(), kind.as_deref(), limit),
+        } => show_symbol(&db, &name, file.as_ref(), kind.as_deref(), limit, json_output),
     }
 }
 
@@ -168,10 +173,34 @@ fn list_symbols(
     kind: Option<&str>,
     name: Option<&str>,
     limit: Option<usize>,
+    json_output: bool,
 ) -> Result<()> {
     let store = store::IndexStore::open(db)?;
     let file_str = file.map(|p| p.to_string_lossy().to_string());
     let symbols: Vec<SymbolRecord> = store.list_symbols(file_str.as_deref(), kind, name, limit)?;
+
+    if json_output {
+        let json_symbols: Vec<serde_json::Value> = symbols
+            .iter()
+            .filter_map(|sym| {
+                let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start).ok()?;
+                let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end).ok()?;
+                Some(serde_json::json!({
+                    "id": sym.id,
+                    "name": sym.name,
+                    "kind": sym.kind,
+                    "file": sym.file,
+                    "start": { "line": line, "character": col },
+                    "end": { "line": end_line, "character": end_col },
+                    "visibility": sym.visibility,
+                    "container": sym.container,
+                    "qualifier": sym.qualifier
+                }))
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json_symbols)?);
+        return Ok(());
+    }
 
     for sym in symbols {
         let container = sym
@@ -197,6 +226,7 @@ fn find_implementation(
     character: Option<usize>,
     limit: Option<usize>,
     kind: Option<&str>,
+    json_output: bool,
 ) -> Result<()> {
     let store = store::IndexStore::open(db)?;
     let (file, line, character) = parse_file_position(file, line, character)?;
@@ -231,6 +261,41 @@ fn find_implementation(
         impl_symbols.truncate(lim);
     }
 
+    if json_output {
+        let (t_line, t_col) = offset_to_line_char_in_file(&target.file, target.start)?;
+        let (t_end_line, t_end_col) = offset_to_line_char_in_file(&target.file, target.end)?;
+        let json_implementations: Vec<serde_json::Value> = impl_symbols
+            .iter()
+            .filter_map(|sym| {
+                let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start).ok()?;
+                let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end).ok()?;
+                Some(serde_json::json!({
+                    "id": sym.id,
+                    "name": sym.name,
+                    "kind": sym.kind,
+                    "file": sym.file,
+                    "start": { "line": line, "character": col },
+                    "end": { "line": end_line, "character": end_col },
+                    "visibility": sym.visibility,
+                    "container": sym.container
+                }))
+            })
+            .collect();
+        let output = serde_json::json!({
+            "target": {
+                "id": target.id,
+                "name": target.name,
+                "kind": target.kind,
+                "file": target.file,
+                "start": { "line": t_line, "character": t_col },
+                "end": { "line": t_end_line, "character": t_end_col }
+            },
+            "implementations": json_implementations
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
+    }
+
     let (t_line, t_col) = offset_to_line_char_in_file(&target.file, target.start)?;
     let (t_end_line, t_end_col) = offset_to_line_char_in_file(&target.file, target.end)?;
     println!(
@@ -260,6 +325,7 @@ fn find_usages(
     line: Option<usize>,
     character: Option<usize>,
     limit: Option<usize>,
+    json_output: bool,
 ) -> Result<()> {
     let store = store::IndexStore::open(db)?;
     let (file, line, character) = parse_file_position(file, line, character)?;
@@ -294,6 +360,36 @@ fn find_usages(
         refs.truncate(lim);
     }
 
+    if json_output {
+        let (t_line, t_col) = offset_to_line_char_in_file(&target.file, target.start)?;
+        let (t_end_line, t_end_col) = offset_to_line_char_in_file(&target.file, target.end)?;
+        let json_usages: Vec<serde_json::Value> = refs
+            .iter()
+            .filter_map(|r| {
+                let (line, col) = offset_to_line_char_in_file(&r.file, r.start).ok()?;
+                let (end_line, end_col) = offset_to_line_char_in_file(&r.file, r.end).ok()?;
+                Some(serde_json::json!({
+                    "file": r.file,
+                    "start": { "line": line, "character": col },
+                    "end": { "line": end_line, "character": end_col }
+                }))
+            })
+            .collect();
+        let output = serde_json::json!({
+            "target": {
+                "id": target.id,
+                "name": target.name,
+                "kind": target.kind,
+                "file": target.file,
+                "start": { "line": t_line, "character": t_col },
+                "end": { "line": t_end_line, "character": t_end_col }
+            },
+            "usages": json_usages
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
+    }
+
     let (t_line, t_col) = offset_to_line_char_in_file(&target.file, target.start)?;
     let (t_end_line, t_end_col) = offset_to_line_char_in_file(&target.file, target.end)?;
     println!(
@@ -322,18 +418,77 @@ fn show_symbol(
     file: Option<&PathBuf>,
     kind: Option<&str>,
     limit: Option<usize>,
+    json_output: bool,
 ) -> Result<()> {
     let store = store::IndexStore::open(db)?;
     let file_str = file.map(|p| p.to_string_lossy().to_string());
     let symbols = store.list_symbols(file_str.as_deref(), kind, Some(name), limit)?;
 
     if symbols.is_empty() {
-        println!("No symbols found for name '{}'.", name);
+        if json_output {
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "symbols": [] }))?);
+        } else {
+            println!("No symbols found for name '{}'.", name);
+        }
         return Ok(());
     }
 
     let workspace_root = workspace_root_from_db(db)
         .unwrap_or_else(|_| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    if json_output {
+        let json_symbols: Vec<serde_json::Value> = symbols
+            .iter()
+            .filter_map(|sym| {
+                let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start).ok()?;
+                let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end).ok()?;
+                let outgoing = store.edges_from(&sym.id).ok()?;
+                let incoming = store.edges_to(&sym.id).ok()?;
+                let mut refs = store.references_for_symbol(&sym.id).ok()?;
+                if refs.is_empty() {
+                    refs = search_usages_by_name(&store, sym, &workspace_root).ok()?;
+                }
+
+                let json_refs: Vec<serde_json::Value> = refs
+                    .iter()
+                    .filter_map(|r| {
+                        let (r_line, r_col) = offset_to_line_char_in_file(&r.file, r.start).ok()?;
+                        let (r_end_line, r_end_col) = offset_to_line_char_in_file(&r.file, r.end).ok()?;
+                        Some(serde_json::json!({
+                            "file": r.file,
+                            "start": { "line": r_line, "character": r_col },
+                            "end": { "line": r_end_line, "character": r_end_col }
+                        }))
+                    })
+                    .collect();
+
+                Some(serde_json::json!({
+                    "id": sym.id,
+                    "name": sym.name,
+                    "kind": sym.kind,
+                    "file": sym.file,
+                    "start": { "line": line, "character": col },
+                    "end": { "line": end_line, "character": end_col },
+                    "visibility": sym.visibility,
+                    "container": sym.container,
+                    "qualifier": sym.qualifier,
+                    "outgoing_edges": outgoing.iter().map(|e| serde_json::json!({
+                        "src": e.src,
+                        "dst": e.dst,
+                        "kind": e.kind
+                    })).collect::<Vec<_>>(),
+                    "incoming_edges": incoming.iter().map(|e| serde_json::json!({
+                        "src": e.src,
+                        "dst": e.dst,
+                        "kind": e.kind
+                    })).collect::<Vec<_>>(),
+                    "references": json_refs
+                }))
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "symbols": json_symbols }))?);
+        return Ok(());
+    }
 
     for sym in symbols.iter() {
         let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start)?;

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use rusqlite::types::Value;
 use rusqlite::{Connection, params, params_from_iter};
+use serde::Serialize;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fs;
@@ -15,7 +16,7 @@ pub struct FileRecord {
     pub indexed_at: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SymbolRecord {
     pub id: String,
     pub file: String,
@@ -28,14 +29,14 @@ pub struct SymbolRecord {
     pub container: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct EdgeRecord {
     pub src: String,
     pub dst: String,
     pub kind: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ReferenceRecord {
     pub file: String,
     pub start: i64,

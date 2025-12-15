@@ -3,7 +3,7 @@ mod indexer;
 mod languages;
 mod store;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -191,21 +191,78 @@ fn resolve_symbol_at(
         .ok_or_else(|| anyhow!("could not map line/character to byte offset"))?
         as i64;
 
-    let mut best: Option<SymbolRecord> = None;
+    let ident = find_identifier_at_offset(&contents, offset as usize);
+
+    if let Some(def) = narrowest_symbol_covering(&symbols, offset, ident.as_deref()) {
+        return Ok(def);
+    }
+
+    let ident = ident.ok_or_else(|| anyhow!("no symbol found at {}:{}", file.display(), line))?;
+    let mut candidates = store.list_symbols(None, None, Some(&ident), None)?;
+    if candidates.is_empty() {
+        bail!("no symbol found at {}:{}", file.display(), line);
+    }
+    candidates.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then_with(|| a.qualifier.cmp(&b.qualifier))
+            .then_with(|| a.start.cmp(&b.start))
+    });
+    Ok(candidates.remove(0))
+}
+
+fn narrowest_symbol_covering(
+    symbols: &[SymbolRecord],
+    offset: i64,
+    ident: Option<&str>,
+) -> Option<SymbolRecord> {
+    let mut best: Option<&SymbolRecord> = None;
     for sym in symbols {
         if sym.start <= offset && offset < sym.end {
+            if let Some(id) = ident {
+                if !identifier_matches_symbol(id, sym) {
+                    continue;
+                }
+            }
             let span = sym.end - sym.start;
-            if best
-                .as_ref()
-                .map(|b| span < (b.end - b.start))
-                .unwrap_or(true)
-            {
+            if best.map(|b| span < (b.end - b.start)).unwrap_or(true) {
                 best = Some(sym);
             }
         }
     }
 
-    best.ok_or_else(|| anyhow!("no symbol found at {}:{}", file.display(), line))
+    best.cloned()
+}
+
+fn find_identifier_at_offset(buf: &[u8], offset: usize) -> Option<String> {
+    if offset >= buf.len() {
+        return None;
+    }
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut start = offset;
+    while start > 0 && is_ident(buf[start.saturating_sub(1)]) {
+        start -= 1;
+    }
+    let mut end = offset;
+    while end < buf.len() && is_ident(buf[end]) {
+        end += 1;
+    }
+    if start == end {
+        return None;
+    }
+    std::str::from_utf8(&buf[start..end])
+        .ok()
+        .map(|s| s.to_string())
+}
+
+fn identifier_matches_symbol(ident: &str, sym: &SymbolRecord) -> bool {
+    if ident == sym.name {
+        return true;
+    }
+    matches!(
+        ident,
+        "fn" | "function" | "class" | "interface" | "enum" | "struct" | "impl"
+    )
 }
 
 fn line_char_to_offset(buf: &[u8], line: usize, character: usize) -> Option<usize> {
@@ -255,5 +312,55 @@ mod tests {
         let symbol = resolve_symbol_at(&store, &file_path, 1, 10).unwrap();
         assert_eq!(symbol.name, "foo");
         assert_eq!(symbol.kind, "function");
+    }
+
+    #[test]
+    fn resolves_reference_by_name_when_not_a_definition() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let impl_path = root.join("indexer.rs");
+        let caller_path = root.join("daemon.rs");
+        fs::write(
+            &impl_path,
+            r#"
+                fn build_full_index() {}
+            "#,
+        )
+        .unwrap();
+        let call_src = r#"fn main() { build_full_index(); }"#;
+        fs::write(&caller_path, call_src).unwrap();
+        let caller_path = caller_path.canonicalize().unwrap();
+
+        let db_path = root.join(".gabb/index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+        indexer::build_full_index(root, &store).unwrap();
+
+        let offset = call_src.find("build_full_index").unwrap();
+        let (line, character) = offset_to_line_char(call_src.as_bytes(), offset).unwrap();
+
+        let symbol = resolve_symbol_at(&store, &caller_path, line, character).unwrap();
+        assert_eq!(symbol.name, "build_full_index");
+        assert!(symbol.file.ends_with("indexer.rs"));
+    }
+
+    fn offset_to_line_char(buf: &[u8], offset: usize) -> Option<(usize, usize)> {
+        let mut line = 1usize;
+        let mut col = 1usize;
+        for (i, b) in buf.iter().enumerate() {
+            if i == offset {
+                return Some((line, col));
+            }
+            if *b == b'\n' {
+                line += 1;
+                col = 1;
+            } else {
+                col += 1;
+            }
+        }
+        if offset == buf.len() {
+            Some((line, col))
+        } else {
+            None
+        }
     }
 }

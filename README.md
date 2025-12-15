@@ -53,7 +53,8 @@ Implementation command:
 
 Usages command:
 - Identify the symbol under the cursor (same options as above)
-- Lists recorded references; if none are present, falls back to a name-based scan across indexed files (best effort)
+- Lists recorded references from the index; if none are present (e.g., cross-file Rust calls not yet linked), falls back to a best-effort name scan across all indexed files in the workspace root
+- Skips matches that overlap the symbol’s own definition span
 
 What gets indexed:
 - Files: `*.ts`, `*.tsx`, `*.rs`

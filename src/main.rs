@@ -6,9 +6,10 @@ mod store;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use std::collections::HashSet;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use store::SymbolRecord;
+use store::{SymbolRecord, normalize_path};
 use walkdir::WalkDir;
 
 #[derive(Parser, Debug)]
@@ -224,11 +225,11 @@ fn find_usages(
     let store = store::IndexStore::open(db)?;
     let (file, line, character) = parse_file_position(file, line, character)?;
     let target = resolve_symbol_at(&store, &file, line, character)?;
-    let workspace_root = workspace_root_from_db(db).or_else(|_| {
+    let workspace_root = workspace_root_from_db(db).unwrap_or_else(|_| {
         file.parent()
             .map(Path::to_path_buf)
-            .ok_or_else(|| anyhow!("could not infer workspace root"))
-    })?;
+            .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+    });
 
     let mut refs = store.references_for_symbol(&target.id)?;
     if refs.is_empty() {
@@ -378,8 +379,9 @@ fn search_usages_by_name(
     }
 
     for path in paths {
-        let path_str = path.to_string_lossy().to_string();
-        let buf = match fs::read(&path) {
+        let canonical = path.canonicalize().unwrap_or(path.clone());
+        let path_str = normalize_path(&canonical);
+        let buf = match fs::read(&canonical) {
             Ok(b) => b,
             Err(_) => continue,
         };
@@ -480,7 +482,14 @@ fn offset_to_line_char_in_buf(buf: &[u8], offset: usize) -> Option<(usize, usize
 }
 
 fn workspace_root_from_db(db: &Path) -> Result<PathBuf> {
-    let path = db.canonicalize().unwrap_or_else(|_| db.to_path_buf());
+    let abs = if db.is_absolute() {
+        db.to_path_buf()
+    } else {
+        env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(db)
+    };
+    let path = abs.canonicalize().unwrap_or(abs);
     if let Some(parent) = path.parent() {
         if parent.file_name().and_then(|n| n.to_str()) == Some(".gabb") {
             if let Some(root) = parent.parent() {
@@ -570,6 +579,46 @@ mod tests {
                 && r.start >= symbol.start
                 && r.end <= symbol.end)),
             "should not return reference within definition"
+        );
+    }
+
+    #[test]
+    fn finds_usages_across_files_via_fallback() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let def_path = root.join("lib.rs");
+        let caller_path = root.join("main.rs");
+        fs::write(
+            &def_path,
+            r#"
+                pub fn build_full_index() {}
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            &caller_path,
+            r#"
+                fn main() {
+                    build_full_index();
+                }
+            "#,
+        )
+        .unwrap();
+
+        let db_path = root.join(".gabb/index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+        indexer::build_full_index(root, &store).unwrap();
+
+        let def_path = def_path.canonicalize().unwrap();
+        let src = fs::read_to_string(&def_path).unwrap();
+        let offset = src.find("build_full_index").unwrap();
+        let (line, character) = offset_to_line_char(src.as_bytes(), offset).unwrap();
+        let symbol = resolve_symbol_at(&store, &def_path, line, character).unwrap();
+        let refs = super::search_usages_by_name(&store, &symbol, root).unwrap();
+        assert!(
+            refs.iter().any(|r| r.file.ends_with("main.rs")),
+            "expected a usage in main.rs, got {:?}",
+            refs
         );
     }
 

@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use store::SymbolRecord;
+use walkdir::WalkDir;
 
 #[derive(Parser, Debug)]
 #[command(name = "gabb", about = "Gabb CLI indexing daemon")]
@@ -223,10 +224,15 @@ fn find_usages(
     let store = store::IndexStore::open(db)?;
     let (file, line, character) = parse_file_position(file, line, character)?;
     let target = resolve_symbol_at(&store, &file, line, character)?;
+    let workspace_root = workspace_root_from_db(db).or_else(|_| {
+        file.parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| anyhow!("could not infer workspace root"))
+    })?;
 
     let mut refs = store.references_for_symbol(&target.id)?;
     if refs.is_empty() {
-        refs = search_usages_by_name(&store, &target)?;
+        refs = search_usages_by_name(&store, &target, &workspace_root)?;
     }
     let mut seen = HashSet::new();
     refs.retain(|r| {
@@ -356,10 +362,23 @@ fn dedup_symbols(symbols: &mut Vec<SymbolRecord>) {
 fn search_usages_by_name(
     store: &store::IndexStore,
     target: &SymbolRecord,
+    workspace_root: &Path,
 ) -> Result<Vec<store::ReferenceRecord>> {
     let mut refs = Vec::new();
-    let paths = store.list_paths()?;
+    let mut paths: Vec<PathBuf> = store.list_paths()?.into_iter().map(PathBuf::from).collect();
+    for entry in WalkDir::new(workspace_root)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file() && indexer::is_indexed_file(e.path()))
+    {
+        let p = entry.path().to_path_buf();
+        if !paths.contains(&p) {
+            paths.push(p);
+        }
+    }
+
     for path in paths {
+        let path_str = path.to_string_lossy().to_string();
         let buf = match fs::read(&path) {
             Ok(b) => b,
             Err(_) => continue,
@@ -377,12 +396,12 @@ fn search_usages_by_name(
             let abs = idx + pos;
             let start = abs as i64;
             let end = (abs + target.name.len()) as i64;
-            if path == target.file && start >= target.start && end <= target.end {
+            if path_str == target.file && start >= target.start && end <= target.end {
                 idx += pos + target.name.len();
                 continue;
             }
             refs.push(store::ReferenceRecord {
-                file: path.clone(),
+                file: path_str.clone(),
                 start,
                 end,
                 symbol_id: target.id.clone(),
@@ -460,6 +479,19 @@ fn offset_to_line_char_in_buf(buf: &[u8], offset: usize) -> Option<(usize, usize
     }
 }
 
+fn workspace_root_from_db(db: &Path) -> Result<PathBuf> {
+    let path = db.canonicalize().unwrap_or_else(|_| db.to_path_buf());
+    if let Some(parent) = path.parent() {
+        if parent.file_name().and_then(|n| n.to_str()) == Some(".gabb") {
+            if let Some(root) = parent.parent() {
+                return Ok(root.to_path_buf());
+            }
+        }
+        return Ok(parent.to_path_buf());
+    }
+    Err(anyhow!("could not derive workspace root from db path"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -528,7 +560,11 @@ mod tests {
         indexer::build_full_index(root, &store).unwrap();
 
         let symbol = resolve_symbol_at(&store, &file_path, 1, 10).unwrap();
-        let refs = super::search_usages_by_name(&store, &symbol).unwrap();
+        let root = db_path
+            .parent()
+            .and_then(|p| p.parent())
+            .unwrap_or_else(|| root);
+        let refs = super::search_usages_by_name(&store, &symbol, root).unwrap();
         assert!(
             refs.iter().all(|r| !(r.file == symbol.file
                 && r.start >= symbol.start
@@ -593,13 +629,14 @@ fn parse_file_position(
 
 fn split_file_and_embedded_position(file: &PathBuf) -> (PathBuf, Option<(usize, usize)>) {
     let raw = file.to_string_lossy();
-    let mut parts = raw.rsplitn(3, ':');
-    let c_str = parts.next();
-    let l_str = parts.next();
-    let rest = parts.next();
-    if let (Some(rest), Some(l), Some(c)) = (rest, l_str, c_str) {
-        if let (Ok(line), Ok(character)) = (l.parse::<usize>(), c.parse::<usize>()) {
-            return (PathBuf::from(rest), Some((line, character)));
+    let parts: Vec<&str> = raw.split(':').collect();
+    if parts.len() >= 3 {
+        if let (Ok(line), Ok(character)) = (
+            parts[parts.len() - 2].parse::<usize>(),
+            parts[parts.len() - 1].parse::<usize>(),
+        ) {
+            let base = parts[..parts.len() - 2].join(":");
+            return (PathBuf::from(base), Some((line, character)));
         }
     }
     (file.clone(), None)

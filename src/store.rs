@@ -67,6 +67,9 @@ impl IndexStore {
         self.conn.borrow().execute_batch(
             r#"
             PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA cache_size = -64000;
+            PRAGMA mmap_size = 268435456;
             CREATE TABLE IF NOT EXISTS files (
                 path TEXT PRIMARY KEY,
                 hash TEXT NOT NULL,
@@ -233,6 +236,13 @@ impl IndexStore {
 
     pub fn db_path(&self) -> &Path {
         &self.db_path
+    }
+
+    /// Update query optimizer statistics for better index usage.
+    /// Should be called after bulk indexing operations.
+    pub fn analyze(&self) -> Result<()> {
+        self.conn.borrow().execute_batch("ANALYZE")?;
+        Ok(())
     }
 
     pub fn list_symbols(
@@ -548,6 +558,72 @@ mod tests {
         assert!(
             plan.contains("idx_symbols_position") || plan.contains("USING INDEX"),
             "Position lookup not using index. Query plan: {}",
+            plan
+        );
+    }
+
+    /// Test that ANALYZE updates optimizer statistics
+    #[test]
+    fn analyze_updates_statistics() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        // Insert some test data
+        let file_path = dir.path().join("test.ts");
+        let file_rec = mk_file_record(&file_path);
+        let symbols: Vec<SymbolRecord> = (0..100)
+            .map(|i| SymbolRecord {
+                id: format!("sym_{}", i),
+                file: normalize_path(&file_path),
+                kind: "function".into(),
+                name: format!("func_{}", i),
+                start: i * 10,
+                end: i * 10 + 5,
+                qualifier: None,
+                visibility: None,
+                container: None,
+            })
+            .collect();
+
+        store
+            .save_file_index(&file_rec, &symbols, &[], &[])
+            .unwrap();
+
+        // Run ANALYZE
+        store.analyze().unwrap();
+
+        // Verify sqlite_stat1 table exists and has data
+        let conn = store.conn.borrow();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sqlite_stat1", [], |row| row.get(0))
+            .unwrap();
+        assert!(count > 0, "ANALYZE should populate sqlite_stat1 table");
+    }
+
+    /// Test O(log n) performance characteristic by verifying index usage on filtered queries
+    #[test]
+    fn filtered_queries_use_compound_index() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        let conn = store.conn.borrow();
+
+        // Test kind+name compound index
+        let mut stmt = conn
+            .prepare("EXPLAIN QUERY PLAN SELECT * FROM symbols WHERE kind = ? AND name = ?")
+            .unwrap();
+        let plan: String = stmt
+            .query_map(["function", "test"], |row| row.get::<_, String>(3))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            plan.contains("idx_symbols_kind_name") || plan.contains("USING INDEX"),
+            "Kind+name query not using compound index. Query plan: {}",
             plan
         );
     }

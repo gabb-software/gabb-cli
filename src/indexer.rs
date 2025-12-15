@@ -42,6 +42,10 @@ pub fn build_full_index(root: &Path, store: &IndexStore) -> Result<()> {
     }
 
     prune_deleted(store, &seen)?;
+
+    // Update query optimizer statistics for optimal index usage
+    store.analyze()?;
+
     info!("Full index complete. DB at {}", store.db_path().display());
     Ok(())
 }

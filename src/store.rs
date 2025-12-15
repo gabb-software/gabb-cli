@@ -44,6 +44,8 @@ pub struct ReferenceRecord {
 }
 
 /// Pre-computed file statistics for O(1) aggregate queries.
+/// Used by CLI stats commands and daemon status reporting.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FileStats {
     pub file: String,
@@ -54,6 +56,8 @@ pub struct FileStats {
 }
 
 /// File dependency record for tracking imports/includes.
+/// Used by incremental indexing and dependency graph queries.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FileDependency {
     /// The file that contains the import/use statement
@@ -68,6 +72,8 @@ use std::collections::HashMap;
 
 /// In-memory dependency cache for O(1) lookups.
 /// Caches both forward (file -> dependencies) and reverse (file -> dependents) mappings.
+/// Used by daemon for fast invalidation during file watching.
+#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct DependencyCache {
     /// Forward dependencies: file -> files it depends on
@@ -78,6 +84,7 @@ pub struct DependencyCache {
     populated: bool,
 }
 
+#[allow(dead_code)]
 impl DependencyCache {
     /// Create a new empty cache.
     pub fn new() -> Self {
@@ -439,6 +446,7 @@ impl IndexStore {
     }
 
     /// Get pre-computed statistics for a file (O(1) lookup).
+    #[allow(dead_code)]
     pub fn get_file_stats(&self, file: &str) -> Result<Option<FileStats>> {
         let file_norm = normalize_path(Path::new(file));
         let conn = self.conn.borrow();
@@ -460,6 +468,7 @@ impl IndexStore {
     }
 
     /// Get total symbol counts across all indexed files (O(1) aggregate).
+    #[allow(dead_code)]
     pub fn get_total_stats(&self) -> Result<FileStats> {
         let conn = self.conn.borrow();
         let mut stmt = conn.prepare(
@@ -477,6 +486,7 @@ impl IndexStore {
     }
 
     /// Save file dependencies for a source file, replacing any existing dependencies.
+    #[allow(dead_code)]
     pub fn save_file_dependencies(
         &self,
         from_file: &str,
@@ -505,6 +515,7 @@ impl IndexStore {
     }
 
     /// Get files that a given file depends on (imports/uses).
+    #[allow(dead_code)]
     pub fn get_file_dependencies(&self, file: &str) -> Result<Vec<FileDependency>> {
         let file_norm = normalize_path(Path::new(file));
         let conn = self.conn.borrow();
@@ -524,6 +535,7 @@ impl IndexStore {
     }
 
     /// Get files that depend on a given file (reverse dependencies for invalidation).
+    #[allow(dead_code)]
     pub fn get_dependents(&self, file: &str) -> Result<Vec<String>> {
         let file_norm = normalize_path(Path::new(file));
         let conn = self.conn.borrow();
@@ -536,6 +548,7 @@ impl IndexStore {
     }
 
     /// Get all file dependencies in the workspace.
+    #[allow(dead_code)]
     pub fn get_all_dependencies(&self) -> Result<Vec<FileDependency>> {
         let conn = self.conn.borrow();
         let mut stmt = conn.prepare("SELECT from_file, to_file, kind FROM file_dependencies")?;
@@ -555,6 +568,7 @@ impl IndexStore {
     /// Returns files in an order where dependencies come before dependents.
     /// Uses Kahn's algorithm with O(V + E) complexity.
     /// Files with cycles are appended at the end in arbitrary order.
+    #[allow(dead_code)]
     pub fn topological_sort(&self, files: &[String]) -> Result<Vec<String>> {
         use std::collections::{HashMap, VecDeque};
 
@@ -628,6 +642,7 @@ impl IndexStore {
     /// Get all files that need to be invalidated when a file changes.
     /// Returns the transitive closure of reverse dependencies.
     /// Useful for incremental rebuilds when a source file is modified.
+    #[allow(dead_code)]
     pub fn get_invalidation_set(&self, changed_file: &str) -> Result<Vec<String>> {
         let file_norm = normalize_path(Path::new(changed_file));
         let mut visited = HashSet::new();
@@ -656,6 +671,7 @@ impl IndexStore {
 
     /// Get files that need invalidation for multiple changed files.
     /// Returns the union of invalidation sets, topologically sorted.
+    #[allow(dead_code)]
     pub fn get_batch_invalidation_set(&self, changed_files: &[String]) -> Result<Vec<String>> {
         let mut all_files = HashSet::new();
 
@@ -670,6 +686,7 @@ impl IndexStore {
 
     /// Load all dependencies into a DependencyCache for O(1) lookups.
     /// Call this once at startup for long-running processes.
+    #[allow(dead_code)]
     pub fn load_dependency_cache(&self) -> Result<DependencyCache> {
         let deps = self.get_all_dependencies()?;
         let mut cache = DependencyCache::new();
@@ -821,6 +838,7 @@ impl IndexStore {
     /// Search symbols using FTS5 full-text search.
     /// Supports prefix queries (e.g., "getUser*") and substring matching via trigram tokenization.
     /// Uses cached prepared statement for repeated searches.
+    #[allow(dead_code)]
     pub fn search_symbols_fts(&self, query: &str) -> Result<Vec<SymbolRecord>> {
         let conn = self.conn.borrow();
         let mut stmt = conn.prepare_cached(
@@ -852,6 +870,7 @@ impl IndexStore {
 
     /// Query symbols with cursor-based pagination for streaming large result sets.
     /// Returns (results, next_cursor) where next_cursor can be used to fetch the next page.
+    #[allow(dead_code)]
     pub fn list_symbols_paginated(
         &self,
         file: Option<&str>,

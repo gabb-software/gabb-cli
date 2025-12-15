@@ -115,6 +115,39 @@ enum Commands {
         #[arg(long)]
         limit: Option<usize>,
     },
+    /// Go to definition: find where a symbol is declared
+    Definition {
+        /// Path to the SQLite index database
+        #[arg(long, default_value = ".gabb/index.db")]
+        db: PathBuf,
+        /// Source file containing the reference. You can optionally append :line:character (1-based), e.g. ./src/daemon.rs:18:5
+        #[arg(long)]
+        file: PathBuf,
+        /// 1-based line number within the file (optional if provided in --file)
+        #[arg(long)]
+        line: Option<usize>,
+        /// 1-based character offset within the line (optional if provided in --file)
+        #[arg(long, alias = "col")]
+        character: Option<usize>,
+    },
+    /// Find duplicate code in the codebase
+    Duplicates {
+        /// Path to the SQLite index database
+        #[arg(long, default_value = ".gabb/index.db")]
+        db: PathBuf,
+        /// Only analyze files with uncommitted changes (git working tree)
+        #[arg(long)]
+        uncommitted: bool,
+        /// Only analyze files in git staging area
+        #[arg(long)]
+        staged: bool,
+        /// Only check specific symbol kinds (function, method, class, etc.)
+        #[arg(long)]
+        kind: Option<String>,
+        /// Minimum number of duplicates to report (default: 2)
+        #[arg(long, default_value = "2")]
+        min_count: usize,
+    },
 }
 
 fn main() -> Result<()> {
@@ -153,6 +186,19 @@ fn main() -> Result<()> {
             kind,
             limit,
         } => show_symbol(&db, &name, file.as_ref(), kind.as_deref(), limit, json_output),
+        Commands::Definition {
+            db,
+            file,
+            line,
+            character,
+        } => find_definition(&db, &file, line, character, json_output),
+        Commands::Duplicates {
+            db,
+            uncommitted,
+            staged,
+            kind,
+            min_count,
+        } => find_duplicates(&db, uncommitted, staged, kind.as_deref(), min_count, json_output),
     }
 }
 
@@ -591,6 +637,259 @@ fn show_symbol(
     }
 
     Ok(())
+}
+
+fn find_definition(
+    db: &Path,
+    file: &Path,
+    line: Option<usize>,
+    character: Option<usize>,
+    json_output: bool,
+) -> Result<()> {
+    let store = store::IndexStore::open(db)?;
+    let (file, line, character) = parse_file_position(file, line, character)?;
+    let canonical_file = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+    let file_str = normalize_path(&canonical_file);
+    let contents = fs::read(&canonical_file)?;
+    let offset = line_char_to_offset(&contents, line, character)
+        .ok_or_else(|| anyhow!("could not map line/character to byte offset"))?
+        as i64;
+
+    // First, check if cursor is on a recorded reference - if so, look up its target symbol
+    let definition = if let Some(ref_record) = store.reference_at_position(&file_str, offset)? {
+        // Found a reference - look up the symbol it points to
+        let symbols = store.symbols_by_ids(&[ref_record.symbol_id.clone()])?;
+        if let Some(sym) = symbols.into_iter().next() {
+            sym
+        } else {
+            // Reference exists but symbol not found - fall back to resolve_symbol_at
+            resolve_symbol_at(&store, &file, line, character)?
+        }
+    } else {
+        // No reference at position - use standard resolution
+        resolve_symbol_at(&store, &file, line, character)?
+    };
+
+    if json_output {
+        let (d_line, d_col) = offset_to_line_char_in_file(&definition.file, definition.start)?;
+        let (d_end_line, d_end_col) = offset_to_line_char_in_file(&definition.file, definition.end)?;
+        let output = serde_json::json!({
+            "definition": {
+                "id": definition.id,
+                "name": definition.name,
+                "kind": definition.kind,
+                "file": definition.file,
+                "start": { "line": d_line, "character": d_col },
+                "end": { "line": d_end_line, "character": d_end_col },
+                "visibility": definition.visibility,
+                "container": definition.container,
+                "qualifier": definition.qualifier
+            }
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
+    }
+
+    let (d_line, d_col) = offset_to_line_char_in_file(&definition.file, definition.start)?;
+    let (d_end_line, d_end_col) = offset_to_line_char_in_file(&definition.file, definition.end)?;
+    let container = definition
+        .container
+        .as_deref()
+        .map(|c| format!(" in {c}"))
+        .unwrap_or_default();
+    println!(
+        "Definition: {} {} {} [{}:{}-{}:{}]{}",
+        definition.kind, definition.name, definition.file, d_line, d_col, d_end_line, d_end_col, container
+    );
+
+    Ok(())
+}
+
+fn find_duplicates(
+    db: &Path,
+    uncommitted: bool,
+    staged: bool,
+    kind: Option<&str>,
+    min_count: usize,
+    json_output: bool,
+) -> Result<()> {
+    let store = store::IndexStore::open(db)?;
+    let workspace_root = workspace_root_from_db(db)?;
+
+    // Get file filter based on git flags
+    let file_filter: Option<Vec<String>> = if uncommitted || staged {
+        let files = get_git_changed_files(&workspace_root, uncommitted, staged)?;
+        if files.is_empty() {
+            if json_output {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "groups": [],
+                    "summary": { "total_groups": 0, "total_duplicates": 0 }
+                }))?);
+            } else {
+                println!("No changed files found.");
+            }
+            return Ok(());
+        }
+        Some(files)
+    } else {
+        None
+    };
+
+    let groups = store.find_duplicate_groups(min_count, kind, file_filter.as_deref())?;
+
+    if json_output {
+        let json_groups: Vec<serde_json::Value> = groups
+            .iter()
+            .map(|group| {
+                let symbols: Vec<serde_json::Value> = group
+                    .symbols
+                    .iter()
+                    .filter_map(|sym| {
+                        let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start).ok()?;
+                        let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end).ok()?;
+                        Some(serde_json::json!({
+                            "id": sym.id,
+                            "name": sym.name,
+                            "kind": sym.kind,
+                            "file": sym.file,
+                            "start": { "line": line, "character": col },
+                            "end": { "line": end_line, "character": end_col },
+                            "container": sym.container
+                        }))
+                    })
+                    .collect();
+                serde_json::json!({
+                    "content_hash": group.content_hash,
+                    "count": group.symbols.len(),
+                    "symbols": symbols
+                })
+            })
+            .collect();
+
+        let total_duplicates: usize = groups.iter().map(|g| g.symbols.len()).sum();
+        let output = serde_json::json!({
+            "groups": json_groups,
+            "summary": {
+                "total_groups": groups.len(),
+                "total_duplicates": total_duplicates
+            }
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
+    }
+
+    if groups.is_empty() {
+        println!("No duplicates found.");
+        return Ok(());
+    }
+
+    let total_duplicates: usize = groups.iter().map(|g| g.symbols.len()).sum();
+    println!(
+        "Found {} duplicate groups ({} total symbols)\n",
+        groups.len(),
+        total_duplicates
+    );
+
+    for (i, group) in groups.iter().enumerate() {
+        println!(
+            "Group {} ({} duplicates, hash: {}):",
+            i + 1,
+            group.symbols.len(),
+            &group.content_hash[..8]
+        );
+        for sym in &group.symbols {
+            let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start)?;
+            let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end)?;
+            let container = sym
+                .container
+                .as_deref()
+                .map(|c| format!(" in {c}"))
+                .unwrap_or_default();
+            println!(
+                "  {:<10} {:<30} {} [{}:{}-{}:{}]{container}",
+                sym.kind, sym.name, sym.file, line, col, end_line, end_col
+            );
+        }
+        println!();
+    }
+
+    Ok(())
+}
+
+/// Get list of changed files from git.
+/// If `uncommitted` is true, includes working tree changes (unstaged + staged).
+/// If `staged` is true, includes only staged changes.
+fn get_git_changed_files(
+    workspace_root: &Path,
+    uncommitted: bool,
+    staged: bool,
+) -> Result<Vec<String>> {
+    use std::process::Command;
+
+    let mut files = HashSet::new();
+
+    if staged {
+        // Get staged files only
+        let output = Command::new("git")
+            .args(["diff", "--cached", "--name-only"])
+            .current_dir(workspace_root)
+            .output()
+            .context("failed to run git diff --cached")?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if !line.is_empty() {
+                    let full_path = workspace_root.join(line);
+                    if let Ok(canonical) = full_path.canonicalize() {
+                        files.insert(normalize_path(&canonical));
+                    }
+                }
+            }
+        }
+    }
+
+    if uncommitted {
+        // Get all uncommitted changes (staged + unstaged)
+        let output = Command::new("git")
+            .args(["diff", "--name-only", "HEAD"])
+            .current_dir(workspace_root)
+            .output()
+            .context("failed to run git diff HEAD")?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if !line.is_empty() {
+                    let full_path = workspace_root.join(line);
+                    if let Ok(canonical) = full_path.canonicalize() {
+                        files.insert(normalize_path(&canonical));
+                    }
+                }
+            }
+        }
+
+        // Also get untracked files
+        let output = Command::new("git")
+            .args(["ls-files", "--others", "--exclude-standard"])
+            .current_dir(workspace_root)
+            .output()
+            .context("failed to run git ls-files")?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if !line.is_empty() {
+                    let full_path = workspace_root.join(line);
+                    if let Ok(canonical) = full_path.canonicalize() {
+                        files.insert(normalize_path(&canonical));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(files.into_iter().collect())
 }
 
 fn resolve_symbol_at(

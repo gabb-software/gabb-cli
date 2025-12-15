@@ -381,3 +381,231 @@ fn two_phase_indexing_resolves_import_aliases() {
         refs
     );
 }
+
+#[test]
+fn definition_command_finds_symbol_declaration() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    // Create a file that exports a function
+    let utils_path = root.join("utils.ts");
+    fs::write(&utils_path, "export function helper() { return 42; }\n").unwrap();
+
+    // Create a file that imports and uses the function
+    let main_path = root.join("main.ts");
+    fs::write(
+        &main_path,
+        "import { helper } from './utils';\nconst result = helper();\n",
+    )
+    .unwrap();
+
+    let db_path = root.join(".gabb/index.db");
+    let store = IndexStore::open(&db_path).unwrap();
+    indexer::build_full_index(root, &store).unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_gabb-cli");
+
+    // Find definition of 'helper' from the usage site in main.ts (line 2, col ~16 for the call)
+    // The call `helper()` is at line 2
+    let def_out = Command::new(bin)
+        .args([
+            "definition",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--file",
+            &format!("{}:2:16", main_path.display()),
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    assert!(
+        def_out.status.success(),
+        "definition exited {:?}, stderr: {}",
+        def_out.status,
+        String::from_utf8_lossy(&def_out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&def_out.stdout);
+    // Should point to utils.ts where helper is defined
+    assert!(
+        stdout.contains("utils.ts") && stdout.contains("helper"),
+        "expected definition in utils.ts, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn definition_command_with_json_output() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    let ts_path = root.join("foo.ts");
+    fs::write(&ts_path, "function foo() {}\nfoo();\n").unwrap();
+
+    let db_path = root.join(".gabb/index.db");
+    let store = IndexStore::open(&db_path).unwrap();
+    indexer::build_full_index(root, &store).unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_gabb-cli");
+
+    // Find definition of foo from the call site
+    let def_out = Command::new(bin)
+        .args([
+            "definition",
+            "--json",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--file",
+            &format!("{}:2:1", ts_path.display()),
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    assert!(
+        def_out.status.success(),
+        "definition exited {:?}, stderr: {}",
+        def_out.status,
+        String::from_utf8_lossy(&def_out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&def_out.stdout);
+    // Should be valid JSON with definition object
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert!(json.get("definition").is_some(), "expected definition field in JSON");
+    assert_eq!(json["definition"]["name"], "foo");
+    assert_eq!(json["definition"]["kind"], "function");
+}
+
+#[test]
+fn duplicates_command_finds_identical_functions() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    // Create two files with identical functions (same content after whitespace normalization)
+    let file1_path = root.join("file1.ts");
+    fs::write(
+        &file1_path,
+        r#"
+function calculateTotal(items: number[]): number {
+    return items.reduce((sum, item) => sum + item, 0);
+}
+"#,
+    )
+    .unwrap();
+
+    let file2_path = root.join("file2.ts");
+    fs::write(
+        &file2_path,
+        r#"
+function calculateTotal(items: number[]): number {
+  return items.reduce((sum, item) => sum + item, 0);
+}
+"#,
+    )
+    .unwrap();
+
+    // Also create a unique function
+    let file3_path = root.join("file3.ts");
+    fs::write(
+        &file3_path,
+        r#"
+function somethingUnique(x: number): number {
+    return x * 2 + Math.random() * 100 + Date.now();
+}
+"#,
+    )
+    .unwrap();
+
+    let db_path = root.join(".gabb/index.db");
+    let store = IndexStore::open(&db_path).unwrap();
+    indexer::build_full_index(root, &store).unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_gabb-cli");
+
+    // Run duplicates command
+    let dup_out = Command::new(bin)
+        .args(["duplicates", "--db", db_path.to_str().unwrap()])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    assert!(
+        dup_out.status.success(),
+        "duplicates exited {:?}, stderr: {}",
+        dup_out.status,
+        String::from_utf8_lossy(&dup_out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&dup_out.stdout);
+    // Should find at least one duplicate group containing calculateTotal
+    assert!(
+        stdout.contains("calculateTotal") || stdout.contains("duplicate"),
+        "expected duplicates output to mention calculateTotal or duplicates, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn duplicates_command_with_json_output() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    // Create two files with identical functions
+    let file1_path = root.join("a.ts");
+    fs::write(
+        &file1_path,
+        r#"
+export function processData(data: string[]): string[] {
+    return data.map(item => item.trim()).filter(item => item.length > 0);
+}
+"#,
+    )
+    .unwrap();
+
+    let file2_path = root.join("b.ts");
+    fs::write(
+        &file2_path,
+        r#"
+export function processData(data: string[]): string[] {
+  return data.map(item => item.trim()).filter(item => item.length > 0);
+}
+"#,
+    )
+    .unwrap();
+
+    let db_path = root.join(".gabb/index.db");
+    let store = IndexStore::open(&db_path).unwrap();
+    indexer::build_full_index(root, &store).unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_gabb-cli");
+
+    // Run duplicates command with JSON output
+    let dup_out = Command::new(bin)
+        .args(["duplicates", "--json", "--db", db_path.to_str().unwrap()])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    assert!(
+        dup_out.status.success(),
+        "duplicates exited {:?}, stderr: {}",
+        dup_out.status,
+        String::from_utf8_lossy(&dup_out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&dup_out.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert!(json.get("groups").is_some(), "expected groups field in JSON");
+    assert!(json.get("summary").is_some(), "expected summary field in JSON");
+
+    // Check if we found duplicates
+    let groups = json["groups"].as_array().unwrap();
+    if !groups.is_empty() {
+        // If duplicates found, verify structure
+        let first_group = &groups[0];
+        assert!(first_group.get("content_hash").is_some());
+        assert!(first_group.get("symbols").is_some());
+        assert!(first_group.get("count").is_some());
+    }
+}

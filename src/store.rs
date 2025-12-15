@@ -1,6 +1,6 @@
 use anyhow::Result;
 use rusqlite::types::Value;
-use rusqlite::{Connection, params, params_from_iter};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use serde::Serialize;
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -27,6 +27,8 @@ pub struct SymbolRecord {
     pub qualifier: Option<String>,
     pub visibility: Option<String>,
     pub container: Option<String>,
+    /// Blake3 hash of normalized symbol body for duplicate detection
+    pub content_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,6 +69,13 @@ pub struct FileDependency {
     pub to_file: String,
     /// Type of dependency (e.g., "import", "use", "include")
     pub kind: String,
+}
+
+/// Represents a group of duplicate symbols sharing the same content hash.
+#[derive(Debug, Clone)]
+pub struct DuplicateGroup {
+    pub content_hash: String,
+    pub symbols: Vec<SymbolRecord>,
 }
 
 use std::collections::HashMap;
@@ -203,13 +212,15 @@ impl IndexStore {
                 end INTEGER NOT NULL,
                 qualifier TEXT,
                 visibility TEXT,
-                container TEXT
+                container TEXT,
+                content_hash TEXT
             );
             -- B-tree indices for O(log n) lookups
             CREATE INDEX IF NOT EXISTS symbols_file_idx ON symbols(file);
             CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
             CREATE INDEX IF NOT EXISTS idx_symbols_position ON symbols(file, start, end);
             CREATE INDEX IF NOT EXISTS idx_symbols_kind_name ON symbols(kind, name);
+            CREATE INDEX IF NOT EXISTS idx_symbols_content_hash ON symbols(content_hash);
             -- Compound index for multi-filter queries (file + kind + name)
             CREATE INDEX IF NOT EXISTS idx_symbols_file_kind_name ON symbols(file, kind, name);
             -- Tertiary index for kind + visibility filtered searches
@@ -281,6 +292,11 @@ impl IndexStore {
         )?;
         self.ensure_column("symbols", "qualifier", "TEXT")?;
         self.ensure_column("symbols", "visibility", "TEXT")?;
+        self.ensure_column("symbols", "content_hash", "TEXT")?;
+        self.ensure_index(
+            "idx_symbols_content_hash",
+            "CREATE INDEX IF NOT EXISTS idx_symbols_content_hash ON symbols(content_hash)",
+        )?;
         Ok(())
     }
 
@@ -296,6 +312,19 @@ impl IndexStore {
         }
         drop(rows);
         conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"), [])?;
+        Ok(())
+    }
+
+    fn ensure_index(&self, index_name: &str, create_sql: &str) -> Result<()> {
+        let conn = self.conn.borrow();
+        let exists: bool = conn.query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1",
+            params![index_name],
+            |_| Ok(true),
+        ).unwrap_or(false);
+        if !exists {
+            conn.execute(create_sql, [])?;
+        }
         Ok(())
     }
 
@@ -360,7 +389,7 @@ impl IndexStore {
 
         for sym in symbols {
             tx.execute(
-                "INSERT INTO symbols(id, file, kind, name, start, end, qualifier, visibility, container) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO symbols(id, file, kind, name, start, end, qualifier, visibility, container, content_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     sym.id,
                     sym.file,
@@ -370,7 +399,8 @@ impl IndexStore {
                     sym.end,
                     sym.qualifier,
                     sym.visibility,
-                    sym.container
+                    sym.container,
+                    sym.content_hash
                 ],
             )?;
         }
@@ -461,7 +491,7 @@ impl IndexStore {
 
         for sym in symbols {
             tx.execute(
-                "INSERT INTO symbols(id, file, kind, name, start, end, qualifier, visibility, container) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO symbols(id, file, kind, name, start, end, qualifier, visibility, container, content_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     sym.id,
                     sym.file,
@@ -471,7 +501,8 @@ impl IndexStore {
                     sym.end,
                     sym.qualifier,
                     sym.visibility,
-                    sym.container
+                    sym.container,
+                    sym.content_hash
                 ],
             )?;
         }
@@ -820,7 +851,7 @@ impl IndexStore {
     ) -> Result<Vec<SymbolRecord>> {
         let file_norm = file.map(|f| normalize_path(Path::new(f)));
         let mut sql = String::from(
-            "SELECT id, file, kind, name, start, end, qualifier, visibility, container FROM symbols",
+            "SELECT id, file, kind, name, start, end, qualifier, visibility, container, content_hash FROM symbols",
         );
         let mut values: Vec<Value> = Vec::new();
         let mut clauses: Vec<&str> = Vec::new();
@@ -864,6 +895,7 @@ impl IndexStore {
                     qualifier: row.get(6)?,
                     visibility: row.get(7)?,
                     container: row.get(8)?,
+                    content_hash: row.get(9)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -910,7 +942,7 @@ impl IndexStore {
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
-            "SELECT id, file, kind, name, start, end, qualifier, visibility, container FROM symbols WHERE id IN ({})",
+            "SELECT id, file, kind, name, start, end, qualifier, visibility, container, content_hash FROM symbols WHERE id IN ({})",
             placeholders
         );
         let conn = self.conn.borrow();
@@ -927,6 +959,7 @@ impl IndexStore {
                     qualifier: row.get(6)?,
                     visibility: row.get(7)?,
                     container: row.get(8)?,
+                    content_hash: row.get(9)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -952,6 +985,135 @@ impl IndexStore {
         Ok(rows)
     }
 
+    /// Find a reference at a specific file and byte offset.
+    /// Returns the reference record if the offset falls within a recorded reference span.
+    pub fn reference_at_position(&self, file: &str, offset: i64) -> Result<Option<ReferenceRecord>> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare_cached(
+            "SELECT file, start, end, symbol_id FROM references_tbl
+             WHERE file = ?1 AND start <= ?2 AND end > ?2
+             ORDER BY (end - start) ASC
+             LIMIT 1",
+        )?;
+        let result = stmt
+            .query_row(params![file, offset], |row| {
+                Ok(ReferenceRecord {
+                    file: row.get(0)?,
+                    start: row.get(1)?,
+                    end: row.get(2)?,
+                    symbol_id: row.get(3)?,
+                })
+            })
+            .optional()?;
+        Ok(result)
+    }
+
+    /// Find all groups of duplicate symbols (symbols with the same content_hash).
+    /// Returns groups sorted by count (most duplicates first).
+    /// Only includes groups with 2+ symbols and content_hash is not null.
+    pub fn find_duplicate_groups(
+        &self,
+        min_count: usize,
+        kind_filter: Option<&str>,
+        file_filter: Option<&[String]>,
+    ) -> Result<Vec<DuplicateGroup>> {
+        let conn = self.conn.borrow();
+
+        // First, find all content_hashes with duplicates
+        let mut sql = String::from(
+            "SELECT content_hash, COUNT(*) as cnt FROM symbols
+             WHERE content_hash IS NOT NULL"
+        );
+        let mut values: Vec<Value> = Vec::new();
+
+        if let Some(kind) = kind_filter {
+            sql.push_str(" AND kind = ?");
+            values.push(Value::from(kind.to_string()));
+        }
+
+        if let Some(files) = file_filter {
+            if !files.is_empty() {
+                let placeholders = std::iter::repeat_n("?", files.len())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                sql.push_str(&format!(" AND file IN ({})", placeholders));
+                for f in files {
+                    values.push(Value::from(f.clone()));
+                }
+            }
+        }
+
+        sql.push_str(" GROUP BY content_hash HAVING COUNT(*) >= ?");
+        values.push(Value::from(min_count as i64));
+        sql.push_str(" ORDER BY cnt DESC");
+
+        let mut stmt = conn.prepare(&sql)?;
+        let hashes: Vec<String> = stmt
+            .query_map(params_from_iter(values.iter()), |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        // Now fetch symbols for each hash
+        let mut groups = Vec::new();
+        for hash in hashes {
+            let symbols = self.symbols_by_content_hash(&hash)?;
+            if symbols.len() >= min_count {
+                groups.push(DuplicateGroup {
+                    content_hash: hash,
+                    symbols,
+                });
+            }
+        }
+
+        Ok(groups)
+    }
+
+    /// Find all symbols with a specific content hash.
+    pub fn symbols_by_content_hash(&self, hash: &str) -> Result<Vec<SymbolRecord>> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, file, kind, name, start, end, qualifier, visibility, container, content_hash
+             FROM symbols WHERE content_hash = ?1"
+        )?;
+        let rows = stmt
+            .query_map(params![hash], |row| {
+                Ok(SymbolRecord {
+                    id: row.get(0)?,
+                    file: row.get(1)?,
+                    kind: row.get(2)?,
+                    name: row.get(3)?,
+                    start: row.get(4)?,
+                    end: row.get(5)?,
+                    qualifier: row.get(6)?,
+                    visibility: row.get(7)?,
+                    container: row.get(8)?,
+                    content_hash: row.get(9)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Get content hashes for symbols in specific files.
+    /// Used for --uncommitted flag to find duplicates involving changed files.
+    pub fn content_hashes_in_files(&self, files: &[String]) -> Result<HashSet<String>> {
+        if files.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let conn = self.conn.borrow();
+        let placeholders = std::iter::repeat_n("?", files.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT DISTINCT content_hash FROM symbols WHERE file IN ({}) AND content_hash IS NOT NULL",
+            placeholders
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let hashes: HashSet<String> = stmt
+            .query_map(params_from_iter(files.iter()), |row| row.get(0))?
+            .collect::<rusqlite::Result<HashSet<_>>>()?;
+        Ok(hashes)
+    }
+
     /// Search symbols using FTS5 full-text search.
     /// Supports prefix queries (e.g., "getUser*") and substring matching via trigram tokenization.
     /// Uses cached prepared statement for repeated searches.
@@ -960,7 +1122,7 @@ impl IndexStore {
         let conn = self.conn.borrow();
         let mut stmt = conn.prepare_cached(
             r#"
-            SELECT s.id, s.file, s.kind, s.name, s.start, s.end, s.qualifier, s.visibility, s.container
+            SELECT s.id, s.file, s.kind, s.name, s.start, s.end, s.qualifier, s.visibility, s.container, s.content_hash
             FROM symbols s
             JOIN symbols_fts fts ON s.rowid = fts.rowid
             WHERE symbols_fts MATCH ?1
@@ -979,6 +1141,7 @@ impl IndexStore {
                     qualifier: row.get(6)?,
                     visibility: row.get(7)?,
                     container: row.get(8)?,
+                    content_hash: row.get(9)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -998,7 +1161,7 @@ impl IndexStore {
     ) -> Result<(Vec<SymbolRecord>, Option<String>)> {
         let file_norm = file.map(|f| normalize_path(Path::new(f)));
         let mut sql = String::from(
-            "SELECT id, file, kind, name, start, end, qualifier, visibility, container FROM symbols",
+            "SELECT id, file, kind, name, start, end, qualifier, visibility, container, content_hash FROM symbols",
         );
         let mut values: Vec<Value> = Vec::new();
         let mut clauses: Vec<&str> = Vec::new();
@@ -1050,6 +1213,7 @@ impl IndexStore {
                     qualifier: row.get(6)?,
                     visibility: row.get(7)?,
                     container: row.get(8)?,
+                    content_hash: row.get(9)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1102,6 +1266,7 @@ mod tests {
             qualifier: None,
             visibility: None,
             container: None,
+            content_hash: None,
         }
     }
 
@@ -1293,6 +1458,7 @@ mod tests {
                 qualifier: None,
                 visibility: None,
                 container: None,
+                content_hash: None,
             })
             .collect();
 
@@ -1552,6 +1718,7 @@ mod tests {
                 qualifier: None,
                 visibility: None,
                 container: None,
+                content_hash: None,
             },
             SymbolRecord {
                 id: "sym_2".into(),
@@ -1563,6 +1730,7 @@ mod tests {
                 qualifier: None,
                 visibility: None,
                 container: None,
+                content_hash: None,
             },
             SymbolRecord {
                 id: "sym_3".into(),
@@ -1574,6 +1742,7 @@ mod tests {
                 qualifier: None,
                 visibility: None,
                 container: None,
+                content_hash: None,
             },
         ];
 
@@ -1671,6 +1840,7 @@ mod tests {
                 qualifier: None,
                 visibility: None,
                 container: None,
+                content_hash: None,
             },
             SymbolRecord {
                 id: "sym_2".into(),
@@ -1682,6 +1852,7 @@ mod tests {
                 qualifier: None,
                 visibility: None,
                 container: None,
+                content_hash: None,
             },
         ];
 
@@ -1747,6 +1918,7 @@ mod tests {
                 qualifier: None,
                 visibility: Some("public".into()),
                 container: None,
+                content_hash: None,
             },
             SymbolRecord {
                 id: "sym_2".into(),
@@ -1758,6 +1930,7 @@ mod tests {
                 qualifier: None,
                 visibility: Some("public".into()),
                 container: None,
+                content_hash: None,
             },
             SymbolRecord {
                 id: "sym_3".into(),
@@ -1769,6 +1942,7 @@ mod tests {
                 qualifier: None,
                 visibility: Some("private".into()),
                 container: None,
+                content_hash: None,
             },
         ];
 
@@ -1807,6 +1981,7 @@ mod tests {
                 qualifier: None,
                 visibility: None,
                 container: None,
+                content_hash: None,
             })
             .collect();
 
@@ -1882,6 +2057,7 @@ mod tests {
                     qualifier: Some(format!("module{}", i % 10)),
                     visibility: Some(if i % 2 == 0 { "public" } else { "private" }.into()),
                     container: None,
+                    content_hash: None,
                 })
                 .collect();
 
@@ -1928,6 +2104,7 @@ mod tests {
                 qualifier: None,
                 visibility: None,
                 container: None,
+                content_hash: None,
             },
             SymbolRecord {
                 id: "sym_2".into(),
@@ -1939,6 +2116,7 @@ mod tests {
                 qualifier: None,
                 visibility: None,
                 container: None,
+                content_hash: None,
             },
             SymbolRecord {
                 id: "sym_3".into(),
@@ -1950,6 +2128,7 @@ mod tests {
                 qualifier: None,
                 visibility: None,
                 container: None,
+                content_hash: None,
             },
             SymbolRecord {
                 id: "sym_4".into(),
@@ -1961,6 +2140,7 @@ mod tests {
                 qualifier: None,
                 visibility: None,
                 container: None,
+                content_hash: None,
             },
         ];
 
@@ -2000,6 +2180,7 @@ mod tests {
                 qualifier: None,
                 visibility: None,
                 container: None,
+                content_hash: None,
             })
             .collect();
         store.save_file_index(&rec1, &syms1, &[], &[]).unwrap();
@@ -2018,6 +2199,7 @@ mod tests {
                 qualifier: None,
                 visibility: None,
                 container: None,
+                content_hash: None,
             })
             .collect();
         store.save_file_index(&rec2, &syms2, &[], &[]).unwrap();
@@ -2554,6 +2736,7 @@ mod tests {
                 qualifier: None,
                 visibility: None,
                 container: None,
+                content_hash: None,
             })
             .collect();
 

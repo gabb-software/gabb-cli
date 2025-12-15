@@ -141,7 +141,7 @@ fn walk_symbols(
             "function_declaration" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = slice(source, &name_node);
-                    let sym = make_symbol(path, &node, &name, "function", container.clone());
+                    let sym = make_symbol(path, &node, &name, "function", container.clone(), source.as_bytes());
                     declared_spans.insert((sym.start as usize, sym.end as usize));
                     symbol_by_name
                         .entry(name.clone())
@@ -152,7 +152,7 @@ fn walk_symbols(
             "class_declaration" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = slice(source, &name_node);
-                    let sym = make_symbol(path, &node, &name, "class", container.clone());
+                    let sym = make_symbol(path, &node, &name, "class", container.clone(), source.as_bytes());
                     declared_spans.insert((sym.start as usize, sym.end as usize));
                     symbol_by_name
                         .entry(name.clone())
@@ -193,7 +193,7 @@ fn walk_symbols(
             "interface_declaration" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = slice(source, &name_node);
-                    let sym = make_symbol(path, &node, &name, "interface", container.clone());
+                    let sym = make_symbol(path, &node, &name, "interface", container.clone(), source.as_bytes());
                     declared_spans.insert((sym.start as usize, sym.end as usize));
                     symbol_by_name
                         .entry(name.clone())
@@ -204,7 +204,7 @@ fn walk_symbols(
             "method_definition" | "method_signature" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = slice(source, &name_node);
-                    let sym = make_symbol(path, &node, &name, "method", container.clone());
+                    let sym = make_symbol(path, &node, &name, "method", container.clone(), source.as_bytes());
                     declared_spans.insert((sym.start as usize, sym.end as usize));
                     symbol_by_name
                         .entry(name.clone())
@@ -719,8 +719,10 @@ fn make_symbol(
     name: &str,
     kind: &str,
     container: Option<String>,
+    source: &[u8],
 ) -> SymbolRecord {
     let qualifier = Some(module_qualifier(path, &container));
+    let content_hash = super::compute_content_hash(source, node.start_byte(), node.end_byte());
     SymbolRecord {
         id: format!(
             "{}#{}-{}",
@@ -736,6 +738,7 @@ fn make_symbol(
         qualifier,
         visibility: None,
         container,
+        content_hash,
     }
 }
 

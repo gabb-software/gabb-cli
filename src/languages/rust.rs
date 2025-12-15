@@ -348,6 +348,7 @@ fn walk_symbols(
                         &name,
                         "function",
                         container.clone(),
+                        source.as_bytes(),
                     );
                     declared_spans.insert((sym.start as usize, sym.end as usize));
                     symbol_by_name
@@ -376,7 +377,7 @@ fn walk_symbols(
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = slice(source, &name_node);
                     let sym =
-                        make_symbol(path, module_path, &node, &name, "struct", container.clone());
+                        make_symbol(path, module_path, &node, &name, "struct", container.clone(), source.as_bytes());
                     declared_spans.insert((sym.start as usize, sym.end as usize));
                     symbol_by_name
                         .entry(name)
@@ -388,7 +389,7 @@ fn walk_symbols(
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = slice(source, &name_node);
                     let sym =
-                        make_symbol(path, module_path, &node, &name, "enum", container.clone());
+                        make_symbol(path, module_path, &node, &name, "enum", container.clone(), source.as_bytes());
                     declared_spans.insert((sym.start as usize, sym.end as usize));
                     symbol_by_name
                         .entry(name)
@@ -400,7 +401,7 @@ fn walk_symbols(
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = slice(source, &name_node);
                     let sym =
-                        make_symbol(path, module_path, &node, &name, "trait", container.clone());
+                        make_symbol(path, module_path, &node, &name, "trait", container.clone(), source.as_bytes());
                     declared_spans.insert((sym.start as usize, sym.end as usize));
                     symbol_by_name
                         .entry(name)
@@ -593,9 +594,11 @@ fn make_symbol(
     name: &str,
     kind: &str,
     container: Option<String>,
+    source: &[u8],
 ) -> SymbolRecord {
     let qualifier = Some(module_qualifier(path, module_path, &container));
     let visibility = visibility(node, path);
+    let content_hash = super::compute_content_hash(source, node.start_byte(), node.end_byte());
     SymbolRecord {
         id: format!(
             "{}#{}-{}",
@@ -611,6 +614,7 @@ fn make_symbol(
         qualifier,
         visibility,
         container,
+        content_hash,
     }
 }
 

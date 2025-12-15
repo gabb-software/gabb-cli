@@ -121,9 +121,10 @@ fn symbols_and_implementation_commands_work() {
         usages_out.status,
         String::from_utf8_lossy(&usages_out.stderr)
     );
+    let usages_stdout = String::from_utf8_lossy(&usages_out.stdout);
     assert!(
-        String::from_utf8_lossy(&usages_out.stdout).contains("usage"),
+        usages_stdout.contains("usage") && usages_stdout.contains("foo.ts"),
         "usages output: {}",
-        String::from_utf8_lossy(&usages_out.stdout)
+        usages_stdout
     );
 }

@@ -225,6 +225,9 @@ fn find_usages(
     let target = resolve_symbol_at(&store, &file, line, character)?;
 
     let mut refs = store.references_for_symbol(&target.id)?;
+    if refs.is_empty() {
+        refs = search_usages_by_name(&store, &target)?;
+    }
     let mut seen = HashSet::new();
     refs.retain(|r| seen.insert((r.file.clone(), r.start, r.end)));
     if let Some(lim) = limit {
@@ -339,6 +342,62 @@ fn identifier_matches_symbol(ident: &str, sym: &SymbolRecord) -> bool {
 fn dedup_symbols(symbols: &mut Vec<SymbolRecord>) {
     let mut seen = HashSet::new();
     symbols.retain(|s| seen.insert(s.id.clone()));
+}
+
+fn search_usages_by_name(
+    store: &store::IndexStore,
+    target: &SymbolRecord,
+) -> Result<Vec<store::ReferenceRecord>> {
+    let mut refs = Vec::new();
+    let paths = store.list_paths()?;
+    for path in paths {
+        let buf = match fs::read(&path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let mut idx = 0usize;
+        while let Some(pos) = buf[idx..]
+            .windows(target.name.len())
+            .position(|w| w == target.name.as_bytes())
+        {
+            let abs = idx + pos;
+            if !is_word_boundary(&buf, abs, target.name.len()) {
+                idx += pos + target.name.len();
+                continue;
+            }
+            let abs = idx + pos;
+            let start = abs as i64;
+            let end = (abs + target.name.len()) as i64;
+            if path == target.file && start == target.start && end == target.end {
+                idx += pos + target.name.len();
+                continue;
+            }
+            refs.push(store::ReferenceRecord {
+                file: path.clone(),
+                start,
+                end,
+                symbol_id: target.id.clone(),
+            });
+            idx += pos + target.name.len();
+        }
+    }
+    Ok(refs)
+}
+
+fn is_word_boundary(buf: &[u8], start: usize, len: usize) -> bool {
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let before_ok = if start == 0 {
+        true
+    } else {
+        !is_ident(buf[start - 1])
+    };
+    let end = start + len;
+    let after_ok = if end >= buf.len() {
+        true
+    } else {
+        !is_ident(buf[end])
+    };
+    before_ok && after_ok
 }
 
 fn line_char_to_offset(buf: &[u8], line: usize, character: usize) -> Option<usize> {

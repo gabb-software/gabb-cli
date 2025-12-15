@@ -4,7 +4,7 @@ Gabb is a Rust CLI that builds a local code index so editors and AI coding assis
 
 ## Status
 - MVP: indexes TypeScript/TSX and Rust, storing results in a local SQLite database
-- Commands: `gabb daemon` (watches a workspace and keeps the index fresh), `gabb symbols` (list indexed symbols)
+- Commands: `gabb daemon` (watches a workspace and keeps the index fresh), `gabb symbols` (list indexed symbols), `gabb implementation` (find implementations for a symbol), `gabb usages` (find call sites/usages for a symbol)
 - Outputs: symbol definitions, relationships (implements/extends), and references
 
 ## Quickstart
@@ -35,7 +35,8 @@ The daemon will crawl your workspace, index all `*.ts`/`*.tsx`/`*.rs` files, and
 ```bash
 gabb daemon --root <workspace> --db <path/to/index.db> [-v|-vv]
 gabb symbols --db <path/to/index.db> [--file <path>] [--kind <kind>] [--limit <n>]
-gabb implementation --db <path/to/index.db> --file <path> --line <line> --character <char> [--limit <n>] [--kind <kind>]
+gabb implementation --db <path/to/index.db> --file <path[:line:char]> [--line <line>] [--character <char>] [--limit <n>] [--kind <kind>]
+gabb usages --db <path/to/index.db> --file <path[:line:char]> [--line <line>] [--character <char>] [--limit <n>]
 ```
 
 Flags:
@@ -47,8 +48,12 @@ Symbols command filters:
 - `--kind`: filter by kind (`function`, `class`, `interface`, `method`, `struct`, `enum`, `trait`)
 - `--limit`: cap the number of rows returned
 Implementation command:
-- Requires `--file`, `--line`, and `--character` to identify the symbol under the cursor
-- Tries to find implementations via recorded edges; falls back to same-name matches (best effort for now)
+- Identify the symbol via `--file` and `--line`/`--character` or embed the position as `--file path:line:char`
+- Finds implementations via recorded edges (implements/extends/trait impl/overrides); falls back to same-name matches
+
+Usages command:
+- Identify the symbol under the cursor (same options as above)
+- Lists recorded references; if none are present, falls back to a name-based scan across indexed files (best effort)
 
 What gets indexed:
 - Files: `*.ts`, `*.tsx`, `*.rs`

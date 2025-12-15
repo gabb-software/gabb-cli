@@ -158,6 +158,7 @@ fn find_implementation(
     if let Some(k) = kind {
         impl_symbols.retain(|s| s.kind == k);
     }
+    impl_symbols.retain(|s| s.id != target.id);
     dedup_symbols(&mut impl_symbols);
     if let Some(lim) = limit {
         impl_symbols.truncate(lim);

@@ -113,6 +113,31 @@ impl IndexStore {
             -- Covering index for reference lookups by symbol_id (includes all columns)
             CREATE INDEX IF NOT EXISTS idx_refs_symbol_covering ON references_tbl(symbol_id, file, start, end);
             CREATE INDEX IF NOT EXISTS idx_refs_file_position ON references_tbl(file, start, end, symbol_id);
+
+            -- FTS5 virtual table for full-text symbol search with trigram tokenization
+            CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+                name,
+                qualifier,
+                content='symbols',
+                content_rowid='rowid',
+                tokenize='trigram'
+            );
+
+            -- Triggers to keep FTS5 index in sync with symbols table
+            CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
+                INSERT INTO symbols_fts(rowid, name, qualifier)
+                VALUES (NEW.rowid, NEW.name, NEW.qualifier);
+            END;
+            CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
+                INSERT INTO symbols_fts(symbols_fts, rowid, name, qualifier)
+                VALUES ('delete', OLD.rowid, OLD.name, OLD.qualifier);
+            END;
+            CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE ON symbols BEGIN
+                INSERT INTO symbols_fts(symbols_fts, rowid, name, qualifier)
+                VALUES ('delete', OLD.rowid, OLD.name, OLD.qualifier);
+                INSERT INTO symbols_fts(rowid, name, qualifier)
+                VALUES (NEW.rowid, NEW.name, NEW.qualifier);
+            END;
             "#,
         )?;
         self.ensure_column("symbols", "qualifier", "TEXT")?;
@@ -380,6 +405,37 @@ impl IndexStore {
                     start: row.get(1)?,
                     end: row.get(2)?,
                     symbol_id: row.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Search symbols using FTS5 full-text search.
+    /// Supports prefix queries (e.g., "getUser*") and substring matching via trigram tokenization.
+    pub fn search_symbols_fts(&self, query: &str) -> Result<Vec<SymbolRecord>> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT s.id, s.file, s.kind, s.name, s.start, s.end, s.qualifier, s.visibility, s.container
+            FROM symbols s
+            JOIN symbols_fts fts ON s.rowid = fts.rowid
+            WHERE symbols_fts MATCH ?1
+            ORDER BY rank
+            "#,
+        )?;
+        let rows = stmt
+            .query_map(params![query], |row| {
+                Ok(SymbolRecord {
+                    id: row.get(0)?,
+                    file: row.get(1)?,
+                    kind: row.get(2)?,
+                    name: row.get(3)?,
+                    start: row.get(4)?,
+                    end: row.get(5)?,
+                    qualifier: row.get(6)?,
+                    visibility: row.get(7)?,
+                    container: row.get(8)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -824,6 +880,134 @@ mod tests {
             plan.contains("idx_symbols_file_kind_name"),
             "File+kind+name query should use compound index idx_symbols_file_kind_name. Query plan: {}",
             plan
+        );
+    }
+
+    /// Test that FTS5 table exists for full-text symbol search
+    #[test]
+    fn fts5_symbols_table_exists() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        let conn = store.conn.borrow();
+        let table_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='symbols_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(table_exists, 1, "symbols_fts FTS5 table should exist");
+    }
+
+    /// Test FTS5 prefix search on symbol names
+    #[test]
+    fn fts5_prefix_search_works() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        // Insert test symbols
+        let file_path = dir.path().join("test.ts");
+        let file_rec = mk_file_record(&file_path);
+        let symbols: Vec<SymbolRecord> = vec![
+            SymbolRecord {
+                id: "sym_1".into(),
+                file: normalize_path(&file_path),
+                kind: "function".into(),
+                name: "getUserProfile".into(),
+                start: 0,
+                end: 10,
+                qualifier: None,
+                visibility: None,
+                container: None,
+            },
+            SymbolRecord {
+                id: "sym_2".into(),
+                file: normalize_path(&file_path),
+                kind: "function".into(),
+                name: "getUserSettings".into(),
+                start: 20,
+                end: 30,
+                qualifier: None,
+                visibility: None,
+                container: None,
+            },
+            SymbolRecord {
+                id: "sym_3".into(),
+                file: normalize_path(&file_path),
+                kind: "function".into(),
+                name: "setUserProfile".into(),
+                start: 40,
+                end: 50,
+                qualifier: None,
+                visibility: None,
+                container: None,
+            },
+        ];
+
+        store
+            .save_file_index(&file_rec, &symbols, &[], &[])
+            .unwrap();
+
+        // Search with prefix "getUser*"
+        let results = store.search_symbols_fts("getUser*").unwrap();
+        assert_eq!(
+            results.len(),
+            2,
+            "Should find 2 symbols starting with 'getUser'"
+        );
+        assert!(results.iter().any(|s| s.name == "getUserProfile"));
+        assert!(results.iter().any(|s| s.name == "getUserSettings"));
+    }
+
+    /// Test FTS5 substring/trigram search
+    #[test]
+    fn fts5_substring_search_works() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        // Insert test symbols
+        let file_path = dir.path().join("test.ts");
+        let file_rec = mk_file_record(&file_path);
+        let symbols: Vec<SymbolRecord> = vec![
+            SymbolRecord {
+                id: "sym_1".into(),
+                file: normalize_path(&file_path),
+                kind: "function".into(),
+                name: "getUserProfile".into(),
+                start: 0,
+                end: 10,
+                qualifier: None,
+                visibility: None,
+                container: None,
+            },
+            SymbolRecord {
+                id: "sym_2".into(),
+                file: normalize_path(&file_path),
+                kind: "class".into(),
+                name: "UserProfileService".into(),
+                start: 20,
+                end: 30,
+                qualifier: None,
+                visibility: None,
+                container: None,
+            },
+        ];
+
+        store
+            .save_file_index(&file_rec, &symbols, &[], &[])
+            .unwrap();
+
+        // Search for "Profile" substring
+        let results = store.search_symbols_fts("Profile").unwrap();
+        assert_eq!(
+            results.len(),
+            2,
+            "Should find 2 symbols containing 'Profile'"
         );
     }
 }

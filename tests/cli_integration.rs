@@ -30,7 +30,7 @@ fn symbols_and_implementation_commands_work() {
     let dir = tempdir().unwrap();
     let root = dir.path();
     let ts_path = root.join("foo.ts");
-    fs::write(&ts_path, "function foo() {}\n").unwrap();
+    fs::write(&ts_path, "function foo() {}\nfoo();\n").unwrap();
 
     let db_path = root.join(".gabb/index.db");
     let store = IndexStore::open(&db_path).unwrap();
@@ -101,5 +101,29 @@ fn symbols_and_implementation_commands_work() {
         String::from_utf8_lossy(&impl_out.stdout).contains("foo"),
         "implementation output: {}",
         String::from_utf8_lossy(&impl_out.stdout)
+    );
+
+    // usages should include the call site line/column
+    let usages_out = Command::new(bin)
+        .args([
+            "usages",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--file",
+            &format!("{}:{}:{}", symbol.file, line, character),
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        usages_out.status.success(),
+        "usages exited {:?}, stderr: {}",
+        usages_out.status,
+        String::from_utf8_lossy(&usages_out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&usages_out.stdout).contains("usage"),
+        "usages output: {}",
+        String::from_utf8_lossy(&usages_out.stdout)
     );
 }

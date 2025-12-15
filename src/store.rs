@@ -331,6 +331,24 @@ impl IndexStore {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
+
+    pub fn references_for_symbol(&self, symbol_id: &str) -> Result<Vec<ReferenceRecord>> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(
+            "SELECT file, start, end, symbol_id FROM references_tbl WHERE symbol_id = ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![symbol_id], |row| {
+                Ok(ReferenceRecord {
+                    file: row.get(0)?,
+                    start: row.get(1)?,
+                    end: row.get(2)?,
+                    symbol_id: row.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
 }
 
 pub fn normalize_path(path: &Path) -> String {

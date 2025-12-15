@@ -71,6 +71,24 @@ enum Commands {
         #[arg(long)]
         kind: Option<String>,
     },
+    /// Find usages of the symbol at a source position
+    Usages {
+        /// Path to the SQLite index database
+        #[arg(long, default_value = ".gabb/index.db")]
+        db: PathBuf,
+        /// Source file containing the reference. You can optionally append :line:character (1-based), e.g. ./src/daemon.rs:18:5
+        #[arg(long)]
+        file: PathBuf,
+        /// 1-based line number within the file (optional if provided in --file)
+        #[arg(long)]
+        line: Option<usize>,
+        /// 1-based character offset within the line (optional if provided in --file)
+        #[arg(long, alias = "col")]
+        character: Option<usize>,
+        /// Limit the number of results
+        #[arg(long)]
+        limit: Option<usize>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -94,6 +112,13 @@ fn main() -> Result<()> {
             limit,
             kind,
         } => find_implementation(&db, &file, line, character, limit, kind.as_deref()),
+        Commands::Usages {
+            db,
+            file,
+            line,
+            character,
+            limit,
+        } => find_usages(&db, &file, line, character, limit),
     }
 }
 
@@ -182,6 +207,42 @@ fn find_implementation(
         println!(
             "{:<10} {:<30} {} [{}:{}-{}:{}]{container}",
             sym.kind, sym.name, sym.file, line, col, end_line, end_col
+        );
+    }
+
+    Ok(())
+}
+
+fn find_usages(
+    db: &Path,
+    file: &PathBuf,
+    line: Option<usize>,
+    character: Option<usize>,
+    limit: Option<usize>,
+) -> Result<()> {
+    let store = store::IndexStore::open(db)?;
+    let (file, line, character) = parse_file_position(file, line, character)?;
+    let target = resolve_symbol_at(&store, &file, line, character)?;
+
+    let mut refs = store.references_for_symbol(&target.id)?;
+    let mut seen = HashSet::new();
+    refs.retain(|r| seen.insert((r.file.clone(), r.start, r.end)));
+    if let Some(lim) = limit {
+        refs.truncate(lim);
+    }
+
+    let (t_line, t_col) = offset_to_line_char_in_file(&target.file, target.start)?;
+    let (t_end_line, t_end_col) = offset_to_line_char_in_file(&target.file, target.end)?;
+    println!(
+        "Target: {} {} {} [{}:{}-{}:{}]",
+        target.kind, target.name, target.file, t_line, t_col, t_end_line, t_end_col
+    );
+    for r in refs {
+        let (line, col) = offset_to_line_char_in_file(&r.file, r.start)?;
+        let (end_line, end_col) = offset_to_line_char_in_file(&r.file, r.end)?;
+        println!(
+            "{:<10} {:<30} {} [{}:{}-{}:{}]",
+            "usage", target.name, r.file, line, col, end_line, end_col
         );
     }
 

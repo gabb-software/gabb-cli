@@ -3,7 +3,7 @@ mod indexer;
 mod languages;
 mod store;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -124,9 +124,11 @@ fn list_symbols(
             .as_deref()
             .map(|c| format!(" in {c}"))
             .unwrap_or_default();
+        let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start)?;
+        let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end)?;
         println!(
-            "{:<10} {:<30} {} [{}-{}]{container}",
-            sym.kind, sym.name, sym.file, sym.start, sym.end
+            "{:<10} {:<30} {} [{}:{}-{}:{}]{container}",
+            sym.kind, sym.name, sym.file, line, col, end_line, end_col
         );
     }
 
@@ -159,9 +161,11 @@ fn find_implementation(
         impl_symbols.truncate(lim);
     }
 
+    let (t_line, t_col) = offset_to_line_char_in_file(&target.file, target.start)?;
+    let (t_end_line, t_end_col) = offset_to_line_char_in_file(&target.file, target.end)?;
     println!(
-        "Target: {} {} {} [{}-{}]",
-        target.kind, target.name, target.file, target.start, target.end
+        "Target: {} {} {} [{}:{}-{}:{}]",
+        target.kind, target.name, target.file, t_line, t_col, t_end_line, t_end_col
     );
     for sym in impl_symbols {
         let container = sym
@@ -169,9 +173,11 @@ fn find_implementation(
             .as_deref()
             .map(|c| format!(" in {c}"))
             .unwrap_or_default();
+        let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start)?;
+        let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end)?;
         println!(
-            "{:<10} {:<30} {} [{}-{}]{container}",
-            sym.kind, sym.name, sym.file, sym.start, sym.end
+            "{:<10} {:<30} {} [{}:{}-{}:{}]{container}",
+            sym.kind, sym.name, sym.file, line, col, end_line, end_col
         );
     }
 
@@ -287,6 +293,33 @@ fn line_char_to_offset(buf: &[u8], line: usize, character: usize) -> Option<usiz
     let line_len = line_end - idx;
     let col = character.saturating_sub(1).min(line_len);
     Some(idx + col)
+}
+
+fn offset_to_line_char_in_file(path: &str, offset: i64) -> Result<(usize, usize)> {
+    let buf = fs::read(path).with_context(|| format!("failed to read {}", path))?;
+    offset_to_line_char_in_buf(&buf, offset as usize)
+        .ok_or_else(|| anyhow!("could not map byte offset for {path}"))
+}
+
+fn offset_to_line_char_in_buf(buf: &[u8], offset: usize) -> Option<(usize, usize)> {
+    let mut line = 1usize;
+    let mut col = 1usize;
+    for (i, b) in buf.iter().enumerate() {
+        if i == offset {
+            return Some((line, col));
+        }
+        if *b == b'\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    if offset == buf.len() {
+        Some((line, col))
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

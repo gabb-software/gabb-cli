@@ -435,6 +435,122 @@ impl IndexStore {
         Ok(())
     }
 
+    /// Save file index without references (used in two-phase indexing first pass)
+    pub fn save_file_index_without_refs(
+        &self,
+        file_record: &FileRecord,
+        symbols: &[SymbolRecord],
+        edges: &[EdgeRecord],
+    ) -> Result<()> {
+        let conn = &mut *self.conn.borrow_mut();
+        let tx = conn.transaction()?;
+
+        // Clear existing data for this file
+        tx.execute(
+            "DELETE FROM references_tbl WHERE file = ?1",
+            params![file_record.path.clone()],
+        )?;
+        tx.execute(
+            "DELETE FROM edges WHERE src IN (SELECT id FROM symbols WHERE file = ?1)",
+            params![file_record.path.clone()],
+        )?;
+        tx.execute(
+            "DELETE FROM symbols WHERE file = ?1",
+            params![file_record.path.clone()],
+        )?;
+
+        for sym in symbols {
+            tx.execute(
+                "INSERT INTO symbols(id, file, kind, name, start, end, qualifier, visibility, container) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    sym.id,
+                    sym.file,
+                    sym.kind,
+                    sym.name,
+                    sym.start,
+                    sym.end,
+                    sym.qualifier,
+                    sym.visibility,
+                    sym.container
+                ],
+            )?;
+        }
+
+        for edge in edges {
+            tx.execute(
+                "INSERT INTO edges(src, dst, kind) VALUES (?1, ?2, ?3)",
+                params![edge.src, edge.dst, edge.kind],
+            )?;
+        }
+
+        tx.execute(
+            r#"
+            INSERT INTO files(path, hash, mtime, indexed_at)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT(path) DO UPDATE SET
+                hash=excluded.hash,
+                mtime=excluded.mtime,
+                indexed_at=excluded.indexed_at
+            "#,
+            params![
+                file_record.path,
+                file_record.hash,
+                file_record.mtime,
+                file_record.indexed_at
+            ],
+        )?;
+
+        // Update pre-computed aggregates for file statistics
+        let symbol_count = symbols.len() as i64;
+        let function_count = symbols.iter().filter(|s| s.kind == "function").count() as i64;
+        let class_count = symbols.iter().filter(|s| s.kind == "class").count() as i64;
+        let interface_count = symbols.iter().filter(|s| s.kind == "interface").count() as i64;
+
+        tx.execute(
+            r#"
+            INSERT INTO file_stats(file, symbol_count, function_count, class_count, interface_count)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(file) DO UPDATE SET
+                symbol_count = excluded.symbol_count,
+                function_count = excluded.function_count,
+                class_count = excluded.class_count,
+                interface_count = excluded.interface_count
+            "#,
+            params![
+                file_record.path,
+                symbol_count,
+                function_count,
+                class_count,
+                interface_count
+            ],
+        )?;
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Save resolved references for a file (used in two-phase indexing second pass)
+    pub fn save_references(&self, file_path: &str, references: &[ReferenceRecord]) -> Result<()> {
+        let conn = &mut *self.conn.borrow_mut();
+        let tx = conn.transaction()?;
+
+        // Clear existing references for this file (in case of re-indexing)
+        tx.execute(
+            "DELETE FROM references_tbl WHERE file = ?1",
+            params![file_path],
+        )?;
+
+        for r in references {
+            tx.execute(
+                "INSERT INTO references_tbl(file, start, end, symbol_id) VALUES (?1, ?2, ?3, ?4)",
+                params![r.file, r.start, r.end, r.symbol_id],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn db_path(&self) -> &Path {
         &self.db_path
     }

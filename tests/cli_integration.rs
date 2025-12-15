@@ -333,3 +333,51 @@ fn circular_dependency_handling() {
         "b.ts should be in a.ts invalidation set"
     );
 }
+
+#[test]
+fn two_phase_indexing_resolves_import_aliases() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    // Create a file that exports a function
+    let utils_path = root.join("utils.ts");
+    fs::write(&utils_path, "export function helper() { return 42; }\n").unwrap();
+
+    // Create a file that imports with an alias and uses it
+    let main_path = root.join("main.ts");
+    fs::write(
+        &main_path,
+        "import { helper as h } from './utils';\nconst result = h();\n",
+    )
+    .unwrap();
+
+    let db_path = root.join(".gabb/index.db");
+    let store = IndexStore::open(&db_path).unwrap();
+    indexer::build_full_index(root, &store).unwrap();
+
+    // Get the symbol ID for 'helper' in utils.ts
+    let utils_symbols = store.list_symbols(
+        Some(&utils_path.canonicalize().unwrap().to_string_lossy()),
+        None,
+        Some("helper"),
+        None,
+    ).unwrap();
+    assert!(!utils_symbols.is_empty(), "helper should be indexed in utils.ts");
+    let helper_symbol_id = &utils_symbols[0].id;
+
+    // Get references for the helper symbol - should include the aliased usage in main.ts
+    let refs = store.references_for_symbol(helper_symbol_id).unwrap();
+
+    // The reference in main.ts (where 'h()' is called) should resolve to the helper symbol
+    // thanks to two-phase indexing
+    let main_canonical = main_path.canonicalize().unwrap();
+    let main_str = main_canonical.to_string_lossy().to_string();
+
+    // Check if any reference is from main.ts
+    let main_refs: Vec<_> = refs.iter().filter(|r| r.file == main_str).collect();
+    assert!(
+        !main_refs.is_empty(),
+        "expected reference in main.ts to resolve to helper symbol, got refs: {:?}",
+        refs
+    );
+}

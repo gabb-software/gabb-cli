@@ -1,3 +1,4 @@
+use crate::languages::ImportBindingInfo;
 use crate::store::{EdgeRecord, FileDependency, ReferenceRecord, SymbolRecord, normalize_path};
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
@@ -63,7 +64,7 @@ impl ResolvedTarget {
     }
 }
 
-/// Index a TypeScript/TSX file, returning symbols, edges, references, and file dependencies.
+/// Index a TypeScript/TSX file, returning symbols, edges, references, file dependencies, and import bindings.
 pub fn index_file(
     path: &Path,
     source: &str,
@@ -72,6 +73,7 @@ pub fn index_file(
     Vec<EdgeRecord>,
     Vec<ReferenceRecord>,
     Vec<FileDependency>,
+    Vec<ImportBindingInfo>,
 )> {
     let mut parser = Parser::new();
     parser
@@ -84,7 +86,7 @@ pub fn index_file(
     let mut symbols = Vec::new();
     let mut declared_spans: HashSet<(usize, usize)> = HashSet::new();
     let mut symbol_by_name: HashMap<String, SymbolBinding> = HashMap::new();
-    let (imports, mut edges, dependencies) =
+    let (imports, mut edges, dependencies, import_bindings) =
         collect_import_bindings(path, source, &tree.root_node());
 
     {
@@ -118,7 +120,7 @@ pub fn index_file(
         &imports,
     ));
 
-    Ok((symbols, edges, references, dependencies))
+    Ok((symbols, edges, references, dependencies, import_bindings))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -385,10 +387,12 @@ fn collect_import_bindings(
     HashMap<String, ImportBinding>,
     Vec<EdgeRecord>,
     Vec<FileDependency>,
+    Vec<ImportBindingInfo>,
 ) {
     let mut imports = HashMap::new();
     let mut edges = Vec::new();
     let mut dependencies = Vec::new();
+    let mut import_binding_infos = Vec::new();
     let mut seen_deps: HashSet<String> = HashSet::new();
     let mut stack = vec![*root];
     let from_file = normalize_path(path);
@@ -402,16 +406,15 @@ fn collect_import_bindings(
             let qualifier = raw_source.as_ref().map(|raw| import_qualifier(path, raw));
 
             // Record file dependency with resolved path
-            if let Some(ref raw) = raw_source {
-                if let Some(resolved) = resolve_import_path(path, raw) {
-                    if !seen_deps.contains(&resolved) {
-                        seen_deps.insert(resolved.clone());
-                        dependencies.push(FileDependency {
-                            from_file: from_file.clone(),
-                            to_file: resolved,
-                            kind: "import".to_string(),
-                        });
-                    }
+            let resolved_source = raw_source.as_ref().and_then(|raw| resolve_import_path(path, raw));
+            if let Some(ref resolved) = resolved_source {
+                if !seen_deps.contains(resolved) {
+                    seen_deps.insert(resolved.clone());
+                    dependencies.push(FileDependency {
+                        from_file: from_file.clone(),
+                        to_file: resolved.clone(),
+                        kind: "import".to_string(),
+                    });
                 }
             }
 
@@ -427,21 +430,37 @@ fn collect_import_bindings(
                         } else {
                             imported_name.clone()
                         };
-                        let binding = ImportBinding::new(qualifier.clone(), Some(imported_name));
+                        let binding = ImportBinding::new(qualifier.clone(), Some(imported_name.clone()));
                         add_import_binding(
                             path,
                             &alias_node,
-                            local_name,
+                            local_name.clone(),
                             binding,
                             &mut imports,
                             &mut edges,
                         );
+                        // Track for two-phase resolution
+                        if let Some(ref source_file) = resolved_source {
+                            import_binding_infos.push(ImportBindingInfo {
+                                local_name,
+                                source_file: source_file.clone(),
+                                original_name: imported_name,
+                            });
+                        }
                         continue;
                     }
                     "identifier" => {
                         let name = slice(source, &n);
                         let binding = ImportBinding::new(qualifier.clone(), None);
-                        add_import_binding(path, &n, name, binding, &mut imports, &mut edges);
+                        add_import_binding(path, &n, name.clone(), binding, &mut imports, &mut edges);
+                        // Default import - local name equals original name
+                        if let Some(ref source_file) = resolved_source {
+                            import_binding_infos.push(ImportBindingInfo {
+                                local_name: name.clone(),
+                                source_file: source_file.clone(),
+                                original_name: name,
+                            });
+                        }
                         continue;
                     }
                     "namespace_import" => {
@@ -456,6 +475,7 @@ fn collect_import_bindings(
                                 &mut imports,
                                 &mut edges,
                             );
+                            // Namespace imports are handled specially - they don't map to a single symbol
                         }
                         continue;
                     }
@@ -476,7 +496,7 @@ fn collect_import_bindings(
         }
     }
 
-    (imports, edges, dependencies)
+    (imports, edges, dependencies, import_binding_infos)
 }
 
 fn add_import_binding(
@@ -763,7 +783,7 @@ mod tests {
         "#;
         fs::write(&path, source).unwrap();
 
-        let (symbols, edges, _refs, _deps) = index_file(&path, source).unwrap();
+        let (symbols, edges, _refs, _deps, _imports) = index_file(&path, source).unwrap();
         let names: Vec<_> = symbols.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"Foo"));
         assert!(names.contains(&"Bar"));
@@ -805,8 +825,8 @@ mod tests {
         fs::write(&iface_path, iface_src).unwrap();
         fs::write(&impl_path, impl_src).unwrap();
 
-        let (iface_symbols, _, _, _) = index_file(&iface_path, iface_src).unwrap();
-        let (_, impl_edges, _, _) = index_file(&impl_path, impl_src).unwrap();
+        let (iface_symbols, _, _, _, _) = index_file(&iface_path, iface_src).unwrap();
+        let (_, impl_edges, _, _, _) = index_file(&impl_path, impl_src).unwrap();
 
         let _base = iface_symbols.iter().find(|s| s.name == "Base").unwrap();
         assert!(
@@ -827,7 +847,7 @@ mod tests {
         "#;
         fs::write(&path, source).unwrap();
 
-        let (_symbols, edges, _refs, _deps) = index_file(&path, source).unwrap();
+        let (_symbols, edges, _refs, _deps, _imports) = index_file(&path, source).unwrap();
         let import_edges: Vec<_> = edges
             .iter()
             .filter(|e| e.kind == "import")

@@ -1,3 +1,4 @@
+use crate::languages::ImportBindingInfo;
 use crate::store::{EdgeRecord, FileDependency, ReferenceRecord, SymbolRecord, normalize_path};
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
@@ -39,7 +40,7 @@ impl ResolvedTarget {
     }
 }
 
-/// Index a Rust file, returning symbols, edges, references, and file dependencies.
+/// Index a Rust file, returning symbols, edges, references, file dependencies, and import bindings.
 pub fn index_file(
     path: &Path,
     source: &str,
@@ -48,6 +49,7 @@ pub fn index_file(
     Vec<EdgeRecord>,
     Vec<ReferenceRecord>,
     Vec<FileDependency>,
+    Vec<ImportBindingInfo>,
 )> {
     let mut parser = Parser::new();
     parser
@@ -86,17 +88,18 @@ pub fn index_file(
         &symbol_by_name,
     );
 
-    // Extract file dependencies from mod and use declarations
-    let dependencies = collect_dependencies(path, source, &tree.root_node());
+    // Extract file dependencies and import bindings from mod and use declarations
+    let (dependencies, import_bindings) = collect_dependencies(path, source, &tree.root_node());
 
-    Ok((symbols, edges, references, dependencies))
+    Ok((symbols, edges, references, dependencies, import_bindings))
 }
 
 /// Extract file dependencies from `mod` and `use` declarations.
 /// - `mod foo;` indicates dependency on foo.rs or foo/mod.rs
 /// - `use crate::foo::Bar;` indicates dependency on the foo module
-fn collect_dependencies(path: &Path, source: &str, root: &Node) -> Vec<FileDependency> {
+fn collect_dependencies(path: &Path, source: &str, root: &Node) -> (Vec<FileDependency>, Vec<ImportBindingInfo>) {
     let mut dependencies = Vec::new();
+    let mut import_bindings = Vec::new();
     let mut seen = HashSet::new();
     let from_file = normalize_path(path);
     let parent = path.parent();
@@ -139,10 +142,13 @@ fn collect_dependencies(path: &Path, source: &str, root: &Node) -> Vec<FileDepen
                         seen.insert(key.clone());
                         dependencies.push(FileDependency {
                             from_file: from_file.clone(),
-                            to_file: resolved,
+                            to_file: resolved.clone(),
                             kind: "use".to_string(),
                         });
                     }
+                    // Extract import bindings for two-phase resolution
+                    let bindings = extract_use_bindings(source, &node, &resolved);
+                    import_bindings.extend(bindings);
                 }
             }
         }
@@ -153,7 +159,59 @@ fn collect_dependencies(path: &Path, source: &str, root: &Node) -> Vec<FileDepen
         }
     }
 
-    dependencies
+    (dependencies, import_bindings)
+}
+
+/// Extract import bindings from a use declaration
+fn extract_use_bindings(source: &str, node: &Node, source_file: &str) -> Vec<ImportBindingInfo> {
+    let mut bindings = Vec::new();
+    let mut stack = vec![*node];
+
+    while let Some(n) = stack.pop() {
+        match n.kind() {
+            "use_as_clause" => {
+                // `use foo::bar as baz;` - bar aliased as baz
+                if let Some(path_node) = n.child_by_field_name("path") {
+                    let original_name = extract_last_path_segment(source, &path_node);
+                    if let Some(alias_node) = n.child_by_field_name("alias") {
+                        let local_name = slice(source, &alias_node);
+                        if !local_name.is_empty() && !original_name.is_empty() {
+                            bindings.push(ImportBindingInfo {
+                                local_name,
+                                source_file: source_file.to_string(),
+                                original_name,
+                            });
+                        }
+                    }
+                }
+            }
+            "scoped_identifier" | "identifier" => {
+                // Simple use without alias: local_name == original_name
+                let name = extract_last_path_segment(source, &n);
+                if !name.is_empty() && n.parent().map(|p| p.kind()) != Some("use_as_clause") {
+                    bindings.push(ImportBindingInfo {
+                        local_name: name.clone(),
+                        source_file: source_file.to_string(),
+                        original_name: name,
+                    });
+                }
+            }
+            _ => {
+                let mut cursor = n.walk();
+                for child in n.children(&mut cursor) {
+                    stack.push(child);
+                }
+            }
+        }
+    }
+
+    bindings
+}
+
+/// Extract the last segment of a path (e.g., "bar" from "foo::bar")
+fn extract_last_path_segment(source: &str, node: &Node) -> String {
+    let text = slice(source, node);
+    text.rsplit("::").next().unwrap_or(&text).to_string()
 }
 
 /// Resolve a mod declaration to a file path
@@ -619,7 +677,7 @@ mod tests {
         "#;
         fs::write(&path, source).unwrap();
 
-        let (symbols, edges, _refs, _deps) = index_file(&path, source).unwrap();
+        let (symbols, edges, _refs, _deps, _imports) = index_file(&path, source).unwrap();
         let names: Vec<_> = symbols.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"Thing"));
         assert!(names.contains(&"make"));
@@ -651,7 +709,7 @@ mod tests {
         "#;
         fs::write(&path, source).unwrap();
 
-        let (symbols, edges, _refs, _deps) = index_file(&path, source).unwrap();
+        let (symbols, edges, _refs, _deps, _imports) = index_file(&path, source).unwrap();
         let person = symbols.iter().find(|s| s.name == "Person").unwrap();
         let greeter = symbols.iter().find(|s| s.name == "Greeter").unwrap();
 

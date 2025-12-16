@@ -7,7 +7,7 @@
 //! from file paths passed to tools, enabling one MCP server to handle multiple
 //! projects.
 
-use crate::store::{IndexStore, SymbolRecord};
+use crate::store::{DuplicateGroup, IndexStore, SymbolRecord};
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -428,6 +428,33 @@ impl McpServer {
                     "properties": {}
                 }),
             },
+            Tool {
+                name: "gabb_duplicates".to_string(),
+                description: concat!(
+                    "Find duplicate or near-duplicate code blocks in the codebase. ",
+                    "USE THIS to identify copy-paste code, find refactoring opportunities, ",
+                    "or detect code that should be consolidated into shared utilities. ",
+                    "Groups symbols (functions, methods, classes) by identical content hash. ",
+                    "Can filter by symbol kind or focus on recently changed files."
+                ).to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "description": "Filter by symbol kind: function, method, class, etc. Useful to focus on function duplicates."
+                        },
+                        "min_count": {
+                            "type": "integer",
+                            "description": "Minimum number of duplicates to report (default: 2). Increase to find more widespread duplication."
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of duplicate groups to return (default: 20)"
+                        }
+                    }
+                }),
+            },
         ];
 
         Ok(json!({ "tools": tools }))
@@ -448,6 +475,7 @@ impl McpServer {
             "gabb_usages" => self.tool_usages(&arguments),
             "gabb_implementations" => self.tool_implementations(&arguments),
             "gabb_daemon_status" => self.tool_daemon_status(),
+            "gabb_duplicates" => self.tool_duplicates(&arguments),
             _ => Ok(ToolResult::error(format!("Unknown tool: {}", name))),
         }?;
 
@@ -852,6 +880,26 @@ impl McpServer {
         Ok(ToolResult::text(status))
     }
 
+    fn tool_duplicates(&mut self, args: &Value) -> Result<ToolResult> {
+        let kind = args.get("kind").and_then(|v| v.as_str());
+        let min_count = args.get("min_count").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+
+        // Use default workspace
+        let workspace = self.default_workspace.clone();
+        let store = self.get_store_for_workspace(&workspace)?;
+
+        let groups = store.find_duplicate_groups(min_count, kind, None)?;
+
+        if groups.is_empty() {
+            return Ok(ToolResult::text("No duplicate code found."));
+        }
+
+        let groups: Vec<_> = groups.into_iter().take(limit).collect();
+        let output = format_duplicate_groups(&groups, &workspace);
+        Ok(ToolResult::text(output))
+    }
+
     // ==================== Helper Methods ====================
 
     fn resolve_path_for_workspace(&self, path: &str, workspace: &Path) -> PathBuf {
@@ -948,6 +996,54 @@ fn format_symbol(sym: &SymbolRecord, workspace_root: &Path) -> String {
     }
 
     parts.join("\n")
+}
+
+fn format_duplicate_groups(groups: &[DuplicateGroup], workspace_root: &Path) -> String {
+    let total_groups = groups.len();
+    let total_duplicates: usize = groups.iter().map(|g| g.symbols.len()).sum();
+
+    let mut output = format!(
+        "Found {} duplicate groups ({} total symbols)\n\n",
+        total_groups, total_duplicates
+    );
+
+    for (i, group) in groups.iter().enumerate() {
+        let short_hash = &group.content_hash[..8.min(group.content_hash.len())];
+        output.push_str(&format!(
+            "Group {} ({} duplicates, hash: {}):\n",
+            i + 1,
+            group.symbols.len(),
+            short_hash
+        ));
+
+        for sym in &group.symbols {
+            let rel_path = PathBuf::from(&sym.file)
+                .strip_prefix(workspace_root)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| sym.file.clone());
+
+            let location = if let Ok((line, col)) = offset_to_line_col(&sym.file, sym.start as usize)
+            {
+                format!("{}:{}:{}", rel_path, line, col)
+            } else {
+                format!("{}:offset:{}", rel_path, sym.start)
+            };
+
+            let container = sym
+                .container
+                .as_ref()
+                .map(|c| format!(" in {}", c))
+                .unwrap_or_default();
+
+            output.push_str(&format!(
+                "  {:<10} {:<30} {}{}\n",
+                sym.kind, sym.name, location, container
+            ));
+        }
+        output.push('\n');
+    }
+
+    output
 }
 
 /// Convert byte offset to 1-based line:column

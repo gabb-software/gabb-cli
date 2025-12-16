@@ -1916,9 +1916,8 @@ fn split_file_and_embedded_position(file: &Path) -> (PathBuf, Option<(usize, usi
 fn claude_desktop_config_path() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
-        dirs::home_dir().map(|h| {
-            h.join("Library/Application Support/Claude/claude_desktop_config.json")
-        })
+        dirs::home_dir()
+            .map(|h| h.join("Library/Application Support/Claude/claude_desktop_config.json"))
     }
     #[cfg(target_os = "windows")]
     {

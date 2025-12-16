@@ -686,7 +686,9 @@ impl McpServer {
         let file_path = self.resolve_path_for_workspace(file, &workspace);
 
         // Find symbol at position
-        if let Some(symbol) = self.find_symbol_at_in_workspace(&file_path, line, character, &workspace)? {
+        if let Some(symbol) =
+            self.find_symbol_at_in_workspace(&file_path, line, character, &workspace)?
+        {
             let output = format_symbol(&symbol, &workspace);
             return Ok(ToolResult::text(format!("Definition:\n{}", output)));
         }
@@ -718,15 +720,16 @@ impl McpServer {
         let file_path = self.resolve_path_for_workspace(file, &workspace);
 
         // Find symbol at position
-        let symbol = match self.find_symbol_at_in_workspace(&file_path, line, character, &workspace)? {
-            Some(s) => s,
-            None => {
-                return Ok(ToolResult::text(format!(
-                    "No symbol found at {}:{}:{}",
-                    file, line, character
-                )));
-            }
-        };
+        let symbol =
+            match self.find_symbol_at_in_workspace(&file_path, line, character, &workspace)? {
+                Some(s) => s,
+                None => {
+                    return Ok(ToolResult::text(format!(
+                        "No symbol found at {}:{}:{}",
+                        file, line, character
+                    )));
+                }
+            };
 
         // Find references using references_for_symbol
         let store = self.get_store_for_workspace(&workspace)?;
@@ -773,15 +776,16 @@ impl McpServer {
         let file_path = self.resolve_path_for_workspace(file, &workspace);
 
         // Find symbol at position
-        let symbol = match self.find_symbol_at_in_workspace(&file_path, line, character, &workspace)? {
-            Some(s) => s,
-            None => {
-                return Ok(ToolResult::text(format!(
-                    "No symbol found at {}:{}:{}",
-                    file, line, character
-                )));
-            }
-        };
+        let symbol =
+            match self.find_symbol_at_in_workspace(&file_path, line, character, &workspace)? {
+                Some(s) => s,
+                None => {
+                    return Ok(ToolResult::text(format!(
+                        "No symbol found at {}:{}:{}",
+                        file, line, character
+                    )));
+                }
+            };
 
         // Find implementations via edges_to (edges pointing TO the symbol from implementations)
         let store = self.get_store_for_workspace(&workspace)?;
@@ -1022,12 +1026,12 @@ fn format_duplicate_groups(groups: &[DuplicateGroup], workspace_root: &Path) -> 
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| sym.file.clone());
 
-            let location = if let Ok((line, col)) = offset_to_line_col(&sym.file, sym.start as usize)
-            {
-                format!("{}:{}:{}", rel_path, line, col)
-            } else {
-                format!("{}:offset:{}", rel_path, sym.start)
-            };
+            let location =
+                if let Ok((line, col)) = offset_to_line_col(&sym.file, sym.start as usize) {
+                    format!("{}:{}:{}", rel_path, line, col)
+                } else {
+                    format!("{}:offset:{}", rel_path, sym.start)
+                };
 
             let container = sym
                 .container

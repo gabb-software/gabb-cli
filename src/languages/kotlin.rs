@@ -204,11 +204,14 @@ fn handle_class(
     symbol_by_name: &mut HashMap<String, String>,
 ) {
     if let Some(name) = find_name(node, source) {
+        // Determine the kind based on modifiers and keywords
+        let kind = determine_class_kind(node);
+
         let sym = make_symbol(
             path,
             node,
             &name,
-            "class",
+            &kind,
             container.clone(),
             source.as_bytes(),
         );
@@ -219,6 +222,101 @@ fn handle_class(
         record_inheritance_edges(path, source, node, &sym.id, edges, symbol_by_name);
 
         symbols.push(sym);
+
+        // For enum classes, also extract enum entries
+        if kind == "enum_class" {
+            extract_enum_entries(
+                path,
+                source,
+                node,
+                Some(name),
+                symbols,
+                declared_spans,
+                symbol_by_name,
+            );
+        }
+    }
+}
+
+/// Determine the kind of a class_declaration node
+fn determine_class_kind(node: &Node) -> String {
+    let mut is_data = false;
+    let mut is_sealed = false;
+    let mut is_enum = false;
+    let mut is_interface = false;
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "modifiers" => {
+                // Check for data/sealed modifiers
+                let mut mod_cursor = child.walk();
+                for modifier in child.children(&mut mod_cursor) {
+                    if modifier.kind() == "class_modifier" {
+                        let mut class_mod_cursor = modifier.walk();
+                        for cm in modifier.children(&mut class_mod_cursor) {
+                            match cm.kind() {
+                                "data" => is_data = true,
+                                "sealed" => is_sealed = true,
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            "enum" => is_enum = true,
+            "interface" => is_interface = true,
+            _ => {}
+        }
+    }
+
+    // Determine final kind based on flags
+    if is_enum {
+        "enum_class".to_string()
+    } else if is_sealed && is_interface {
+        "sealed_interface".to_string()
+    } else if is_sealed {
+        "sealed_class".to_string()
+    } else if is_data {
+        "data_class".to_string()
+    } else if is_interface {
+        "interface".to_string()
+    } else {
+        "class".to_string()
+    }
+}
+
+/// Extract enum entries from an enum class
+fn extract_enum_entries(
+    path: &Path,
+    source: &str,
+    node: &Node,
+    container: Option<String>,
+    symbols: &mut Vec<SymbolRecord>,
+    declared_spans: &mut HashSet<(usize, usize)>,
+    symbol_by_name: &mut HashMap<String, String>,
+) {
+    let mut stack = vec![*node];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "enum_entry" {
+            if let Some(entry_name) = find_name(&n, source) {
+                let sym = make_symbol(
+                    path,
+                    &n,
+                    &entry_name,
+                    "enum_entry",
+                    container.clone(),
+                    source.as_bytes(),
+                );
+                declared_spans.insert((sym.start as usize, sym.end as usize));
+                symbol_by_name.insert(entry_name, sym.id.clone());
+                symbols.push(sym);
+            }
+        }
+        let mut cursor = n.walk();
+        for child in n.children(&mut cursor) {
+            stack.push(child);
+        }
     }
 }
 
@@ -753,5 +851,98 @@ mod tests {
         assert!(names.contains(&"Factory"));
         assert!(names.contains(&"Companion"));
         assert!(names.contains(&"create"));
+    }
+
+    #[test]
+    fn extracts_data_sealed_enum_classes() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("SpecialClasses.kt");
+        let source = r#"
+data class Person(val name: String, val age: Int)
+
+sealed class Result {
+    data class Success(val value: String) : Result()
+    data class Error(val message: String) : Result()
+}
+
+sealed interface Event {
+    data class Click(val x: Int) : Event
+    object Close : Event
+}
+
+enum class Color {
+    RED,
+    GREEN,
+    BLUE
+}
+
+enum class Direction(val degrees: Int) {
+    NORTH(0),
+    EAST(90),
+    SOUTH(180),
+    WEST(270)
+}
+        "#;
+        fs::write(&path, source).unwrap();
+
+        let (symbols, _edges, _refs, _deps, _imports) = index_file(&path, source).unwrap();
+
+        // Check data class
+        let person = symbols.iter().find(|s| s.name == "Person").unwrap();
+        assert_eq!(person.kind, "data_class", "Person should be a data_class");
+
+        // Check sealed class
+        let result = symbols.iter().find(|s| s.name == "Result").unwrap();
+        assert_eq!(
+            result.kind, "sealed_class",
+            "Result should be a sealed_class"
+        );
+
+        // Check nested data classes inside sealed class
+        let success = symbols.iter().find(|s| s.name == "Success").unwrap();
+        assert_eq!(success.kind, "data_class", "Success should be a data_class");
+        assert_eq!(
+            success.container.as_deref(),
+            Some("Result"),
+            "Success should be inside Result"
+        );
+
+        // Check sealed interface
+        let event = symbols.iter().find(|s| s.name == "Event").unwrap();
+        assert_eq!(
+            event.kind, "sealed_interface",
+            "Event should be a sealed_interface"
+        );
+
+        // Check enum class
+        let color = symbols.iter().find(|s| s.name == "Color").unwrap();
+        assert_eq!(color.kind, "enum_class", "Color should be an enum_class");
+
+        // Check enum entries
+        let red = symbols.iter().find(|s| s.name == "RED").unwrap();
+        assert_eq!(red.kind, "enum_entry", "RED should be an enum_entry");
+        assert_eq!(
+            red.container.as_deref(),
+            Some("Color"),
+            "RED should be inside Color"
+        );
+
+        let green = symbols.iter().find(|s| s.name == "GREEN").unwrap();
+        assert_eq!(green.kind, "enum_entry", "GREEN should be an enum_entry");
+
+        // Check Direction enum
+        let direction = symbols.iter().find(|s| s.name == "Direction").unwrap();
+        assert_eq!(
+            direction.kind, "enum_class",
+            "Direction should be an enum_class"
+        );
+
+        let north = symbols.iter().find(|s| s.name == "NORTH").unwrap();
+        assert_eq!(north.kind, "enum_entry", "NORTH should be an enum_entry");
+        assert_eq!(
+            north.container.as_deref(),
+            Some("Direction"),
+            "NORTH should be inside Direction"
+        );
     }
 }

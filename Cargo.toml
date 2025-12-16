@@ -1,6 +1,6 @@
 [package]
 name = "gabb-cli"
-version = "0.7.6"
+version = "0.7.7"
 edition = "2021"
 description = "Fast local code indexing CLI for TypeScript, Rust, and Kotlin projects"
 license = "MIT"

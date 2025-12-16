@@ -200,6 +200,33 @@ codex mcp list         # List configured servers
 - All tools work with the index database at `.gabb/index.db` relative to the workspace root
 - Use absolute paths for Claude Desktop and Codex; use `.` for Claude Code (it runs from your project directory)
 
+---
+
+### MCP Configuration Commands
+
+Gabb provides helper commands to simplify MCP setup:
+
+```bash
+# Print MCP config JSON for manual setup
+gabb mcp config
+
+# Auto-install into Claude Desktop/Code configuration
+gabb mcp install                    # Install to both Claude Desktop and Claude Code
+gabb mcp install --claude-desktop   # Install to Claude Desktop only
+gabb mcp install --claude-code      # Install to Claude Code only (creates .claude/mcp.json)
+
+# Check current MCP configuration status
+gabb mcp status
+
+# Remove gabb from MCP configuration
+gabb mcp uninstall
+
+# Generate a slash command for Claude Code
+gabb mcp command                    # Creates .claude/commands/gabb.md
+```
+
+The `gabb mcp command` creates a `/gabb` slash command in your project that helps Claude Code discover and use gabb's MCP tools for code navigation.
+
 ## Project Layout
 - `src/main.rs`: CLI entrypoint and logging setup
 - `src/daemon.rs`: filesystem watcher and incremental indexing loop

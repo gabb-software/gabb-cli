@@ -575,6 +575,12 @@ enum McpCommands {
         #[arg(long)]
         claude_code: bool,
     },
+    /// Generate a slash command for Claude Code
+    Command {
+        /// Workspace root where .claude/commands will be created
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -732,6 +738,7 @@ fn main() -> Result<()> {
                 claude_desktop,
                 claude_code,
             } => mcp_uninstall(claude_desktop, claude_code),
+            McpCommands::Command { root } => mcp_command(&root),
         },
         Commands::Init {
             root,
@@ -2280,6 +2287,48 @@ fn uninstall_from_config_file(config_path: &Path) -> Result<bool> {
     fs::write(config_path, content)?;
 
     Ok(true)
+}
+
+/// Generate a slash command file for Claude Code
+fn mcp_command(root: &Path) -> Result<()> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+
+    // Create .claude/commands directory
+    let commands_dir = root.join(".claude").join("commands");
+    if !commands_dir.exists() {
+        fs::create_dir_all(&commands_dir)?;
+        println!("Created .claude/commands/");
+    }
+
+    let command_file = commands_dir.join("gabb.md");
+
+    // Generate the slash command content
+    let content = r#"---
+description: Search code symbols with gabb
+---
+Use the gabb MCP tools to help with this code navigation request.
+
+Available tools:
+- gabb_symbols: List/search symbols (functions, classes, types)
+- gabb_usages: Find all references to a symbol
+- gabb_definition: Go to where a symbol is defined
+- gabb_implementations: Find implementations of interfaces/traits
+- gabb_duplicates: Find duplicate code in the codebase
+
+If the index doesn't exist, gabb will auto-start the daemon to build it.
+"#;
+
+    if command_file.exists() {
+        println!("Slash command already exists at {}", command_file.display());
+        println!("To overwrite, delete it first and run this command again.");
+    } else {
+        fs::write(&command_file, content)?;
+        println!("Created slash command: {}", command_file.display());
+        println!();
+        println!("You can now use /gabb in Claude Code to invoke gabb tools.");
+    }
+
+    Ok(())
 }
 
 // ==================== Init Command ====================

@@ -14,7 +14,7 @@ fn daemon_creates_db_and_handles_updates() {
     let dir = tempdir().unwrap();
     let root = dir.path();
     let db_path = root.join(".gabb/index.db");
-    let bin = env!("CARGO_BIN_EXE_gabb-cli");
+    let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Seed a TypeScript file.
     let file_path = root.join("foo.ts");

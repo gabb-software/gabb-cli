@@ -38,14 +38,14 @@ jobs:
       - name: Package (Unix)
         run: |
           cd target/${{ matrix.target }}/release
-          tar -czvf ../../../gabb-cli-${{ matrix.target }}.tar.gz gabb-cli
+          tar -czvf ../../../gabb-${{ matrix.target }}.tar.gz gabb
           cd ../../..
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gabb-cli-${{ matrix.target }}
-          path: gabb-cli-${{ matrix.target }}.tar.gz
+          name: gabb-${{ matrix.target }}
+          path: gabb-${{ matrix.target }}.tar.gz
 
   universal-macos:
     name: Create Universal macOS Binary
@@ -57,27 +57,27 @@ jobs:
       - name: Download x86_64 artifact
         uses: actions/download-artifact@v4
         with:
-          name: gabb-cli-x86_64-apple-darwin
+          name: gabb-x86_64-apple-darwin
 
       - name: Download aarch64 artifact
         uses: actions/download-artifact@v4
         with:
-          name: gabb-cli-aarch64-apple-darwin
+          name: gabb-aarch64-apple-darwin
 
       - name: Create universal binary
         run: |
           mkdir -p x86_64 aarch64 universal
-          tar -xzf gabb-cli-x86_64-apple-darwin.tar.gz -C x86_64
-          tar -xzf gabb-cli-aarch64-apple-darwin.tar.gz -C aarch64
-          lipo -create -output universal/gabb-cli x86_64/gabb-cli aarch64/gabb-cli
+          tar -xzf gabb-x86_64-apple-darwin.tar.gz -C x86_64
+          tar -xzf gabb-aarch64-apple-darwin.tar.gz -C aarch64
+          lipo -create -output universal/gabb x86_64/gabb aarch64/gabb
           cd universal
-          tar -czvf ../gabb-cli-universal-apple-darwin.tar.gz gabb-cli
+          tar -czvf ../gabb-universal-apple-darwin.tar.gz gabb
 
       - name: Upload universal artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gabb-cli-universal-apple-darwin
-          path: gabb-cli-universal-apple-darwin.tar.gz
+          name: gabb-universal-apple-darwin
+          path: gabb-universal-apple-darwin.tar.gz
 
   release:
     name: Create Release
@@ -96,10 +96,10 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir release
-          mv artifacts/gabb-cli-x86_64-apple-darwin/*.tar.gz release/
-          mv artifacts/gabb-cli-aarch64-apple-darwin/*.tar.gz release/
-          mv artifacts/gabb-cli-universal-apple-darwin/*.tar.gz release/
-          mv artifacts/gabb-cli-x86_64-unknown-linux-gnu/*.tar.gz release/
+          mv artifacts/gabb-x86_64-apple-darwin/*.tar.gz release/
+          mv artifacts/gabb-aarch64-apple-darwin/*.tar.gz release/
+          mv artifacts/gabb-universal-apple-darwin/*.tar.gz release/
+          mv artifacts/gabb-x86_64-unknown-linux-gnu/*.tar.gz release/
           cd release
           sha256sum *.tar.gz > SHA256SUMS.txt
           cat SHA256SUMS.txt
@@ -141,11 +141,11 @@ jobs:
       - name: Update formula
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
-          cat > homebrew-tap/Formula/gabb-cli.rb << 'EOF'
+          cat > homebrew-tap/Formula/gabb.rb << 'EOF'
           # typed: false
           # frozen_string_literal: true
 
-          class GabbCli < Formula
+          class Gabb < Formula
             desc "Fast local code indexing CLI for TypeScript and Rust projects"
             homepage "https://github.com/gabb-software/gabb-cli"
             version "VERSION_PLACEHOLDER"
@@ -153,44 +153,44 @@ jobs:
 
             on_macos do
               if Hardware::CPU.arm?
-                url "https://github.com/gabb-software/gabb-cli/releases/download/v#{version}/gabb-cli-aarch64-apple-darwin.tar.gz"
+                url "https://github.com/gabb-software/gabb-cli/releases/download/v#{version}/gabb-aarch64-apple-darwin.tar.gz"
                 sha256 "AARCH64_PLACEHOLDER"
               else
-                url "https://github.com/gabb-software/gabb-cli/releases/download/v#{version}/gabb-cli-x86_64-apple-darwin.tar.gz"
+                url "https://github.com/gabb-software/gabb-cli/releases/download/v#{version}/gabb-x86_64-apple-darwin.tar.gz"
                 sha256 "X86_64_PLACEHOLDER"
               end
             end
 
             on_linux do
               if Hardware::CPU.intel?
-                url "https://github.com/gabb-software/gabb-cli/releases/download/v#{version}/gabb-cli-x86_64-unknown-linux-gnu.tar.gz"
+                url "https://github.com/gabb-software/gabb-cli/releases/download/v#{version}/gabb-x86_64-unknown-linux-gnu.tar.gz"
                 sha256 "LINUX_PLACEHOLDER"
               end
             end
 
             def install
-              bin.install "gabb-cli"
+              bin.install "gabb"
             end
 
             test do
-              assert_match "gabb-cli", shell_output("#{bin}/gabb-cli --version")
+              assert_match "gabb", shell_output("#{bin}/gabb --version")
             end
           end
           EOF
 
           # Replace placeholders
-          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/" homebrew-tap/Formula/gabb-cli.rb
-          sed -i "s/AARCH64_PLACEHOLDER/${{ steps.sha.outputs.aarch64 }}/" homebrew-tap/Formula/gabb-cli.rb
-          sed -i "s/X86_64_PLACEHOLDER/${{ steps.sha.outputs.x86_64 }}/" homebrew-tap/Formula/gabb-cli.rb
-          sed -i "s/LINUX_PLACEHOLDER/${{ steps.sha.outputs.linux }}/" homebrew-tap/Formula/gabb-cli.rb
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/" homebrew-tap/Formula/gabb.rb
+          sed -i "s/AARCH64_PLACEHOLDER/${{ steps.sha.outputs.aarch64 }}/" homebrew-tap/Formula/gabb.rb
+          sed -i "s/X86_64_PLACEHOLDER/${{ steps.sha.outputs.x86_64 }}/" homebrew-tap/Formula/gabb.rb
+          sed -i "s/LINUX_PLACEHOLDER/${{ steps.sha.outputs.linux }}/" homebrew-tap/Formula/gabb.rb
 
-          cat homebrew-tap/Formula/gabb-cli.rb
+          cat homebrew-tap/Formula/gabb.rb
 
       - name: Commit and push
         run: |
           cd homebrew-tap
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/gabb-cli.rb
-          git commit -m "Update gabb-cli to ${GITHUB_REF#refs/tags/v}"
+          git add Formula/gabb.rb
+          git commit -m "Update gabb to ${GITHUB_REF#refs/tags/v}"
           git push

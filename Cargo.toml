@@ -10,6 +10,10 @@ readme = "README.md"
 keywords = ["code-indexing", "symbols", "typescript", "rust", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 
+[[bin]]
+name = "gabb"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1"
 blake3 = "1.5"

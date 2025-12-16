@@ -170,7 +170,7 @@ impl TestWorkspace {
 
     /// Get the CLI binary path
     pub fn cli_bin() -> &'static str {
-        env!("CARGO_BIN_EXE_gabb-cli")
+        env!("CARGO_BIN_EXE_gabb")
     }
 
     /// Run a CLI command against this workspace

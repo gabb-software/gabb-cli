@@ -42,7 +42,7 @@ fn cross_file_usages_via_dependency_graph() {
         deps
     );
 
-    let bin = env!("CARGO_BIN_EXE_gabb-cli");
+    let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Find usages of 'helper' - should find the usage in main.ts
     let usages_out = Command::new(bin)
@@ -117,7 +117,7 @@ fn symbols_and_implementation_commands_work() {
         .expect("symbol foo indexed");
     let (line, character) = offset_to_line_char(&contents, symbol.start as usize).unwrap();
 
-    let bin = env!("CARGO_BIN_EXE_gabb-cli");
+    let bin = env!("CARGO_BIN_EXE_gabb");
 
     // symbols should list the function
     let symbols = Command::new(bin)
@@ -411,7 +411,7 @@ fn definition_command_finds_symbol_declaration() {
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store).unwrap();
 
-    let bin = env!("CARGO_BIN_EXE_gabb-cli");
+    let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Find definition of 'helper' from the usage site in main.ts (line 2, col ~16 for the call)
     // The call `helper()` is at line 2
@@ -454,7 +454,7 @@ fn definition_command_with_json_output() {
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store).unwrap();
 
-    let bin = env!("CARGO_BIN_EXE_gabb-cli");
+    let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Find definition of foo from the call site
     let def_out = Command::new(bin)
@@ -532,7 +532,7 @@ function somethingUnique(x: number): number {
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store).unwrap();
 
-    let bin = env!("CARGO_BIN_EXE_gabb-cli");
+    let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Run duplicates command
     let dup_out = Command::new(bin)
@@ -589,7 +589,7 @@ export function processData(data: string[]): string[] {
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store).unwrap();
 
-    let bin = env!("CARGO_BIN_EXE_gabb-cli");
+    let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Run duplicates command with JSON output
     let dup_out = Command::new(bin)

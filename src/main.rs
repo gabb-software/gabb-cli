@@ -9,7 +9,22 @@ use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use store::{normalize_path, SymbolRecord};
+use store::{normalize_path, DbOpenResult, IndexStore, SymbolRecord};
+
+/// Open index store for query commands with version checking.
+/// Returns a helpful error if the database needs regeneration.
+fn open_store_for_query(db: &Path) -> Result<IndexStore> {
+    match IndexStore::try_open(db)? {
+        DbOpenResult::Ready(store) => Ok(store),
+        DbOpenResult::NeedsRegeneration { reason, .. } => {
+            bail!(
+                "{}\n\nRun `gabb daemon --db {} --rebuild` to regenerate the index.",
+                reason.message(),
+                db.display()
+            )
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "gabb", version, about = "Gabb CLI indexing daemon")]
@@ -250,7 +265,7 @@ fn list_symbols(
     limit: Option<usize>,
     json_output: bool,
 ) -> Result<()> {
-    let store = store::IndexStore::open(db)?;
+    let store = open_store_for_query(db)?;
     let file_str = file.map(|p| p.to_string_lossy().to_string());
     let symbols: Vec<SymbolRecord> = store.list_symbols(file_str.as_deref(), kind, name, limit)?;
 
@@ -303,7 +318,7 @@ fn find_implementation(
     kind: Option<&str>,
     json_output: bool,
 ) -> Result<()> {
-    let store = store::IndexStore::open(db)?;
+    let store = open_store_for_query(db)?;
     let (file, line, character) = parse_file_position(file, line, character)?;
     let target = resolve_symbol_at(&store, &file, line, character)?;
 
@@ -402,7 +417,7 @@ fn find_usages(
     limit: Option<usize>,
     json_output: bool,
 ) -> Result<()> {
-    let store = store::IndexStore::open(db)?;
+    let store = open_store_for_query(db)?;
     let (file, line, character) = parse_file_position(file, line, character)?;
     let target = resolve_symbol_at(&store, &file, line, character)?;
     let workspace_root = workspace_root_from_db(db).unwrap_or_else(|_| {
@@ -552,7 +567,7 @@ fn show_symbol(
     limit: Option<usize>,
     json_output: bool,
 ) -> Result<()> {
-    let store = store::IndexStore::open(db)?;
+    let store = open_store_for_query(db)?;
     let file_str = file.map(|p| p.to_string_lossy().to_string());
     let symbols = store.list_symbols(file_str.as_deref(), kind, Some(name), limit)?;
 
@@ -683,7 +698,7 @@ fn find_definition(
     character: Option<usize>,
     json_output: bool,
 ) -> Result<()> {
-    let store = store::IndexStore::open(db)?;
+    let store = open_store_for_query(db)?;
     let (file, line, character) = parse_file_position(file, line, character)?;
     let canonical_file = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
     let file_str = normalize_path(&canonical_file);
@@ -758,7 +773,7 @@ fn find_duplicates(
     min_count: usize,
     json_output: bool,
 ) -> Result<()> {
-    let store = store::IndexStore::open(db)?;
+    let store = open_store_for_query(db)?;
     let workspace_root = workspace_root_from_db(db)?;
 
     // Get file filter based on git flags

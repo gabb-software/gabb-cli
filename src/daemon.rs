@@ -1,5 +1,5 @@
 use crate::indexer::{build_full_index, index_one, is_indexed_file, remove_if_tracked};
-use crate::store::IndexStore;
+use crate::store::{DbOpenResult, IndexStore, RegenerationReason};
 use anyhow::{Context, Result};
 use log::{debug, info, warn};
 use notify::event::{ModifyKind, RenameMode};
@@ -14,11 +14,31 @@ pub fn run(root: &Path, db_path: &Path, rebuild: bool) -> Result<()> {
         .canonicalize()
         .with_context(|| format!("failed to canonicalize root {}", root.display()))?;
     info!("Opening index at {}", db_path.display());
+
+    // Handle explicit rebuild request
     if rebuild && db_path.exists() {
-        info!("Rebuild requested; deleting {}", db_path.display());
+        info!("{}", RegenerationReason::UserRequested.message());
+        info!("Regenerating index...");
         let _ = fs::remove_file(db_path);
     }
-    let store = IndexStore::open(db_path)?;
+
+    // Try to open with version checking
+    let store = if rebuild {
+        // After explicit rebuild, just open fresh
+        IndexStore::open(db_path)?
+    } else {
+        match IndexStore::try_open(db_path)? {
+            DbOpenResult::Ready(store) => store,
+            DbOpenResult::NeedsRegeneration { reason, path } => {
+                warn!("{}", reason.message());
+                info!("Regenerating index (this may take a minute for large codebases)...");
+                if path.exists() {
+                    let _ = fs::remove_file(&path);
+                }
+                IndexStore::open(db_path)?
+            }
+        }
+    };
 
     build_full_index(&root, &store)?;
 
@@ -30,10 +50,7 @@ pub fn run(root: &Path, db_path: &Path, rebuild: bool) -> Result<()> {
     })?;
     watcher.watch(&root, RecursiveMode::Recursive)?;
 
-    info!(
-        "Watching {} for changes (TypeScript and Rust files)",
-        root.display()
-    );
+    info!("Watching {} for changes", root.display());
     loop {
         match rx.recv_timeout(Duration::from_secs(1)) {
             Ok(Ok(event)) => {

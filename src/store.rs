@@ -1,4 +1,5 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
+use log::info;
 use rusqlite::types::Value;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::Serialize;
@@ -7,6 +8,111 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+// Schema version constants
+pub const SCHEMA_MAJOR: u32 = 1;
+pub const SCHEMA_MINOR: u32 = 0;
+
+/// Schema version for database compatibility checking.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SchemaVersion {
+    pub major: u32,
+    pub minor: u32,
+}
+
+impl SchemaVersion {
+    pub fn current() -> Self {
+        Self {
+            major: SCHEMA_MAJOR,
+            minor: SCHEMA_MINOR,
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        let parts: Vec<&str> = s.split('.').collect();
+        if parts.len() == 2 {
+            Some(Self {
+                major: parts[0].parse().ok()?,
+                minor: parts[1].parse().ok()?,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn requires_regeneration(&self, current: &Self) -> bool {
+        self.major != current.major
+    }
+
+    pub fn requires_migration(&self, current: &Self) -> bool {
+        self.major == current.major && self.minor < current.minor
+    }
+}
+
+impl std::fmt::Display for SchemaVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}", self.major, self.minor)
+    }
+}
+
+/// Result of attempting to open a database.
+pub enum DbOpenResult {
+    /// Database is ready to use
+    Ready(IndexStore),
+    /// Database needs regeneration before use
+    NeedsRegeneration {
+        reason: RegenerationReason,
+        path: PathBuf,
+    },
+}
+
+/// Reason why database regeneration is needed.
+#[derive(Debug)]
+pub enum RegenerationReason {
+    /// Schema major version is incompatible
+    MajorVersionMismatch {
+        db_version: String,
+        app_version: String,
+    },
+    /// Database predates version tracking
+    LegacyDatabase,
+    /// Database file is corrupted
+    CorruptDatabase(String),
+    /// User explicitly requested rebuild
+    UserRequested,
+}
+
+impl RegenerationReason {
+    /// Get a user-friendly message explaining the regeneration reason.
+    pub fn message(&self) -> String {
+        match self {
+            RegenerationReason::MajorVersionMismatch {
+                db_version,
+                app_version,
+            } => {
+                format!(
+                    "Index schema version {} is incompatible with gabb schema {}",
+                    db_version, app_version
+                )
+            }
+            RegenerationReason::LegacyDatabase => {
+                "Found legacy index without version tracking".to_string()
+            }
+            RegenerationReason::CorruptDatabase(err) => {
+                format!("Index database appears corrupted: {}", err)
+            }
+            RegenerationReason::UserRequested => "Rebuild requested by user".to_string(),
+        }
+    }
+}
+
+/// A database migration from one schema version to another.
+struct Migration {
+    from_version: SchemaVersion,
+    to_version: SchemaVersion,
+    description: &'static str,
+    migrate: fn(&Connection) -> Result<()>,
+}
 
 #[derive(Debug, Clone)]
 pub struct FileRecord {
@@ -175,6 +281,9 @@ pub struct IndexStore {
 }
 
 impl IndexStore {
+    /// Open a database, creating it if it doesn't exist.
+    /// This method always succeeds if the file can be created/opened.
+    /// Use `try_open()` for version-aware opening with migration support.
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -186,6 +295,127 @@ impl IndexStore {
         };
         store.init_schema()?;
         Ok(store)
+    }
+
+    /// Try to open a database with version checking.
+    /// Returns `DbOpenResult::Ready` if the database is compatible.
+    /// Returns `DbOpenResult::NeedsRegeneration` if the database needs to be rebuilt.
+    pub fn try_open(path: &Path) -> Result<DbOpenResult> {
+        // If file doesn't exist, create new database
+        if !path.exists() {
+            return Ok(DbOpenResult::Ready(Self::open(path)?));
+        }
+
+        // Open existing database for inspection
+        let conn = Connection::open(path).context("failed to open index database")?;
+
+        // Quick integrity check
+        if let Err(e) = conn.query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0)) {
+            return Ok(DbOpenResult::NeedsRegeneration {
+                reason: RegenerationReason::CorruptDatabase(e.to_string()),
+                path: path.to_path_buf(),
+            });
+        }
+
+        // Check for schema_meta table (indicates versioned database)
+        if !Self::has_schema_meta(&conn) {
+            return Ok(DbOpenResult::NeedsRegeneration {
+                reason: RegenerationReason::LegacyDatabase,
+                path: path.to_path_buf(),
+            });
+        }
+
+        // Read version from database
+        let db_version_str: Option<String> = conn
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        let db_version = match db_version_str.and_then(|s| SchemaVersion::parse(&s)) {
+            Some(v) => v,
+            None => {
+                return Ok(DbOpenResult::NeedsRegeneration {
+                    reason: RegenerationReason::LegacyDatabase,
+                    path: path.to_path_buf(),
+                });
+            }
+        };
+
+        let current = SchemaVersion::current();
+
+        // Check for major version mismatch (requires regeneration)
+        if db_version.requires_regeneration(&current) {
+            return Ok(DbOpenResult::NeedsRegeneration {
+                reason: RegenerationReason::MajorVersionMismatch {
+                    db_version: db_version.to_string(),
+                    app_version: current.to_string(),
+                },
+                path: path.to_path_buf(),
+            });
+        }
+
+        // Close the inspection connection and properly open with schema init
+        drop(conn);
+        let store = Self::open(path)?;
+
+        // Apply migrations if needed (minor version upgrade)
+        if db_version.requires_migration(&current) {
+            info!(
+                "Migrating index from schema {} to {}...",
+                db_version, current
+            );
+            store.apply_migrations(&db_version, &current)?;
+            info!("Migration complete");
+        }
+
+        Ok(DbOpenResult::Ready(store))
+    }
+
+    /// Apply migrations from one version to another.
+    fn apply_migrations(&self, from: &SchemaVersion, to: &SchemaVersion) -> Result<()> {
+        let migrations = Self::get_migrations();
+        let mut current = from.clone();
+
+        for migration in migrations {
+            if migration.from_version == current && migration.to_version <= *to {
+                info!("Applying migration: {}", migration.description);
+                (migration.migrate)(&self.conn.borrow())?;
+
+                // Update stored version
+                self.conn.borrow().execute(
+                    "UPDATE schema_meta SET value = ?1 WHERE key = 'schema_version'",
+                    params![migration.to_version.to_string()],
+                )?;
+                self.conn.borrow().execute(
+                    "UPDATE schema_meta SET value = ?1 WHERE key = 'last_migration'",
+                    params![now_unix().to_string()],
+                )?;
+
+                current = migration.to_version.clone();
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get the list of available migrations.
+    /// Migrations are applied in order from older to newer versions.
+    fn get_migrations() -> Vec<Migration> {
+        vec![
+            // Future migrations will be added here, e.g.:
+            // Migration {
+            //     from_version: SchemaVersion { major: 1, minor: 0 },
+            //     to_version: SchemaVersion { major: 1, minor: 1 },
+            //     description: "Add symbol signature column",
+            //     migrate: |conn| {
+            //         conn.execute("ALTER TABLE symbols ADD COLUMN signature TEXT", [])?;
+            //         Ok(())
+            //     },
+            // },
+        ]
     }
 
     fn init_schema(&self) -> Result<()> {
@@ -273,6 +503,12 @@ impl IndexStore {
             -- Index for reverse dependency lookups (find all files that depend on X)
             CREATE INDEX IF NOT EXISTS idx_deps_to_file ON file_dependencies(to_file, from_file);
 
+            -- Schema metadata for version tracking and migrations
+            CREATE TABLE IF NOT EXISTS schema_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
             -- Triggers to keep FTS5 index in sync with symbols table
             CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
                 INSERT INTO symbols_fts(rowid, name, qualifier)
@@ -297,7 +533,45 @@ impl IndexStore {
             "idx_symbols_content_hash",
             "CREATE INDEX IF NOT EXISTS idx_symbols_content_hash ON symbols(content_hash)",
         )?;
+        // Initialize schema version if not present (new database)
+        self.ensure_schema_version()?;
         Ok(())
+    }
+
+    /// Ensure schema_meta has version info. Only inserts if not already present.
+    fn ensure_schema_version(&self) -> Result<()> {
+        let conn = self.conn.borrow();
+        let version = SchemaVersion::current();
+        let now = now_unix();
+
+        // Insert version if not exists
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('schema_version', ?1)",
+            params![version.to_string()],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('gabb_version', ?1)",
+            params![env!("CARGO_PKG_VERSION")],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('created_at', ?1)",
+            params![now.to_string()],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('last_migration', ?1)",
+            params![now.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Check if schema_meta table exists (indicates versioned database).
+    fn has_schema_meta(conn: &Connection) -> bool {
+        conn.query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'",
+            [],
+            |_| Ok(true),
+        )
+        .unwrap_or(false)
     }
 
     fn ensure_column(&self, table: &str, column: &str, ty: &str) -> Result<()> {
@@ -2835,5 +3109,208 @@ mod tests {
             "Cache should be configured (got {})",
             cache_size
         );
+    }
+
+    // ==================== Schema Migration Tests ====================
+
+    /// Test that new database creation includes version tracking
+    #[test]
+    fn new_database_has_schema_version() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        let conn = store.conn.borrow();
+
+        // Verify schema_meta table exists
+        let table_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_meta'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(table_exists, 1, "schema_meta table should exist");
+
+        // Verify schema_version is set
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            version,
+            format!("{}.{}", SCHEMA_MAJOR, SCHEMA_MINOR),
+            "Schema version should be set to current version"
+        );
+
+        // Verify gabb_version is set
+        let gabb_version: String = conn
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key = 'gabb_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            gabb_version,
+            env!("CARGO_PKG_VERSION"),
+            "Gabb version should be set"
+        );
+    }
+
+    /// Test that try_open returns Ready for current version database
+    #[test]
+    fn try_open_returns_ready_for_current_version() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+
+        // Create a fresh database
+        let _store = IndexStore::open(&db_path).unwrap();
+        drop(_store);
+
+        // try_open should return Ready
+        match IndexStore::try_open(&db_path).unwrap() {
+            DbOpenResult::Ready(_) => {}
+            DbOpenResult::NeedsRegeneration { reason, .. } => {
+                panic!(
+                    "Expected Ready, got NeedsRegeneration: {}",
+                    reason.message()
+                );
+            }
+        }
+    }
+
+    /// Test that legacy database (no schema_meta) triggers regeneration
+    #[test]
+    fn legacy_database_triggers_regeneration() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+
+        // Create a legacy database without schema_meta table
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute(
+                "CREATE TABLE files (path TEXT PRIMARY KEY, hash TEXT, mtime INTEGER)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "CREATE TABLE symbols (id TEXT PRIMARY KEY, file TEXT, kind TEXT, name TEXT)",
+                [],
+            )
+            .unwrap();
+            // Note: No schema_meta table
+        }
+
+        // try_open should detect legacy database
+        match IndexStore::try_open(&db_path).unwrap() {
+            DbOpenResult::Ready(_) => {
+                panic!("Expected NeedsRegeneration for legacy database");
+            }
+            DbOpenResult::NeedsRegeneration { reason, .. } => {
+                assert!(
+                    matches!(reason, RegenerationReason::LegacyDatabase),
+                    "Expected LegacyDatabase reason"
+                );
+            }
+        }
+    }
+
+    /// Test that major version mismatch triggers regeneration
+    #[test]
+    fn major_version_mismatch_triggers_regeneration() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+
+        // Create a database with a different major version
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute(
+                "CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                [],
+            )
+            .unwrap();
+            // Insert a future major version
+            conn.execute(
+                "INSERT INTO schema_meta (key, value) VALUES ('schema_version', '99.0')",
+                [],
+            )
+            .unwrap();
+        }
+
+        // try_open should detect major version mismatch
+        match IndexStore::try_open(&db_path).unwrap() {
+            DbOpenResult::Ready(_) => {
+                panic!("Expected NeedsRegeneration for major version mismatch");
+            }
+            DbOpenResult::NeedsRegeneration { reason, .. } => match reason {
+                RegenerationReason::MajorVersionMismatch {
+                    db_version,
+                    app_version,
+                } => {
+                    assert_eq!(db_version, "99.0");
+                    assert_eq!(app_version, format!("{}.{}", SCHEMA_MAJOR, SCHEMA_MINOR));
+                }
+                _ => panic!("Expected MajorVersionMismatch reason"),
+            },
+        }
+    }
+
+    /// Test SchemaVersion comparison and parsing
+    #[test]
+    fn schema_version_parsing_and_comparison() {
+        // Test parsing
+        assert_eq!(
+            SchemaVersion::parse("1.0"),
+            Some(SchemaVersion { major: 1, minor: 0 })
+        );
+        assert_eq!(
+            SchemaVersion::parse("2.15"),
+            Some(SchemaVersion {
+                major: 2,
+                minor: 15
+            })
+        );
+        assert_eq!(SchemaVersion::parse("invalid"), None);
+        assert_eq!(SchemaVersion::parse("1"), None);
+        assert_eq!(SchemaVersion::parse(""), None);
+
+        // Test requires_regeneration (major version difference)
+        let v1_0 = SchemaVersion { major: 1, minor: 0 };
+        let v1_5 = SchemaVersion { major: 1, minor: 5 };
+        let v2_0 = SchemaVersion { major: 2, minor: 0 };
+
+        assert!(!v1_0.requires_regeneration(&v1_5)); // Same major, no regen
+        assert!(v1_0.requires_regeneration(&v2_0)); // Different major, regen
+        assert!(v2_0.requires_regeneration(&v1_0)); // Different major, regen
+
+        // Test requires_migration (same major, lower minor)
+        assert!(v1_0.requires_migration(&v1_5)); // 1.0 needs migration to 1.5
+        assert!(!v1_5.requires_migration(&v1_0)); // 1.5 doesn't need migration to 1.0
+        assert!(!v1_5.requires_migration(&v1_5)); // Same version, no migration
+        assert!(!v1_0.requires_migration(&v2_0)); // Different major, use regen not migration
+    }
+
+    /// Test RegenerationReason message formatting
+    #[test]
+    fn regeneration_reason_messages() {
+        let legacy = RegenerationReason::LegacyDatabase;
+        assert!(legacy.message().contains("legacy"));
+
+        let mismatch = RegenerationReason::MajorVersionMismatch {
+            db_version: "1.0".into(),
+            app_version: "2.0".into(),
+        };
+        assert!(mismatch.message().contains("1.0"));
+        assert!(mismatch.message().contains("2.0"));
+
+        let corrupt = RegenerationReason::CorruptDatabase("test error".into());
+        assert!(corrupt.message().contains("test error"));
+
+        let user = RegenerationReason::UserRequested;
+        assert!(user.message().contains("requested"));
     }
 }

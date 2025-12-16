@@ -231,7 +231,7 @@ Create a PKGBUILD file for Arch Linux:
 pkgname=gabb-cli
 pkgver=0.2.0
 pkgrel=1
-pkgdesc="Fast local code indexing CLI for TypeScript and Rust projects"
+pkgdesc="Fast local code indexing CLI"
 arch=('x86_64')
 url="https://github.com/gabb-software/gabb-cli"
 license=('MIT')
@@ -316,8 +316,8 @@ To distribute via Chocolatey:
        <authors>Gabb Software</authors>
        <projectUrl>https://github.com/gabb-software/gabb-cli</projectUrl>
        <licenseUrl>https://github.com/gabb-software/gabb-cli/blob/main/LICENSE</licenseUrl>
-       <description>Fast local code indexing CLI for TypeScript and Rust projects</description>
-       <tags>cli code-indexing typescript rust development</tags>
+       <description>Fast local code indexing CLI</description>
+       <tags>cli code-indexing development</tags>
      </metadata>
      <files>
        <file src="tools\**" target="tools" />

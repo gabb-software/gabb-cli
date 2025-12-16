@@ -2,13 +2,39 @@
 //!
 //! This module implements an MCP server that exposes gabb's code indexing
 //! capabilities as tools for AI assistants like Claude.
+//!
+//! Supports dynamic workspace detection - workspaces are automatically inferred
+//! from file paths passed to tools, enabling one MCP server to handle multiple
+//! projects.
 
 use crate::store::{IndexStore, SymbolRecord};
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+
+/// Workspace markers - files/directories that indicate a project root
+const WORKSPACE_MARKERS: &[&str] = &[
+    ".git",
+    ".gabb",
+    "Cargo.toml",
+    "package.json",
+    "go.mod",
+    "settings.gradle",
+    "settings.gradle.kts",
+    "pyproject.toml",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+];
+
+/// Directory markers - directories that indicate a project root
+const WORKSPACE_DIR_MARKERS: &[&str] = &["gradle", ".git"];
+
+/// Maximum number of workspaces to cache (LRU eviction)
+const MAX_CACHED_WORKSPACES: usize = 5;
 
 /// MCP Protocol version
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -123,20 +149,32 @@ impl ToolResult {
 
 // ==================== MCP Server ====================
 
-/// MCP Server state
-pub struct McpServer {
-    workspace_root: PathBuf,
+/// Cached workspace information
+struct WorkspaceInfo {
+    root: PathBuf,
     db_path: PathBuf,
     store: Option<IndexStore>,
+    last_used: std::time::Instant,
+}
+
+/// MCP Server state with multi-workspace support
+pub struct McpServer {
+    /// Default workspace (from --root flag), used when no file path is provided
+    default_workspace: PathBuf,
+    /// Default database path
+    default_db_path: PathBuf,
+    /// Cache of workspace -> store mappings
+    workspace_cache: HashMap<PathBuf, WorkspaceInfo>,
+    /// Whether the MCP client has sent initialized notification
     initialized: bool,
 }
 
 impl McpServer {
     pub fn new(workspace_root: PathBuf, db_path: PathBuf) -> Self {
         Self {
-            workspace_root,
-            db_path,
-            store: None,
+            default_workspace: workspace_root,
+            default_db_path: db_path,
+            workspace_cache: HashMap::new(),
             initialized: false,
         }
     }
@@ -215,8 +253,9 @@ impl McpServer {
     }
 
     fn handle_initialize(&mut self, _params: &Value) -> Result<Value> {
-        // Ensure index is available (auto-start daemon if needed)
-        self.ensure_index()?;
+        // Ensure default workspace index is available (auto-start daemon if needed)
+        let default_workspace = self.default_workspace.clone();
+        self.ensure_workspace_index(&default_workspace)?;
 
         Ok(json!({
             "protocolVersion": PROTOCOL_VERSION,
@@ -415,52 +454,154 @@ impl McpServer {
         Ok(serde_json::to_value(result)?)
     }
 
-    // ==================== Tool Implementations ====================
+    // ==================== Workspace Management ====================
 
-    fn ensure_index(&mut self) -> Result<()> {
-        if self.store.is_some() {
+    /// Infer workspace root from a file path by walking up to find markers
+    fn infer_workspace(&self, file_path: &Path) -> Option<PathBuf> {
+        let file_path = if file_path.is_absolute() {
+            file_path.to_path_buf()
+        } else {
+            self.default_workspace.join(file_path)
+        };
+
+        let mut current = file_path.parent()?;
+
+        loop {
+            // Check file markers
+            for marker in WORKSPACE_MARKERS {
+                if current.join(marker).exists() {
+                    return Some(current.to_path_buf());
+                }
+            }
+
+            // Check directory markers
+            for marker in WORKSPACE_DIR_MARKERS {
+                let marker_path = current.join(marker);
+                if marker_path.is_dir() {
+                    return Some(current.to_path_buf());
+                }
+            }
+
+            // Move up to parent directory
+            current = current.parent()?;
+        }
+    }
+
+    /// Get or create workspace info for a given workspace root
+    fn get_or_create_workspace(&mut self, workspace_root: &Path) -> Result<&mut WorkspaceInfo> {
+        let workspace_root = workspace_root
+            .canonicalize()
+            .unwrap_or_else(|_| workspace_root.to_path_buf());
+
+        // Evict oldest workspace if cache is full
+        if !self.workspace_cache.contains_key(&workspace_root)
+            && self.workspace_cache.len() >= MAX_CACHED_WORKSPACES
+        {
+            // Find oldest entry
+            if let Some(oldest_key) = self
+                .workspace_cache
+                .iter()
+                .min_by_key(|(_, info)| info.last_used)
+                .map(|(k, _)| k.clone())
+            {
+                log::debug!("Evicting workspace from cache: {}", oldest_key.display());
+                self.workspace_cache.remove(&oldest_key);
+            }
+        }
+
+        // Insert if not present
+        if !self.workspace_cache.contains_key(&workspace_root) {
+            let db_path = workspace_root.join(".gabb/index.db");
+            log::debug!(
+                "Adding workspace to cache: {} (db: {})",
+                workspace_root.display(),
+                db_path.display()
+            );
+            self.workspace_cache.insert(
+                workspace_root.clone(),
+                WorkspaceInfo {
+                    root: workspace_root.clone(),
+                    db_path,
+                    store: None,
+                    last_used: std::time::Instant::now(),
+                },
+            );
+        }
+
+        // Update last_used and return
+        let info = self.workspace_cache.get_mut(&workspace_root).unwrap();
+        info.last_used = std::time::Instant::now();
+        Ok(info)
+    }
+
+    /// Ensure index exists for a workspace, starting daemon if needed
+    fn ensure_workspace_index(&mut self, workspace_root: &Path) -> Result<()> {
+        use crate::daemon;
+
+        let info = self.get_or_create_workspace(workspace_root)?;
+
+        if info.store.is_some() {
             return Ok(());
         }
 
-        // Check if daemon is running and index exists
-        use crate::daemon;
-
-        if !self.db_path.exists() {
+        if !info.db_path.exists() {
             // Start daemon in background
-            log::info!("Index not found. Starting daemon...");
-            daemon::start(&self.workspace_root, &self.db_path, false, true, None)?;
+            log::info!(
+                "Index not found for {}. Starting daemon...",
+                info.root.display()
+            );
+            daemon::start(&info.root, &info.db_path, false, true, None)?;
 
             // Wait for index to be ready
             let max_wait = std::time::Duration::from_secs(60);
             let start = std::time::Instant::now();
-            while !self.db_path.exists() && start.elapsed() < max_wait {
+            let db_path = info.db_path.clone();
+            while !db_path.exists() && start.elapsed() < max_wait {
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
 
-            if !self.db_path.exists() {
+            if !db_path.exists() {
                 bail!("Daemon started but index not created within 60 seconds");
             }
         }
 
-        // Open the store
-        self.store = Some(IndexStore::open(&self.db_path)?);
+        // Re-get info (borrow checker)
+        let info = self.workspace_cache.get_mut(workspace_root).unwrap();
+        info.store = Some(IndexStore::open(&info.db_path)?);
         Ok(())
     }
 
-    fn get_store(&mut self) -> Result<&IndexStore> {
-        self.ensure_index()?;
-        self.store
+    /// Get workspace root for a file, falling back to default
+    fn workspace_for_file(&self, file_path: Option<&str>) -> PathBuf {
+        if let Some(path) = file_path {
+            let path = PathBuf::from(path);
+            if let Some(workspace) = self.infer_workspace(&path) {
+                return workspace;
+            }
+        }
+        self.default_workspace.clone()
+    }
+
+    /// Get store for a workspace (ensures index exists)
+    fn get_store_for_workspace(&mut self, workspace_root: &Path) -> Result<&IndexStore> {
+        self.ensure_workspace_index(workspace_root)?;
+        let info = self.workspace_cache.get(workspace_root).unwrap();
+        info.store
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Store not initialized"))
     }
 
-    fn tool_symbols(&mut self, args: &Value) -> Result<ToolResult> {
-        let store = self.get_store()?;
+    // ==================== Tool Implementations ====================
 
+    fn tool_symbols(&mut self, args: &Value) -> Result<ToolResult> {
         let name = args.get("name").and_then(|v| v.as_str());
         let kind = args.get("kind").and_then(|v| v.as_str());
         let file = args.get("file").and_then(|v| v.as_str());
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+
+        // Infer workspace from file path if provided
+        let workspace = self.workspace_for_file(file);
+        let store = self.get_store_for_workspace(&workspace)?;
 
         let symbols = store.list_symbols(file, kind, name, Some(limit))?;
 
@@ -468,12 +609,14 @@ impl McpServer {
             return Ok(ToolResult::text("No symbols found matching the criteria."));
         }
 
-        let output = format_symbols(&symbols, &self.workspace_root);
+        let output = format_symbols(&symbols, &workspace);
         Ok(ToolResult::text(output))
     }
 
     fn tool_symbol(&mut self, args: &Value) -> Result<ToolResult> {
-        let store = self.get_store()?;
+        // Use default workspace since we don't have a file path
+        let workspace = self.default_workspace.clone();
+        let store = self.get_store_for_workspace(&workspace)?;
 
         let name = args
             .get("name")
@@ -491,7 +634,7 @@ impl McpServer {
             )));
         }
 
-        let output = format_symbols(&symbols, &self.workspace_root);
+        let output = format_symbols(&symbols, &workspace);
         Ok(ToolResult::text(output))
     }
 
@@ -510,11 +653,13 @@ impl McpServer {
             .ok_or_else(|| anyhow::anyhow!("Missing 'character' argument"))?
             as usize;
 
-        let file_path = self.resolve_path(file);
+        // Infer workspace from file path
+        let workspace = self.workspace_for_file(Some(file));
+        let file_path = self.resolve_path_for_workspace(file, &workspace);
 
         // Find symbol at position
-        if let Some(symbol) = self.find_symbol_at(&file_path, line, character)? {
-            let output = format_symbol(&symbol, &self.workspace_root);
+        if let Some(symbol) = self.find_symbol_at_in_workspace(&file_path, line, character, &workspace)? {
+            let output = format_symbol(&symbol, &workspace);
             return Ok(ToolResult::text(format!("Definition:\n{}", output)));
         }
 
@@ -540,10 +685,12 @@ impl McpServer {
             as usize;
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
 
-        let file_path = self.resolve_path(file);
+        // Infer workspace from file path
+        let workspace = self.workspace_for_file(Some(file));
+        let file_path = self.resolve_path_for_workspace(file, &workspace);
 
         // Find symbol at position
-        let symbol = match self.find_symbol_at(&file_path, line, character)? {
+        let symbol = match self.find_symbol_at_in_workspace(&file_path, line, character, &workspace)? {
             Some(s) => s,
             None => {
                 return Ok(ToolResult::text(format!(
@@ -554,7 +701,7 @@ impl McpServer {
         };
 
         // Find references using references_for_symbol
-        let store = self.get_store()?;
+        let store = self.get_store_for_workspace(&workspace)?;
         let refs = store.references_for_symbol(&symbol.id)?;
 
         if refs.is_empty() {
@@ -567,7 +714,7 @@ impl McpServer {
         let refs: Vec<_> = refs.into_iter().take(limit).collect();
         let mut output = format!("Usages of '{}' ({} found):\n\n", symbol.name, refs.len());
         for r in &refs {
-            let rel_path = self.relative_path(&r.file);
+            let rel_path = relative_path_for_workspace(&r.file, &workspace);
             // Convert offset to line:col
             if let Ok((ref_line, ref_col)) = offset_to_line_col(&r.file, r.start as usize) {
                 output.push_str(&format!("  {}:{}:{}\n", rel_path, ref_line, ref_col));
@@ -593,10 +740,12 @@ impl McpServer {
             as usize;
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
 
-        let file_path = self.resolve_path(file);
+        // Infer workspace from file path
+        let workspace = self.workspace_for_file(Some(file));
+        let file_path = self.resolve_path_for_workspace(file, &workspace);
 
         // Find symbol at position
-        let symbol = match self.find_symbol_at(&file_path, line, character)? {
+        let symbol = match self.find_symbol_at_in_workspace(&file_path, line, character, &workspace)? {
             Some(s) => s,
             None => {
                 return Ok(ToolResult::text(format!(
@@ -607,7 +756,7 @@ impl McpServer {
         };
 
         // Find implementations via edges_to (edges pointing TO the symbol from implementations)
-        let store = self.get_store()?;
+        let store = self.get_store_for_workspace(&workspace)?;
         let edges = store.edges_to(&symbol.id)?;
         let impl_ids: Vec<String> = edges.into_iter().map(|e| e.src).collect();
         let mut impls = store.symbols_by_ids(&impl_ids)?;
@@ -621,7 +770,7 @@ impl McpServer {
                     symbol.name
                 )));
             }
-            let output = format_symbols(&fallback, &self.workspace_root);
+            let output = format_symbols(&fallback, &workspace);
             return Ok(ToolResult::text(format!(
                 "Implementations of '{}' (by name):\n\n{}",
                 symbol.name, output
@@ -629,7 +778,7 @@ impl McpServer {
         }
 
         impls.truncate(limit);
-        let output = format_symbols(&impls, &self.workspace_root);
+        let output = format_symbols(&impls, &workspace);
         Ok(ToolResult::text(format!(
             "Implementations of '{}':\n\n{}",
             symbol.name, output
@@ -639,58 +788,89 @@ impl McpServer {
     fn tool_daemon_status(&mut self) -> Result<ToolResult> {
         use crate::daemon;
 
-        let status = if let Ok(Some(pid_info)) = daemon::read_pid_file(&self.workspace_root) {
+        let mut status = String::new();
+
+        // Show default workspace status
+        status.push_str("Default Workspace:\n");
+        if let Ok(Some(pid_info)) = daemon::read_pid_file(&self.default_workspace) {
             if daemon::is_process_running(pid_info.pid) {
-                format!(
-                    "Daemon: running (PID {})\nVersion: {}\nWorkspace: {}\nDatabase: {}",
+                status.push_str(&format!(
+                    "  Daemon: running (PID {})\n  Version: {}\n  Root: {}\n  Database: {}\n",
                     pid_info.pid,
                     pid_info.version,
-                    self.workspace_root.display(),
-                    self.db_path.display()
-                )
+                    self.default_workspace.display(),
+                    self.default_db_path.display()
+                ));
             } else {
-                format!(
-                    "Daemon: not running (stale PID file)\nWorkspace: {}\nDatabase: {}",
-                    self.workspace_root.display(),
-                    self.db_path.display()
-                )
+                status.push_str(&format!(
+                    "  Daemon: not running (stale PID file)\n  Root: {}\n  Database: {}\n",
+                    self.default_workspace.display(),
+                    self.default_db_path.display()
+                ));
             }
         } else {
-            format!(
-                "Daemon: not running\nWorkspace: {}\nDatabase: {}",
-                self.workspace_root.display(),
-                self.db_path.display()
-            )
-        };
+            status.push_str(&format!(
+                "  Daemon: not running\n  Root: {}\n  Database: {}\n",
+                self.default_workspace.display(),
+                self.default_db_path.display()
+            ));
+        }
+
+        // Show cached workspaces
+        if !self.workspace_cache.is_empty() {
+            status.push_str(&format!(
+                "\nCached Workspaces ({}/{}):\n",
+                self.workspace_cache.len(),
+                MAX_CACHED_WORKSPACES
+            ));
+            for (root, info) in &self.workspace_cache {
+                let daemon_status = if let Ok(Some(pid_info)) = daemon::read_pid_file(root) {
+                    if daemon::is_process_running(pid_info.pid) {
+                        format!("running (PID {})", pid_info.pid)
+                    } else {
+                        "not running".to_string()
+                    }
+                } else {
+                    "not running".to_string()
+                };
+                let index_status = if info.store.is_some() {
+                    "loaded"
+                } else if info.db_path.exists() {
+                    "available"
+                } else {
+                    "not indexed"
+                };
+                status.push_str(&format!(
+                    "  {}\n    Daemon: {}, Index: {}\n",
+                    root.display(),
+                    daemon_status,
+                    index_status
+                ));
+            }
+        }
 
         Ok(ToolResult::text(status))
     }
 
     // ==================== Helper Methods ====================
 
-    fn resolve_path(&self, path: &str) -> PathBuf {
+    fn resolve_path_for_workspace(&self, path: &str, workspace: &Path) -> PathBuf {
         let p = PathBuf::from(path);
         if p.is_absolute() {
             p
         } else {
-            self.workspace_root.join(p)
+            workspace.join(p)
         }
     }
 
-    fn relative_path(&self, path: &str) -> String {
-        let p = PathBuf::from(path);
-        p.strip_prefix(&self.workspace_root)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| path.to_string())
-    }
-
-    fn find_symbol_at(
+    fn find_symbol_at_in_workspace(
         &mut self,
         file: &Path,
         line: usize,
         character: usize,
+        workspace: &Path,
     ) -> Result<Option<SymbolRecord>> {
-        let store = self.get_store()?;
+        let store = self.get_store_for_workspace(workspace)?;
         let file_str = file.to_string_lossy().to_string();
 
         // Convert line:col to byte offset
@@ -727,6 +907,14 @@ impl McpServer {
 }
 
 // ==================== Formatting Helpers ====================
+
+/// Get relative path for a file within a workspace
+fn relative_path_for_workspace(path: &str, workspace: &Path) -> String {
+    let p = PathBuf::from(path);
+    p.strip_prefix(workspace)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.to_string())
+}
 
 fn format_symbols(symbols: &[SymbolRecord], workspace_root: &Path) -> String {
     let mut output = String::new();

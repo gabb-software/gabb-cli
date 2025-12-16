@@ -223,6 +223,112 @@ fn walk_symbols(
                     symbols.push(sym);
                 }
             }
+            "type_alias_declaration" => {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = slice(source, &name_node);
+                    let sym = make_symbol(
+                        path,
+                        &node,
+                        &name,
+                        "type",
+                        container.clone(),
+                        source.as_bytes(),
+                    );
+                    declared_spans.insert((sym.start as usize, sym.end as usize));
+                    symbol_by_name
+                        .entry(name.clone())
+                        .or_insert_with(|| SymbolBinding::from(&sym));
+                    symbols.push(sym);
+                }
+            }
+            "enum_declaration" => {
+                if let Some(name_node) = node.child_by_field_name("name") {
+                    let name = slice(source, &name_node);
+                    let sym = make_symbol(
+                        path,
+                        &node,
+                        &name,
+                        "enum",
+                        container.clone(),
+                        source.as_bytes(),
+                    );
+                    declared_spans.insert((sym.start as usize, sym.end as usize));
+                    symbol_by_name
+                        .entry(name.clone())
+                        .or_insert_with(|| SymbolBinding::from(&sym));
+                    let enum_name = name.clone();
+                    symbols.push(sym);
+
+                    // Extract enum members
+                    if let Some(body) = node.child_by_field_name("body") {
+                        let mut body_cursor = body.walk();
+                        for child in body.children(&mut body_cursor) {
+                            if child.kind() == "property_identifier"
+                                || child.kind() == "enum_assignment"
+                            {
+                                let member_name_node = if child.kind() == "enum_assignment" {
+                                    child.child_by_field_name("name").unwrap_or(child)
+                                } else {
+                                    child
+                                };
+                                let member_name = slice(source, &member_name_node);
+                                let member_sym = make_symbol(
+                                    path,
+                                    &child,
+                                    &member_name,
+                                    "enum_member",
+                                    Some(enum_name.clone()),
+                                    source.as_bytes(),
+                                );
+                                declared_spans
+                                    .insert((member_sym.start as usize, member_sym.end as usize));
+                                symbols.push(member_sym);
+                            }
+                        }
+                    }
+                }
+            }
+            "lexical_declaration" => {
+                // Handle const/let declarations
+                let is_const = node.children(&mut node.walk()).any(|c| c.kind() == "const");
+                let kind = if is_const { "const" } else { "variable" };
+
+                let mut decl_cursor = node.walk();
+                for child in node.children(&mut decl_cursor) {
+                    if child.kind() == "variable_declarator" {
+                        if let Some(name_node) = child.child_by_field_name("name") {
+                            let name = slice(source, &name_node);
+
+                            // Check if value is an arrow function or function expression
+                            let value_kind = child
+                                .child_by_field_name("value")
+                                .map(|v| v.kind())
+                                .unwrap_or("");
+
+                            let sym_kind =
+                                if value_kind == "arrow_function" || value_kind == "function" {
+                                    "function"
+                                } else {
+                                    kind
+                                };
+
+                            let sym = make_symbol(
+                                path,
+                                &child,
+                                &name,
+                                sym_kind,
+                                container.clone(),
+                                source.as_bytes(),
+                            );
+                            declared_spans.insert((sym.start as usize, sym.end as usize));
+                            symbol_by_name
+                                .entry(name.clone())
+                                .or_insert_with(|| SymbolBinding::from(&sym));
+                            symbols.push(sym);
+                        }
+                    }
+                }
+            }
             "method_definition" | "method_signature" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = slice(source, &name_node);
@@ -905,6 +1011,124 @@ mod tests {
         assert!(
             !export_edges.is_empty(),
             "expected export edges for re-exports"
+        );
+    }
+
+    #[test]
+    fn extracts_types_enums_and_consts() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.ts");
+
+        let source = r#"
+// Type aliases
+type Status = "active" | "inactive";
+type Person = { name: string; age: number };
+
+// Enums
+enum Color {
+    Red,
+    Green,
+    Blue
+}
+
+// Const declarations
+const MAX_SIZE = 100;
+const config = { debug: true };
+export const API_URL = "https://example.com";
+
+// Arrow functions (should be detected as functions)
+const add = (a: number, b: number) => a + b;
+const greet = (name: string) => `Hello ${name}`;
+
+// Regular let/var
+let count = 0;
+
+// Classes and interfaces
+interface User {
+    id: number;
+    name: string;
+}
+
+class UserService {
+    getUser(id: number): User {
+        return { id, name: "test" };
+    }
+}
+"#;
+        fs::write(&path, source).unwrap();
+
+        let (symbols, _edges, _refs, _deps, _imports) = index_file(&path, source).unwrap();
+
+        // Type aliases
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Status" && s.kind == "type"),
+            "expected type alias Status"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Person" && s.kind == "type"),
+            "expected type alias Person"
+        );
+
+        // Enums
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Color" && s.kind == "enum"),
+            "expected enum Color"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Red" && s.kind == "enum_member"),
+            "expected enum member Red"
+        );
+
+        // Const declarations
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "MAX_SIZE" && s.kind == "const"),
+            "expected const MAX_SIZE"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "API_URL" && s.kind == "const"),
+            "expected const API_URL"
+        );
+
+        // Arrow functions as functions
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "add" && s.kind == "function"),
+            "expected arrow function add as function"
+        );
+
+        // Let declarations
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "count" && s.kind == "variable"),
+            "expected variable count"
+        );
+
+        // Existing types still work
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "User" && s.kind == "interface"),
+            "expected interface User"
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "UserService" && s.kind == "class"),
+            "expected class UserService"
         );
     }
 }

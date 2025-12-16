@@ -24,6 +24,7 @@ fn daemon_creates_db_and_handles_updates() {
     let mut child = Command::new(bin)
         .args([
             "daemon",
+            "start",
             "--root",
             root.to_str().unwrap(),
             "--db",

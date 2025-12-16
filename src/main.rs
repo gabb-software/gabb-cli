@@ -1,31 +1,14 @@
-mod daemon;
-mod indexer;
-mod languages;
-mod store;
-
 use anyhow::{anyhow, bail, Context, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use store::{normalize_path, DbOpenResult, IndexStore, SymbolRecord};
 
-/// Output format for command results
-#[derive(Debug, Clone, Copy, Default, ValueEnum)]
-pub enum OutputFormat {
-    /// Human-readable text output (default)
-    #[default]
-    Text,
-    /// JSON array output
-    Json,
-    /// JSON Lines (one JSON object per line)
-    Jsonl,
-    /// Comma-separated values
-    Csv,
-    /// Tab-separated values
-    Tsv,
-}
+use gabb_cli::daemon;
+use gabb_cli::store;
+use gabb_cli::store::{normalize_path, DbOpenResult, IndexStore, SymbolRecord};
+use gabb_cli::OutputFormat;
 
 /// Open index store for query commands with version checking.
 /// Returns a helpful error if the database needs regeneration.
@@ -250,17 +233,10 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Run the indexing daemon for a workspace
+    /// Manage the indexing daemon
     Daemon {
-        /// Workspace root to index
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-        /// Path to the SQLite index database
-        #[arg(long, default_value = ".gabb/index.db")]
-        db: PathBuf,
-        /// If set, delete any existing DB and rebuild the index from scratch before watching
-        #[arg(long)]
-        rebuild: bool,
+        #[command(subcommand)]
+        command: DaemonCommands,
     },
     /// List symbols from an existing index
     Symbols {
@@ -372,13 +348,73 @@ enum Commands {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum DaemonCommands {
+    /// Start the indexing daemon
+    Start {
+        /// Workspace root to index (auto-detected if not specified)
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Path to the SQLite index database
+        #[arg(long, default_value = ".gabb/index.db")]
+        db: PathBuf,
+        /// Delete and recreate index on start
+        #[arg(long)]
+        rebuild: bool,
+        /// Run in background (daemonize)
+        #[arg(long, short = 'b')]
+        background: bool,
+        /// Log file path (default: .gabb/daemon.log when backgrounded)
+        #[arg(long)]
+        log_file: Option<PathBuf>,
+    },
+    /// Stop a running daemon
+    Stop {
+        /// Workspace root (to locate PID file)
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Force immediate shutdown (SIGKILL)
+        #[arg(long)]
+        force: bool,
+    },
+    /// Restart the daemon
+    Restart {
+        /// Workspace root
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Path to the SQLite index database
+        #[arg(long, default_value = ".gabb/index.db")]
+        db: PathBuf,
+        /// Force full reindex on restart
+        #[arg(long)]
+        rebuild: bool,
+    },
+    /// Show daemon status
+    Status {
+        /// Workspace root (to locate PID file)
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     init_logging(cli.verbose);
     let format = cli.format;
 
     match cli.command {
-        Commands::Daemon { root, db, rebuild } => daemon::run(&root, &db, rebuild),
+        Commands::Daemon { command } => match command {
+            DaemonCommands::Start {
+                root,
+                db,
+                rebuild,
+                background,
+                log_file,
+            } => daemon::start(&root, &db, rebuild, background, log_file.as_deref()),
+            DaemonCommands::Stop { root, force } => daemon::stop(&root, force),
+            DaemonCommands::Restart { root, db, rebuild } => daemon::restart(&root, &db, rebuild),
+            DaemonCommands::Status { root } => daemon::status(&root, format),
+        },
         Commands::Symbols {
             db,
             file,
@@ -1603,8 +1639,8 @@ fn split_file_and_embedded_position(file: &Path) -> (PathBuf, Option<(usize, usi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::indexer;
-    use crate::store::IndexStore;
+    use gabb_cli::indexer;
+    use gabb_cli::store::IndexStore;
     use std::fs;
     use tempfile::tempdir;
 

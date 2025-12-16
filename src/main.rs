@@ -525,6 +525,44 @@ enum Commands {
         #[arg(long, default_value = ".gabb/index.db")]
         db: PathBuf,
     },
+    /// Manage MCP (Model Context Protocol) configuration for AI assistants
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum McpCommands {
+    /// Print MCP configuration JSON for manual setup
+    Config {
+        /// Workspace root (used in config output)
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Install gabb MCP server into Claude Desktop/Code configuration
+    Install {
+        /// Workspace root to configure
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Only install for Claude Desktop
+        #[arg(long)]
+        claude_desktop: bool,
+        /// Only install for Claude Code (project-level .claude/mcp.json)
+        #[arg(long)]
+        claude_code: bool,
+    },
+    /// Check MCP configuration status
+    Status,
+    /// Remove gabb from MCP configuration
+    Uninstall {
+        /// Only uninstall from Claude Desktop
+        #[arg(long)]
+        claude_desktop: bool,
+        /// Only uninstall from Claude Code
+        #[arg(long)]
+        claude_code: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -670,6 +708,19 @@ fn main() -> Result<()> {
             let db = if db.is_absolute() { db } else { root.join(&db) };
             mcp::run_server(&root, &db)
         }
+        Commands::Mcp { command } => match command {
+            McpCommands::Config { root } => mcp_config(&root),
+            McpCommands::Install {
+                root,
+                claude_desktop,
+                claude_code,
+            } => mcp_install(&root, claude_desktop, claude_code),
+            McpCommands::Status => mcp_status(),
+            McpCommands::Uninstall {
+                claude_desktop,
+                claude_code,
+            } => mcp_uninstall(claude_desktop, claude_code),
+        },
     }
 }
 
@@ -1840,6 +1891,379 @@ fn split_file_and_embedded_position(file: &Path) -> (PathBuf, Option<(usize, usi
         }
     }
     (file.to_path_buf(), None)
+}
+
+// ==================== MCP Configuration Commands ====================
+
+/// Get the path to Claude Desktop config file
+fn claude_desktop_config_path() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        dirs::home_dir().map(|h| {
+            h.join("Library/Application Support/Claude/claude_desktop_config.json")
+        })
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("APPDATA")
+            .ok()
+            .map(|appdata| PathBuf::from(appdata).join("Claude/claude_desktop_config.json"))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        dirs::home_dir().map(|h| h.join(".config/Claude/claude_desktop_config.json"))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        None
+    }
+}
+
+/// Get the path to project-level Claude Code MCP config
+fn claude_code_config_path() -> PathBuf {
+    PathBuf::from(".claude/mcp.json")
+}
+
+/// Find the gabb binary path
+fn find_gabb_binary() -> String {
+    // Try to find the binary in common locations
+    if let Ok(current_exe) = std::env::current_exe() {
+        return current_exe.to_string_lossy().to_string();
+    }
+    // Fallback to just "gabb" (assume it's in PATH)
+    "gabb".to_string()
+}
+
+/// Generate MCP server config JSON for a workspace
+fn generate_mcp_config(root: &Path, use_absolute_path: bool) -> serde_json::Value {
+    let root_str = if use_absolute_path {
+        root.canonicalize()
+            .unwrap_or_else(|_| root.to_path_buf())
+            .to_string_lossy()
+            .to_string()
+    } else {
+        ".".to_string()
+    };
+
+    serde_json::json!({
+        "mcpServers": {
+            "gabb": {
+                "command": find_gabb_binary(),
+                "args": ["mcp-server", "--root", root_str]
+            }
+        }
+    })
+}
+
+/// Print MCP configuration JSON
+fn mcp_config(root: &Path) -> Result<()> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let config = generate_mcp_config(&root, true);
+
+    println!("Add this to your Claude Desktop config:\n");
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&config).unwrap_or_default()
+    );
+    println!();
+
+    if let Some(config_path) = claude_desktop_config_path() {
+        println!("Config file location:");
+        println!("  {}", config_path.display());
+    } else {
+        println!("Config file locations:");
+        println!("  macOS:   ~/Library/Application Support/Claude/claude_desktop_config.json");
+        println!("  Windows: %APPDATA%\\Claude\\claude_desktop_config.json");
+        println!("  Linux:   ~/.config/Claude/claude_desktop_config.json");
+    }
+
+    println!();
+    println!("Or run `gabb mcp install` to install automatically.");
+
+    Ok(())
+}
+
+/// Install gabb into MCP configuration
+fn mcp_install(root: &Path, claude_desktop_only: bool, claude_code_only: bool) -> Result<()> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let install_both = !claude_desktop_only && !claude_code_only;
+    let mut installed_any = false;
+
+    // Install to Claude Desktop
+    if install_both || claude_desktop_only {
+        if let Some(config_path) = claude_desktop_config_path() {
+            match install_to_config_file(&config_path, &root, true) {
+                Ok(true) => {
+                    println!("✓ Installed gabb to Claude Desktop config");
+                    println!("  {}", config_path.display());
+                    installed_any = true;
+                }
+                Ok(false) => {
+                    println!("✓ gabb already configured in Claude Desktop");
+                }
+                Err(e) => {
+                    eprintln!("✗ Failed to install to Claude Desktop: {}", e);
+                }
+            }
+        } else {
+            println!("⚠ Claude Desktop config path not found on this platform");
+        }
+    }
+
+    // Install to Claude Code (project-level)
+    if install_both || claude_code_only {
+        let config_path = claude_code_config_path();
+        match install_to_config_file(&config_path, &root, false) {
+            Ok(true) => {
+                println!("✓ Installed gabb to Claude Code project config");
+                println!("  {}", config_path.display());
+                installed_any = true;
+            }
+            Ok(false) => {
+                println!("✓ gabb already configured in Claude Code project config");
+            }
+            Err(e) => {
+                eprintln!("✗ Failed to install to Claude Code: {}", e);
+            }
+        }
+    }
+
+    if installed_any {
+        println!();
+        println!("Restart Claude Desktop/Code to load the new MCP server.");
+    }
+
+    Ok(())
+}
+
+/// Install gabb config to a specific config file
+/// Returns Ok(true) if installed, Ok(false) if already present
+fn install_to_config_file(config_path: &Path, root: &Path, use_absolute: bool) -> Result<bool> {
+    // Create parent directory if needed
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    // Read existing config or create new one
+    let mut config: serde_json::Value = if config_path.exists() {
+        let content = fs::read_to_string(config_path)
+            .with_context(|| format!("Failed to read {}", config_path.display()))?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Check if gabb is already configured
+    if config
+        .get("mcpServers")
+        .and_then(|s| s.get("gabb"))
+        .is_some()
+    {
+        return Ok(false);
+    }
+
+    // Backup existing config
+    if config_path.exists() {
+        let backup_path = config_path.with_extension("json.bak");
+        fs::copy(config_path, &backup_path)
+            .with_context(|| format!("Failed to backup {}", config_path.display()))?;
+    }
+
+    // Add gabb to mcpServers
+    let gabb_config = generate_mcp_config(root, use_absolute);
+    let mcp_servers = config
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("Config is not a JSON object"))?
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::json!({}));
+
+    if let Some(servers) = mcp_servers.as_object_mut() {
+        if let Some(gabb) = gabb_config
+            .get("mcpServers")
+            .and_then(|s| s.get("gabb"))
+            .cloned()
+        {
+            servers.insert("gabb".to_string(), gabb);
+        }
+    }
+
+    // Write updated config
+    let content = serde_json::to_string_pretty(&config)?;
+    fs::write(config_path, content)
+        .with_context(|| format!("Failed to write {}", config_path.display()))?;
+
+    Ok(true)
+}
+
+/// Check MCP configuration status
+fn mcp_status() -> Result<()> {
+    let mut found_any = false;
+
+    // Check Claude Desktop
+    if let Some(config_path) = claude_desktop_config_path() {
+        print!("Claude Desktop: ");
+        if config_path.exists() {
+            match check_gabb_in_config(&config_path) {
+                Ok(true) => {
+                    println!("✓ gabb configured");
+                    println!("  {}", config_path.display());
+                    found_any = true;
+                }
+                Ok(false) => {
+                    println!("✗ gabb not configured");
+                    println!("  Config exists at: {}", config_path.display());
+                }
+                Err(e) => {
+                    println!("✗ Error reading config: {}", e);
+                }
+            }
+        } else {
+            println!("✗ Config file not found");
+            println!("  Expected: {}", config_path.display());
+        }
+    } else {
+        println!("Claude Desktop: ⚠ Platform not supported");
+    }
+
+    println!();
+
+    // Check Claude Code (project-level)
+    let code_config_path = claude_code_config_path();
+    print!("Claude Code (project): ");
+    if code_config_path.exists() {
+        match check_gabb_in_config(&code_config_path) {
+            Ok(true) => {
+                println!("✓ gabb configured");
+                println!("  {}", code_config_path.display());
+                found_any = true;
+            }
+            Ok(false) => {
+                println!("✗ gabb not configured");
+                println!("  Config exists at: {}", code_config_path.display());
+            }
+            Err(e) => {
+                println!("✗ Error reading config: {}", e);
+            }
+        }
+    } else {
+        println!("✗ No project config");
+        println!("  Run `gabb mcp install --claude-code` to create");
+    }
+
+    println!();
+
+    // Check if gabb binary is accessible
+    print!("gabb binary: ");
+    if let Ok(exe) = std::env::current_exe() {
+        println!("✓ {}", exe.display());
+    } else {
+        println!("⚠ Could not determine path");
+    }
+
+    if !found_any {
+        println!();
+        println!("Run `gabb mcp install` to configure MCP for Claude.");
+    }
+
+    Ok(())
+}
+
+/// Check if gabb is configured in a config file
+fn check_gabb_in_config(config_path: &Path) -> Result<bool> {
+    let content = fs::read_to_string(config_path)?;
+    let config: serde_json::Value = serde_json::from_str(&content)?;
+    Ok(config
+        .get("mcpServers")
+        .and_then(|s| s.get("gabb"))
+        .is_some())
+}
+
+/// Uninstall gabb from MCP configuration
+fn mcp_uninstall(claude_desktop_only: bool, claude_code_only: bool) -> Result<()> {
+    let uninstall_both = !claude_desktop_only && !claude_code_only;
+    let mut removed_any = false;
+
+    // Uninstall from Claude Desktop
+    if uninstall_both || claude_desktop_only {
+        if let Some(config_path) = claude_desktop_config_path() {
+            if config_path.exists() {
+                match uninstall_from_config_file(&config_path) {
+                    Ok(true) => {
+                        println!("✓ Removed gabb from Claude Desktop config");
+                        removed_any = true;
+                    }
+                    Ok(false) => {
+                        println!("✓ gabb was not in Claude Desktop config");
+                    }
+                    Err(e) => {
+                        eprintln!("✗ Failed to uninstall from Claude Desktop: {}", e);
+                    }
+                }
+            } else {
+                println!("✓ Claude Desktop config does not exist");
+            }
+        }
+    }
+
+    // Uninstall from Claude Code
+    if uninstall_both || claude_code_only {
+        let config_path = claude_code_config_path();
+        if config_path.exists() {
+            match uninstall_from_config_file(&config_path) {
+                Ok(true) => {
+                    println!("✓ Removed gabb from Claude Code project config");
+                    removed_any = true;
+                }
+                Ok(false) => {
+                    println!("✓ gabb was not in Claude Code project config");
+                }
+                Err(e) => {
+                    eprintln!("✗ Failed to uninstall from Claude Code: {}", e);
+                }
+            }
+        } else {
+            println!("✓ Claude Code project config does not exist");
+        }
+    }
+
+    if removed_any {
+        println!();
+        println!("Restart Claude Desktop/Code to apply changes.");
+    }
+
+    Ok(())
+}
+
+/// Remove gabb from a config file
+/// Returns Ok(true) if removed, Ok(false) if wasn't present
+fn uninstall_from_config_file(config_path: &Path) -> Result<bool> {
+    let content = fs::read_to_string(config_path)?;
+    let mut config: serde_json::Value = serde_json::from_str(&content)?;
+
+    // Check if gabb exists
+    let has_gabb = config
+        .get("mcpServers")
+        .and_then(|s| s.get("gabb"))
+        .is_some();
+
+    if !has_gabb {
+        return Ok(false);
+    }
+
+    // Backup before modifying
+    let backup_path = config_path.with_extension("json.bak");
+    fs::copy(config_path, &backup_path)?;
+
+    // Remove gabb from mcpServers
+    if let Some(mcp_servers) = config.get_mut("mcpServers").and_then(|s| s.as_object_mut()) {
+        mcp_servers.remove("gabb");
+    }
+
+    // Write updated config
+    let content = serde_json::to_string_pretty(&config)?;
+    fs::write(config_path, content)?;
+
+    Ok(true)
 }
 
 #[cfg(test)]

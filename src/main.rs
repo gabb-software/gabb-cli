@@ -3,13 +3,13 @@ mod indexer;
 mod languages;
 mod store;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use store::{SymbolRecord, normalize_path};
+use store::{normalize_path, SymbolRecord};
 
 #[derive(Parser, Debug)]
 #[command(name = "gabb", about = "Gabb CLI indexing daemon")]
@@ -163,7 +163,14 @@ fn main() -> Result<()> {
             kind,
             name,
             limit,
-        } => list_symbols(&db, file.as_ref(), kind.as_deref(), name.as_deref(), limit, json_output),
+        } => list_symbols(
+            &db,
+            file.as_ref(),
+            kind.as_deref(),
+            name.as_deref(),
+            limit,
+            json_output,
+        ),
         Commands::Implementation {
             db,
             file,
@@ -171,7 +178,15 @@ fn main() -> Result<()> {
             character,
             limit,
             kind,
-        } => find_implementation(&db, &file, line, character, limit, kind.as_deref(), json_output),
+        } => find_implementation(
+            &db,
+            &file,
+            line,
+            character,
+            limit,
+            kind.as_deref(),
+            json_output,
+        ),
         Commands::Usages {
             db,
             file,
@@ -185,7 +200,14 @@ fn main() -> Result<()> {
             file,
             kind,
             limit,
-        } => show_symbol(&db, &name, file.as_ref(), kind.as_deref(), limit, json_output),
+        } => show_symbol(
+            &db,
+            &name,
+            file.as_ref(),
+            kind.as_deref(),
+            limit,
+            json_output,
+        ),
         Commands::Definition {
             db,
             file,
@@ -198,7 +220,14 @@ fn main() -> Result<()> {
             staged,
             kind,
             min_count,
-        } => find_duplicates(&db, uncommitted, staged, kind.as_deref(), min_count, json_output),
+        } => find_duplicates(
+            &db,
+            uncommitted,
+            staged,
+            kind.as_deref(),
+            min_count,
+            json_output,
+        ),
     }
 }
 
@@ -429,7 +458,8 @@ fn find_usages(
                     .iter()
                     .filter_map(|r| {
                         let (line, col) = offset_to_line_char_in_file(&r.file, r.start).ok()?;
-                        let (end_line, end_col) = offset_to_line_char_in_file(&r.file, r.end).ok()?;
+                        let (end_line, end_col) =
+                            offset_to_line_char_in_file(&r.file, r.end).ok()?;
                         Some(serde_json::json!({
                             "start": { "line": line, "character": col },
                             "end": { "line": end_line, "character": end_col }
@@ -528,7 +558,10 @@ fn show_symbol(
 
     if symbols.is_empty() {
         if json_output {
-            println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "symbols": [] }))?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({ "symbols": [] }))?
+            );
         } else {
             println!("No symbols found for name '{}'.", name);
         }
@@ -555,7 +588,8 @@ fn show_symbol(
                     .iter()
                     .filter_map(|r| {
                         let (r_line, r_col) = offset_to_line_char_in_file(&r.file, r.start).ok()?;
-                        let (r_end_line, r_end_col) = offset_to_line_char_in_file(&r.file, r.end).ok()?;
+                        let (r_end_line, r_end_col) =
+                            offset_to_line_char_in_file(&r.file, r.end).ok()?;
                         Some(serde_json::json!({
                             "file": r.file,
                             "start": { "line": r_line, "character": r_col },
@@ -588,7 +622,10 @@ fn show_symbol(
                 }))
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "symbols": json_symbols }))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "symbols": json_symbols }))?
+        );
         return Ok(());
     }
 
@@ -672,7 +709,8 @@ fn find_definition(
 
     if json_output {
         let (d_line, d_col) = offset_to_line_char_in_file(&definition.file, definition.start)?;
-        let (d_end_line, d_end_col) = offset_to_line_char_in_file(&definition.file, definition.end)?;
+        let (d_end_line, d_end_col) =
+            offset_to_line_char_in_file(&definition.file, definition.end)?;
         let output = serde_json::json!({
             "definition": {
                 "id": definition.id,
@@ -699,7 +737,14 @@ fn find_definition(
         .unwrap_or_default();
     println!(
         "Definition: {} {} {} [{}:{}-{}:{}]{}",
-        definition.kind, definition.name, definition.file, d_line, d_col, d_end_line, d_end_col, container
+        definition.kind,
+        definition.name,
+        definition.file,
+        d_line,
+        d_col,
+        d_end_line,
+        d_end_col,
+        container
     );
 
     Ok(())
@@ -721,10 +766,13 @@ fn find_duplicates(
         let files = get_git_changed_files(&workspace_root, uncommitted, staged)?;
         if files.is_empty() {
             if json_output {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "groups": [],
-                    "summary": { "total_groups": 0, "total_duplicates": 0 }
-                }))?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "groups": [],
+                        "summary": { "total_groups": 0, "total_duplicates": 0 }
+                    }))?
+                );
             } else {
                 println!("No changed files found.");
             }
@@ -746,7 +794,8 @@ fn find_duplicates(
                     .iter()
                     .filter_map(|sym| {
                         let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start).ok()?;
-                        let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end).ok()?;
+                        let (end_line, end_col) =
+                            offset_to_line_char_in_file(&sym.file, sym.end).ok()?;
                         Some(serde_json::json!({
                             "id": sym.id,
                             "name": sym.name,

@@ -1,5 +1,4 @@
 /// Tests demonstrating the test harness functionality
-
 mod support;
 
 use support::*;
@@ -25,13 +24,13 @@ fn test_workspace_builder_with_inline_files() {
 fn test_workspace_builder_with_ts_file_builder() {
     let ws = TestWorkspace::builder()
         .with_ts_file("utils.ts")
-            .with_function("helper", "return 42")
-            .with_interface("Config", "debug: boolean")
-            .done()
+        .with_function("helper", "return 42")
+        .with_interface("Config", "debug: boolean")
+        .done()
         .with_ts_file("main.ts")
-            .importing("./utils", &["helper", "Config"])
-            .with_body("const x = helper();")
-            .done()
+        .importing("./utils", &["helper", "Config"])
+        .with_body("const x = helper();")
+        .done()
         .build()
         .unwrap();
 
@@ -46,9 +45,9 @@ fn test_workspace_builder_with_ts_file_builder() {
 fn test_workspace_builder_with_rs_file_builder() {
     let ws = TestWorkspace::builder()
         .with_rs_file("lib.rs")
-            .with_pub_fn("calculate", "42")
-            .with_struct("Config", "pub debug: bool")
-            .done()
+        .with_pub_fn("calculate", "42")
+        .with_struct("Config", "pub debug: bool")
+        .done()
         .build()
         .unwrap();
 
@@ -66,10 +65,7 @@ fn test_cli_runner_symbols_command() {
         .build()
         .unwrap();
 
-    let output = ws.cli()
-        .symbols()
-        .run()
-        .unwrap();
+    let output = ws.cli().symbols().run().unwrap();
 
     output
         .assert_success()
@@ -84,11 +80,7 @@ fn test_cli_runner_json_output() {
         .build()
         .unwrap();
 
-    let output = ws.cli()
-        .symbols()
-        .json()
-        .run()
-        .unwrap();
+    let output = ws.cli().symbols().json().run().unwrap();
 
     output.assert_success();
 
@@ -121,9 +113,9 @@ fn test_fixture_loading() {
 fn test_snapshot_capture() {
     let ws = TestWorkspace::builder()
         .with_ts_file("api.ts")
-            .with_function("fetchData", "return []")
-            .with_interface("User", "id: number; name: string")
-            .done()
+        .with_function("fetchData", "return []")
+        .with_interface("User", "id: number; name: string")
+        .done()
         .build()
         .unwrap();
 

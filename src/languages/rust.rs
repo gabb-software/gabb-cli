@@ -1,5 +1,5 @@
 use crate::languages::ImportBindingInfo;
-use crate::store::{EdgeRecord, FileDependency, ReferenceRecord, SymbolRecord, normalize_path};
+use crate::store::{normalize_path, EdgeRecord, FileDependency, ReferenceRecord, SymbolRecord};
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
@@ -97,7 +97,11 @@ pub fn index_file(
 /// Extract file dependencies from `mod` and `use` declarations.
 /// - `mod foo;` indicates dependency on foo.rs or foo/mod.rs
 /// - `use crate::foo::Bar;` indicates dependency on the foo module
-fn collect_dependencies(path: &Path, source: &str, root: &Node) -> (Vec<FileDependency>, Vec<ImportBindingInfo>) {
+fn collect_dependencies(
+    path: &Path,
+    source: &str,
+    root: &Node,
+) -> (Vec<FileDependency>, Vec<ImportBindingInfo>) {
     let mut dependencies = Vec::new();
     let mut import_bindings = Vec::new();
     let mut seen = HashSet::new();
@@ -252,7 +256,11 @@ fn extract_use_path(source: &str, node: &Node) -> Option<String> {
 
 /// Resolve a use path to a file path
 /// Handles crate::, super::, and self:: prefixes
-fn resolve_use_path(use_path: &str, current_file: &Path, crate_root: Option<&Path>) -> Option<String> {
+fn resolve_use_path(
+    use_path: &str,
+    current_file: &Path,
+    crate_root: Option<&Path>,
+) -> Option<String> {
     let parts: Vec<&str> = use_path.split("::").collect();
     if parts.is_empty() {
         return None;
@@ -376,8 +384,15 @@ fn walk_symbols(
             "struct_item" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = slice(source, &name_node);
-                    let sym =
-                        make_symbol(path, module_path, &node, &name, "struct", container.clone(), source.as_bytes());
+                    let sym = make_symbol(
+                        path,
+                        module_path,
+                        &node,
+                        &name,
+                        "struct",
+                        container.clone(),
+                        source.as_bytes(),
+                    );
                     declared_spans.insert((sym.start as usize, sym.end as usize));
                     symbol_by_name
                         .entry(name)
@@ -388,8 +403,15 @@ fn walk_symbols(
             "enum_item" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = slice(source, &name_node);
-                    let sym =
-                        make_symbol(path, module_path, &node, &name, "enum", container.clone(), source.as_bytes());
+                    let sym = make_symbol(
+                        path,
+                        module_path,
+                        &node,
+                        &name,
+                        "enum",
+                        container.clone(),
+                        source.as_bytes(),
+                    );
                     declared_spans.insert((sym.start as usize, sym.end as usize));
                     symbol_by_name
                         .entry(name)
@@ -400,8 +422,15 @@ fn walk_symbols(
             "trait_item" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = slice(source, &name_node);
-                    let sym =
-                        make_symbol(path, module_path, &node, &name, "trait", container.clone(), source.as_bytes());
+                    let sym = make_symbol(
+                        path,
+                        module_path,
+                        &node,
+                        &name,
+                        "trait",
+                        container.clone(),
+                        source.as_bytes(),
+                    );
                     declared_spans.insert((sym.start as usize, sym.end as usize));
                     symbol_by_name
                         .entry(name)

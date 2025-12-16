@@ -176,11 +176,7 @@ impl TestWorkspace {
     }
 
     /// Write/update a file and optionally re-index
-    pub fn write_file(
-        &self,
-        path: impl AsRef<Path>,
-        content: impl AsRef<str>,
-    ) -> Result<()> {
+    pub fn write_file(&self, path: impl AsRef<Path>, content: impl AsRef<str>) -> Result<()> {
         let full_path = self.root.join(path);
         if let Some(parent) = full_path.parent() {
             std::fs::create_dir_all(parent)?;

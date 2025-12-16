@@ -310,7 +310,10 @@ fn circular_dependency_handling() {
 
     // Verify dependencies were recorded (both directions)
     let deps = store.get_all_dependencies().unwrap();
-    assert!(deps.len() >= 2, "expected at least 2 dependencies for circular imports");
+    assert!(
+        deps.len() >= 2,
+        "expected at least 2 dependencies for circular imports"
+    );
 
     // Verify topological sort handles cycles gracefully
     let all_files: Vec<String> = deps.iter().map(|d| d.from_file.clone()).collect();
@@ -356,13 +359,18 @@ fn two_phase_indexing_resolves_import_aliases() {
     indexer::build_full_index(root, &store).unwrap();
 
     // Get the symbol ID for 'helper' in utils.ts
-    let utils_symbols = store.list_symbols(
-        Some(&utils_path.canonicalize().unwrap().to_string_lossy()),
-        None,
-        Some("helper"),
-        None,
-    ).unwrap();
-    assert!(!utils_symbols.is_empty(), "helper should be indexed in utils.ts");
+    let utils_symbols = store
+        .list_symbols(
+            Some(&utils_path.canonicalize().unwrap().to_string_lossy()),
+            None,
+            Some("helper"),
+            None,
+        )
+        .unwrap();
+    assert!(
+        !utils_symbols.is_empty(),
+        "helper should be indexed in utils.ts"
+    );
     let helper_symbol_id = &utils_symbols[0].id;
 
     // Get references for the helper symbol - should include the aliased usage in main.ts
@@ -472,7 +480,10 @@ fn definition_command_with_json_output() {
     let stdout = String::from_utf8_lossy(&def_out.stdout);
     // Should be valid JSON with definition object
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
-    assert!(json.get("definition").is_some(), "expected definition field in JSON");
+    assert!(
+        json.get("definition").is_some(),
+        "expected definition field in JSON"
+    );
     assert_eq!(json["definition"]["name"], "foo");
     assert_eq!(json["definition"]["kind"], "function");
 }
@@ -596,8 +607,14 @@ export function processData(data: string[]): string[] {
 
     let stdout = String::from_utf8_lossy(&dup_out.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
-    assert!(json.get("groups").is_some(), "expected groups field in JSON");
-    assert!(json.get("summary").is_some(), "expected summary field in JSON");
+    assert!(
+        json.get("groups").is_some(),
+        "expected groups field in JSON"
+    );
+    assert!(
+        json.get("summary").is_some(),
+        "expected summary field in JSON"
+    );
 
     // Check if we found duplicates
     let groups = json["groups"].as_array().unwrap();

@@ -79,14 +79,18 @@ mod tests {
     #[test]
     fn test_compute_content_hash_normalizes_whitespace() {
         let source1 = b"function foo() {\n    return 42;\n} // some padding to meet min size requirement here";
-        let source2 = b"function foo() { return 42; } // some padding to meet min size requirement here";
+        let source2 =
+            b"function foo() { return 42; } // some padding to meet min size requirement here";
 
         let hash1 = compute_content_hash(source1, 0, source1.len());
         let hash2 = compute_content_hash(source2, 0, source2.len());
 
         assert!(hash1.is_some());
         assert!(hash2.is_some());
-        assert_eq!(hash1, hash2, "Different whitespace should produce same hash");
+        assert_eq!(
+            hash1, hash2,
+            "Different whitespace should produce same hash"
+        );
     }
 
     #[test]
@@ -98,14 +102,19 @@ mod tests {
 
     #[test]
     fn test_compute_content_hash_different_content() {
-        let source1 = b"function calculateTotal(items) { return items.reduce((a, b) => a + b, 0); }";
-        let source2 = b"function calculateSum(values) { return values.reduce((x, y) => x + y, 0); }";
+        let source1 =
+            b"function calculateTotal(items) { return items.reduce((a, b) => a + b, 0); }";
+        let source2 =
+            b"function calculateSum(values) { return values.reduce((x, y) => x + y, 0); }";
 
         let hash1 = compute_content_hash(source1, 0, source1.len());
         let hash2 = compute_content_hash(source2, 0, source2.len());
 
         assert!(hash1.is_some());
         assert!(hash2.is_some());
-        assert_ne!(hash1, hash2, "Different content should produce different hashes");
+        assert_ne!(
+            hash1, hash2,
+            "Different content should produce different hashes"
+        );
     }
 }

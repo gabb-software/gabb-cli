@@ -111,7 +111,8 @@ impl<P> TsFileBuilder<P> {
         P: FileCollector,
     {
         let content = self.render();
-        self.parent.collect_file(self.path, FileContent::Inline(content))
+        self.parent
+            .collect_file(self.path, FileContent::Inline(content))
     }
 
     fn render(&self) -> String {
@@ -179,8 +180,7 @@ impl<P> RsFileBuilder<P> {
 
     /// Add a public function
     pub fn with_pub_fn(mut self, name: &str, body: &str) -> Self {
-        self.items
-            .push(format!("pub fn {}() {{ {} }}", name, body));
+        self.items.push(format!("pub fn {}() {{ {} }}", name, body));
         self
     }
 
@@ -227,7 +227,8 @@ impl<P> RsFileBuilder<P> {
         P: FileCollector,
     {
         let content = self.render();
-        self.parent.collect_file(self.path, FileContent::Inline(content))
+        self.parent
+            .collect_file(self.path, FileContent::Inline(content))
     }
 
     fn render(&self) -> String {

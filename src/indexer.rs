@@ -1,6 +1,6 @@
 use crate::languages::{rust, typescript, ImportBindingInfo};
-use crate::store::{FileRecord, IndexStore, ReferenceRecord, normalize_path, now_unix};
-use anyhow::{Context, Result, bail};
+use crate::store::{normalize_path, now_unix, FileRecord, IndexStore, ReferenceRecord};
+use anyhow::{bail, Context, Result};
 use blake3::Hasher;
 use log::{debug, info, warn};
 use std::collections::{HashMap, HashSet};
@@ -111,7 +111,8 @@ fn resolve_and_store_references(
         let mut local_resolution: HashMap<String, String> = HashMap::new();
         for binding in &data.import_bindings {
             // Try to resolve the imported symbol
-            let resolved_id = symbol_table.get(&(binding.source_file.clone(), binding.original_name.clone()))
+            let resolved_id = symbol_table
+                .get(&(binding.source_file.clone(), binding.original_name.clone()))
                 .or_else(|| {
                     // Try without extension
                     let source_without_ext = strip_extension(&binding.source_file);
@@ -128,7 +129,8 @@ fn resolve_and_store_references(
         }
 
         // Resolve each reference
-        let resolved_refs: Vec<ReferenceRecord> = data.references
+        let resolved_refs: Vec<ReferenceRecord> = data
+            .references
             .iter()
             .map(|r| {
                 // Check if this reference's symbol_id is a placeholder that needs resolution
@@ -158,7 +160,10 @@ fn resolve_and_store_references(
 }
 
 /// First pass of indexing: parse file, store symbols/edges/deps, return references for later resolution
-fn index_first_pass(path: &Path, store: &IndexStore) -> Result<(String, Vec<ReferenceRecord>, Vec<ImportBindingInfo>)> {
+fn index_first_pass(
+    path: &Path,
+    store: &IndexStore,
+) -> Result<(String, Vec<ReferenceRecord>, Vec<ImportBindingInfo>)> {
     let contents = fs::read(path)?;
     let source = String::from_utf8_lossy(&contents).to_string();
     let record = to_record(path, &contents)?;

@@ -1,5 +1,5 @@
 use crate::languages::ImportBindingInfo;
-use crate::store::{EdgeRecord, FileDependency, ReferenceRecord, SymbolRecord, normalize_path};
+use crate::store::{normalize_path, EdgeRecord, FileDependency, ReferenceRecord, SymbolRecord};
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
@@ -141,7 +141,14 @@ fn walk_symbols(
             "function_declaration" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = slice(source, &name_node);
-                    let sym = make_symbol(path, &node, &name, "function", container.clone(), source.as_bytes());
+                    let sym = make_symbol(
+                        path,
+                        &node,
+                        &name,
+                        "function",
+                        container.clone(),
+                        source.as_bytes(),
+                    );
                     declared_spans.insert((sym.start as usize, sym.end as usize));
                     symbol_by_name
                         .entry(name.clone())
@@ -152,7 +159,14 @@ fn walk_symbols(
             "class_declaration" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = slice(source, &name_node);
-                    let sym = make_symbol(path, &node, &name, "class", container.clone(), source.as_bytes());
+                    let sym = make_symbol(
+                        path,
+                        &node,
+                        &name,
+                        "class",
+                        container.clone(),
+                        source.as_bytes(),
+                    );
                     declared_spans.insert((sym.start as usize, sym.end as usize));
                     symbol_by_name
                         .entry(name.clone())
@@ -193,7 +207,14 @@ fn walk_symbols(
             "interface_declaration" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = slice(source, &name_node);
-                    let sym = make_symbol(path, &node, &name, "interface", container.clone(), source.as_bytes());
+                    let sym = make_symbol(
+                        path,
+                        &node,
+                        &name,
+                        "interface",
+                        container.clone(),
+                        source.as_bytes(),
+                    );
                     declared_spans.insert((sym.start as usize, sym.end as usize));
                     symbol_by_name
                         .entry(name.clone())
@@ -204,7 +225,14 @@ fn walk_symbols(
             "method_definition" | "method_signature" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = slice(source, &name_node);
-                    let sym = make_symbol(path, &node, &name, "method", container.clone(), source.as_bytes());
+                    let sym = make_symbol(
+                        path,
+                        &node,
+                        &name,
+                        "method",
+                        container.clone(),
+                        source.as_bytes(),
+                    );
                     declared_spans.insert((sym.start as usize, sym.end as usize));
                     symbol_by_name
                         .entry(name.clone())
@@ -406,7 +434,9 @@ fn collect_import_bindings(
             let qualifier = raw_source.as_ref().map(|raw| import_qualifier(path, raw));
 
             // Record file dependency with resolved path
-            let resolved_source = raw_source.as_ref().and_then(|raw| resolve_import_path(path, raw));
+            let resolved_source = raw_source
+                .as_ref()
+                .and_then(|raw| resolve_import_path(path, raw));
             if let Some(ref resolved) = resolved_source {
                 if !seen_deps.contains(resolved) {
                     seen_deps.insert(resolved.clone());
@@ -430,7 +460,8 @@ fn collect_import_bindings(
                         } else {
                             imported_name.clone()
                         };
-                        let binding = ImportBinding::new(qualifier.clone(), Some(imported_name.clone()));
+                        let binding =
+                            ImportBinding::new(qualifier.clone(), Some(imported_name.clone()));
                         add_import_binding(
                             path,
                             &alias_node,
@@ -452,7 +483,14 @@ fn collect_import_bindings(
                     "identifier" => {
                         let name = slice(source, &n);
                         let binding = ImportBinding::new(qualifier.clone(), None);
-                        add_import_binding(path, &n, name.clone(), binding, &mut imports, &mut edges);
+                        add_import_binding(
+                            path,
+                            &n,
+                            name.clone(),
+                            binding,
+                            &mut imports,
+                            &mut edges,
+                        );
                         // Default import - local name equals original name
                         if let Some(ref source_file) = resolved_source {
                             import_binding_infos.push(ImportBindingInfo {

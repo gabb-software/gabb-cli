@@ -1,6 +1,6 @@
 use anyhow::Result;
 use rusqlite::types::Value;
-use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::Serialize;
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -317,11 +317,13 @@ impl IndexStore {
 
     fn ensure_index(&self, index_name: &str, create_sql: &str) -> Result<()> {
         let conn = self.conn.borrow();
-        let exists: bool = conn.query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1",
-            params![index_name],
-            |_| Ok(true),
-        ).unwrap_or(false);
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1",
+                params![index_name],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
         if !exists {
             conn.execute(create_sql, [])?;
         }
@@ -987,7 +989,11 @@ impl IndexStore {
 
     /// Find a reference at a specific file and byte offset.
     /// Returns the reference record if the offset falls within a recorded reference span.
-    pub fn reference_at_position(&self, file: &str, offset: i64) -> Result<Option<ReferenceRecord>> {
+    pub fn reference_at_position(
+        &self,
+        file: &str,
+        offset: i64,
+    ) -> Result<Option<ReferenceRecord>> {
         let conn = self.conn.borrow();
         let mut stmt = conn.prepare_cached(
             "SELECT file, start, end, symbol_id FROM references_tbl
@@ -1022,7 +1028,7 @@ impl IndexStore {
         // First, find all content_hashes with duplicates
         let mut sql = String::from(
             "SELECT content_hash, COUNT(*) as cnt FROM symbols
-             WHERE content_hash IS NOT NULL"
+             WHERE content_hash IS NOT NULL",
         );
         let mut values: Vec<Value> = Vec::new();
 
@@ -2699,18 +2705,14 @@ mod tests {
         store.remove_file(&file_path).unwrap();
 
         // Verify both directions of dependencies are cleaned up
-        assert!(
-            store
-                .get_file_dependencies(&normalize_path(&file_path))
-                .unwrap()
-                .is_empty()
-        );
-        assert!(
-            store
-                .get_dependents(&normalize_path(&file_path))
-                .unwrap()
-                .is_empty()
-        );
+        assert!(store
+            .get_file_dependencies(&normalize_path(&file_path))
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .get_dependents(&normalize_path(&file_path))
+            .unwrap()
+            .is_empty());
     }
 
     /// Test that repeated queries use statement caching for better performance
@@ -2784,23 +2786,19 @@ mod tests {
         store.save_file_index(&file_rec, &[sym], &[], &[]).unwrap();
 
         // Verify stats exist
-        assert!(
-            store
-                .get_file_stats(&normalize_path(&file_path))
-                .unwrap()
-                .is_some()
-        );
+        assert!(store
+            .get_file_stats(&normalize_path(&file_path))
+            .unwrap()
+            .is_some());
 
         // Remove file
         store.remove_file(&file_path).unwrap();
 
         // Verify stats removed
-        assert!(
-            store
-                .get_file_stats(&normalize_path(&file_path))
-                .unwrap()
-                .is_none()
-        );
+        assert!(store
+            .get_file_stats(&normalize_path(&file_path))
+            .unwrap()
+            .is_none());
     }
 
     /// Test that SQLite pragmas are configured for performance

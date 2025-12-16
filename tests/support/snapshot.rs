@@ -36,7 +36,9 @@ pub struct EdgeSnapshot {
 impl WorkspaceSnapshot {
     /// Capture current index state
     pub fn capture(store: &IndexStore) -> Self {
-        let all_symbols = store.list_symbols(None, None, None, None).unwrap_or_default();
+        let all_symbols = store
+            .list_symbols(None, None, None, None)
+            .unwrap_or_default();
 
         let mut symbols: BTreeMap<String, Vec<SymbolSnapshot>> = BTreeMap::new();
         let mut reference_counts: BTreeMap<String, usize> = BTreeMap::new();
@@ -194,9 +196,19 @@ impl WorkspaceSnapshot {
 pub enum SnapshotDiff {
     MissingFile(String),
     UnexpectedFile(String),
-    MissingSymbol { file: String, symbol: String },
-    UnexpectedSymbol { file: String, symbol: String },
-    ReferenceCountMismatch { symbol: String, expected: usize, actual: usize },
+    MissingSymbol {
+        file: String,
+        symbol: String,
+    },
+    UnexpectedSymbol {
+        file: String,
+        symbol: String,
+    },
+    ReferenceCountMismatch {
+        symbol: String,
+        expected: usize,
+        actual: usize,
+    },
 }
 
 impl std::fmt::Display for SnapshotDiff {
@@ -247,13 +259,17 @@ fn extract_symbol_name(id: &str) -> String {
 macro_rules! assert_snapshot {
     ($workspace:expr, $expected:expr) => {
         let actual = $workspace.snapshot();
-        let expected: WorkspaceSnapshot = serde_yaml::from_str($expected)
-            .expect("Failed to parse expected snapshot");
+        let expected: WorkspaceSnapshot =
+            serde_yaml::from_str($expected).expect("Failed to parse expected snapshot");
         let diffs = actual.diff(&expected);
         assert!(
             diffs.is_empty(),
             "Snapshot mismatch:\n{}\n\nActual snapshot:\n{}",
-            diffs.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n"),
+            diffs
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
             actual.to_yaml()
         );
     };

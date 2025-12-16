@@ -530,6 +530,18 @@ enum Commands {
         #[command(subcommand)]
         command: McpCommands,
     },
+    /// Initialize gabb in a project
+    Init {
+        /// Workspace root to initialize
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Create .claude/mcp.json for Claude Code integration
+        #[arg(long)]
+        mcp: bool,
+        /// Add .gabb/ and .claude/ to .gitignore
+        #[arg(long)]
+        gitignore: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -721,6 +733,11 @@ fn main() -> Result<()> {
                 claude_code,
             } => mcp_uninstall(claude_desktop, claude_code),
         },
+        Commands::Init {
+            root,
+            mcp,
+            gitignore,
+        } => init_project(&root, mcp, gitignore),
     }
 }
 
@@ -2264,6 +2281,166 @@ fn uninstall_from_config_file(config_path: &Path) -> Result<bool> {
     fs::write(config_path, content)?;
 
     Ok(true)
+}
+
+// ==================== Init Command ====================
+
+/// Initialize gabb in a project
+fn init_project(root: &Path, setup_mcp: bool, setup_gitignore: bool) -> Result<()> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+
+    println!("Initializing gabb in {}", root.display());
+
+    // Create .gabb directory
+    let gabb_dir = root.join(".gabb");
+    if !gabb_dir.exists() {
+        fs::create_dir_all(&gabb_dir)?;
+        println!("  Created .gabb/");
+    } else {
+        println!("  .gabb/ already exists");
+    }
+
+    // Setup MCP configuration if requested
+    if setup_mcp {
+        init_mcp_config(&root)?;
+    }
+
+    // Setup .gitignore if requested
+    if setup_gitignore {
+        init_gitignore(&root)?;
+    }
+
+    println!();
+    println!("Next steps:");
+    println!("  1. Start the daemon:    gabb daemon start");
+    if setup_mcp {
+        println!("  2. Restart Claude Code to load the MCP server");
+    } else {
+        println!("  2. For AI integration: gabb init --mcp");
+    }
+
+    Ok(())
+}
+
+/// Create .claude/mcp.json with gabb configuration
+fn init_mcp_config(root: &Path) -> Result<()> {
+    let claude_dir = root.join(".claude");
+    let mcp_config_path = claude_dir.join("mcp.json");
+
+    // Create .claude directory
+    if !claude_dir.exists() {
+        fs::create_dir_all(&claude_dir)?;
+        println!("  Created .claude/");
+    }
+
+    // Generate MCP config with relative path (version control friendly)
+    let config = serde_json::json!({
+        "mcpServers": {
+            "gabb": {
+                "command": find_gabb_binary(),
+                "args": ["mcp-server", "--root", "."]
+            }
+        }
+    });
+
+    if mcp_config_path.exists() {
+        // Check if gabb already configured
+        let existing = fs::read_to_string(&mcp_config_path)?;
+        let existing_config: serde_json::Value = serde_json::from_str(&existing)?;
+        if existing_config
+            .get("mcpServers")
+            .and_then(|s| s.get("gabb"))
+            .is_some()
+        {
+            println!("  .claude/mcp.json already has gabb configured");
+            return Ok(());
+        }
+
+        // Merge with existing config
+        let mut merged: serde_json::Value = existing_config;
+        let mcp_servers = merged
+            .as_object_mut()
+            .ok_or_else(|| anyhow!("Invalid mcp.json format"))?
+            .entry("mcpServers")
+            .or_insert_with(|| serde_json::json!({}));
+
+        if let Some(servers) = mcp_servers.as_object_mut() {
+            if let Some(gabb) = config
+                .get("mcpServers")
+                .and_then(|s| s.get("gabb"))
+                .cloned()
+            {
+                servers.insert("gabb".to_string(), gabb);
+            }
+        }
+
+        fs::write(&mcp_config_path, serde_json::to_string_pretty(&merged)?)?;
+        println!("  Added gabb to .claude/mcp.json");
+    } else {
+        fs::write(&mcp_config_path, serde_json::to_string_pretty(&config)?)?;
+        println!("  Created .claude/mcp.json");
+    }
+
+    Ok(())
+}
+
+/// Add .gabb/ and .claude/ to .gitignore
+fn init_gitignore(root: &Path) -> Result<()> {
+    let gitignore_path = root.join(".gitignore");
+    let entries_to_add = vec![".gabb/", ".claude/"];
+
+    let existing_content = if gitignore_path.exists() {
+        fs::read_to_string(&gitignore_path)?
+    } else {
+        String::new()
+    };
+
+    let existing_lines: Vec<&str> = existing_content.lines().collect();
+    let mut additions = Vec::new();
+
+    for entry in &entries_to_add {
+        // Check if entry already exists (exact match or with comment)
+        let already_present = existing_lines.iter().any(|line| {
+            let trimmed = line.trim();
+            trimmed == *entry || trimmed == entry.trim_end_matches('/')
+        });
+
+        if !already_present {
+            additions.push(*entry);
+        }
+    }
+
+    if additions.is_empty() {
+        println!("  .gitignore already configured");
+        return Ok(());
+    }
+
+    // Append to .gitignore
+    let mut content = existing_content;
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    if !content.is_empty() {
+        content.push_str("\n# gabb code indexing\n");
+    } else {
+        content.push_str("# gabb code indexing\n");
+    }
+    for entry in &additions {
+        content.push_str(entry);
+        content.push('\n');
+    }
+
+    fs::write(&gitignore_path, content)?;
+    println!(
+        "  Added {} to .gitignore",
+        additions
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    Ok(())
 }
 
 #[cfg(test)]

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use store::{normalize_path, SymbolRecord};
 
 #[derive(Parser, Debug)]
-#[command(name = "gabb", about = "Gabb CLI indexing daemon")]
+#[command(name = "gabb", version, about = "Gabb CLI indexing daemon")]
 struct Cli {
     /// Increase output verbosity (-v, -vv)
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]

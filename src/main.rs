@@ -695,7 +695,7 @@ fn find_definition(
     // First, check if cursor is on a recorded reference - if so, look up its target symbol
     let definition = if let Some(ref_record) = store.reference_at_position(&file_str, offset)? {
         // Found a reference - look up the symbol it points to
-        let symbols = store.symbols_by_ids(&[ref_record.symbol_id.clone()])?;
+        let symbols = store.symbols_by_ids(std::slice::from_ref(&ref_record.symbol_id))?;
         if let Some(sym) = symbols.into_iter().next() {
             sym
         } else {

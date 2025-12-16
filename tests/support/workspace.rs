@@ -174,7 +174,7 @@ impl TestWorkspace {
     }
 
     /// Run a CLI command against this workspace
-    pub fn cli(&self) -> CliRunner {
+    pub fn cli(&self) -> CliRunner<'_> {
         CliRunner::new(self)
     }
 

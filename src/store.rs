@@ -1299,7 +1299,7 @@ mod tests {
         }];
 
         store
-            .save_file_index(&file_rec, &[sym.clone()], &edges, &refs)
+            .save_file_index(&file_rec, std::slice::from_ref(&sym), &edges, &refs)
             .unwrap();
 
         let paths = store.list_paths().unwrap();

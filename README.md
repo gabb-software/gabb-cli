@@ -78,7 +78,7 @@ What gets indexed:
 
 ## MCP Server (AI Assistant Integration)
 
-Gabb includes an MCP (Model Context Protocol) server that exposes code indexing tools to AI assistants like Claude. This allows Claude to search symbols, find definitions, usages, and implementations in your codebase.
+Gabb includes an MCP (Model Context Protocol) server that exposes code indexing tools to AI assistants. This allows AI coding tools to search symbols, find definitions, usages, and implementations in your codebase.
 
 ### Available Tools
 
@@ -89,31 +89,35 @@ Gabb includes an MCP (Model Context Protocol) server that exposes code indexing 
 | `gabb_definition` | Go to definition for a symbol at a source position |
 | `gabb_usages` | Find all usages/references of a symbol |
 | `gabb_implementations` | Find implementations of an interface, trait, or abstract class |
+| `gabb_duplicates` | Find duplicate symbol definitions |
 | `gabb_daemon_status` | Check the status of the gabb indexing daemon |
 
-### Claude Desktop Configuration
+---
 
-Add the following to your Claude Desktop configuration file:
+### Claude Code
 
-**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+Claude Code supports three configuration scopes:
+- **local** (default): Available only to you in the current project
+- **project**: Shared with your team via `.mcp.json` at project root
+- **user**: Available to you across all projects
 
-```json
-{
-  "mcpServers": {
-    "gabb": {
-      "command": "gabb",
-      "args": ["mcp-server", "--root", "/path/to/your/project"]
-    }
-  }
-}
+#### Option 1: CLI Command (Recommended)
+
+```bash
+# Add for current project only (local scope)
+claude mcp add gabb -- gabb mcp-server --root .
+
+# Add globally for all projects (user scope)
+claude mcp add gabb --scope user -- gabb mcp-server --root .
+
+# Add as shared team config (project scope)
+claude mcp add gabb --scope project -- gabb mcp-server --root .
 ```
 
-Replace `/path/to/your/project` with your workspace path. The MCP server will auto-start the daemon if needed.
+#### Option 2: Edit Configuration File
 
-### Claude Code Configuration
-
-Add the following to your Claude Code MCP settings:
+**Local scope:** `~/.claude.json` or `.claude/settings.json` in your project
+**Project scope:** `.mcp.json` at your project root (committed to git)
 
 ```json
 {
@@ -127,6 +131,74 @@ Add the following to your Claude Code MCP settings:
 ```
 
 Using `--root .` means gabb will use the current working directory as the workspace root.
+
+#### Verify Installation
+
+```bash
+claude mcp list        # List configured servers
+claude mcp get gabb    # Test the gabb server
+```
+
+---
+
+### Claude Desktop
+
+Add the following to your Claude Desktop configuration file:
+
+**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+**Linux:** `~/.config/Claude/claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "gabb": {
+      "command": "gabb",
+      "args": ["mcp-server", "--root", "/path/to/your/project"]
+    }
+  }
+}
+```
+
+Replace `/path/to/your/project` with the absolute path to your workspace. The MCP server will auto-start the daemon if needed.
+
+---
+
+### Codex CLI
+
+Codex stores MCP configuration in `~/.codex/config.toml`.
+
+#### Option 1: CLI Command (Recommended)
+
+```bash
+codex mcp add gabb -- gabb mcp-server --root /path/to/your/project
+```
+
+#### Option 2: Edit config.toml
+
+Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.gabb]
+command = "gabb"
+args = ["mcp-server", "--root", "/path/to/your/project"]
+```
+
+Replace `/path/to/your/project` with your workspace path.
+
+#### Verify Installation
+
+```bash
+codex mcp list         # List configured servers
+```
+
+---
+
+### Notes
+
+- The MCP server automatically starts the gabb daemon if it's not already running
+- All tools work with the index database at `.gabb/index.db` relative to the workspace root
+- Use absolute paths for Claude Desktop and Codex; use `.` for Claude Code (it runs from your project directory)
 
 ## Project Layout
 - `src/main.rs`: CLI entrypoint and logging setup

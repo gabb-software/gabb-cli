@@ -452,7 +452,7 @@ fn find_usages(
 
         let json_files: Vec<serde_json::Value> = by_file
             .iter()
-            .filter_map(|(file, file_refs)| {
+            .map(|(file, file_refs)| {
                 let is_test = is_test_file(file);
                 let usages: Vec<serde_json::Value> = file_refs
                     .iter()
@@ -474,12 +474,12 @@ fn find_usages(
                 }
                 total_usages += usages.len();
 
-                Some(serde_json::json!({
+                serde_json::json!({
                     "file": file,
                     "context": if is_test { "test" } else { "prod" },
                     "count": usages.len(),
                     "usages": usages
-                }))
+                })
             })
             .collect();
 
@@ -1217,6 +1217,39 @@ fn workspace_root_from_db(db: &Path) -> Result<PathBuf> {
     Err(anyhow!("could not derive workspace root from db path"))
 }
 
+fn parse_file_position(
+    file: &Path,
+    line: Option<usize>,
+    character: Option<usize>,
+) -> Result<(PathBuf, usize, usize)> {
+    let (base, embedded) = split_file_and_embedded_position(file);
+    if let (Some(l), Some(c)) = (line, character) {
+        return Ok((base, l, c));
+    }
+    if let Some((l, c)) = embedded {
+        return Ok((base, l, c));
+    }
+
+    Err(anyhow!(
+        "must provide --line and --character or include :line:character in --file"
+    ))
+}
+
+fn split_file_and_embedded_position(file: &Path) -> (PathBuf, Option<(usize, usize)>) {
+    let raw = file.to_string_lossy();
+    let parts: Vec<&str> = raw.split(':').collect();
+    if parts.len() >= 3 {
+        if let (Ok(line), Ok(character)) = (
+            parts[parts.len() - 2].parse::<usize>(),
+            parts[parts.len() - 1].parse::<usize>(),
+        ) {
+            let base = parts[..parts.len() - 2].join(":");
+            return (PathBuf::from(base), Some((line, character)));
+        }
+    }
+    (file.to_path_buf(), None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1403,36 +1436,4 @@ mod tests {
         assert!(!is_test_file("/project/src/testing.ts")); // "testing" != "test"
         assert!(!is_test_file("/project/src/contest.ts")); // contains "test" but not a test file
     }
-}
-fn parse_file_position(
-    file: &Path,
-    line: Option<usize>,
-    character: Option<usize>,
-) -> Result<(PathBuf, usize, usize)> {
-    let (base, embedded) = split_file_and_embedded_position(file);
-    if let (Some(l), Some(c)) = (line, character) {
-        return Ok((base, l, c));
-    }
-    if let Some((l, c)) = embedded {
-        return Ok((base, l, c));
-    }
-
-    Err(anyhow!(
-        "must provide --line and --character or include :line:character in --file"
-    ))
-}
-
-fn split_file_and_embedded_position(file: &Path) -> (PathBuf, Option<(usize, usize)>) {
-    let raw = file.to_string_lossy();
-    let parts: Vec<&str> = raw.split(':').collect();
-    if parts.len() >= 3 {
-        if let (Ok(line), Ok(character)) = (
-            parts[parts.len() - 2].parse::<usize>(),
-            parts[parts.len() - 1].parse::<usize>(),
-        ) {
-            let base = parts[..parts.len() - 2].join(":");
-            return (PathBuf::from(base), Some((line, character)));
-        }
-    }
-    (file.to_path_buf(), None)
 }

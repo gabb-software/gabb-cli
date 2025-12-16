@@ -734,7 +734,7 @@ impl IndexStore {
         // Initialize all files with 0 in-degree
         for file in files {
             in_degree.entry(file.clone()).or_insert(0);
-            adjacency.entry(file.clone()).or_insert_with(Vec::new);
+            adjacency.entry(file.clone()).or_default();
         }
 
         // Build graph from dependencies (only within the file set)
@@ -1101,6 +1101,7 @@ impl IndexStore {
 
     /// Get content hashes for symbols in specific files.
     /// Used for --uncommitted flag to find duplicates involving changed files.
+    #[allow(dead_code)]
     pub fn content_hashes_in_files(&self, files: &[String]) -> Result<HashSet<String>> {
         if files.is_empty() {
             return Ok(HashSet::new());
@@ -2830,7 +2831,7 @@ mod tests {
             .query_row("PRAGMA cache_size", [], |row| row.get(0))
             .unwrap();
         assert!(
-            cache_size < 0 || cache_size > 1000,
+            !(0..=1000).contains(&cache_size),
             "Cache should be configured (got {})",
             cache_size
         );

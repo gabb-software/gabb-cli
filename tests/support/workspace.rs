@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -67,6 +69,7 @@ impl TestWorkspaceBuilder {
     }
 
     /// Load files from a YAML fixture definition
+    #[allow(clippy::wrong_self_convention)]
     pub fn from_fixture(mut self, fixture_name: &str) -> Self {
         match FixtureDefinition::load(fixture_name) {
             Ok(fixture) => {

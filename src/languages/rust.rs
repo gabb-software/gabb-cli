@@ -41,6 +41,7 @@ impl ResolvedTarget {
 }
 
 /// Index a Rust file, returning symbols, edges, references, file dependencies, and import bindings.
+#[allow(clippy::type_complexity)]
 pub fn index_file(
     path: &Path,
     source: &str,

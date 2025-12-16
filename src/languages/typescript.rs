@@ -65,6 +65,7 @@ impl ResolvedTarget {
 }
 
 /// Index a TypeScript/TSX file, returning symbols, edges, references, file dependencies, and import bindings.
+#[allow(clippy::type_complexity)]
 pub fn index_file(
     path: &Path,
     source: &str,
@@ -598,8 +599,8 @@ fn resolve_import_path(importing_file: &Path, specifier: &str) -> Option<String>
     for ext in extensions {
         let candidate = if ext.is_empty() {
             base_path.clone()
-        } else if ext.starts_with('/') {
-            base_path.join(&ext[1..])
+        } else if let Some(stripped) = ext.strip_prefix('/') {
+            base_path.join(stripped)
         } else {
             PathBuf::from(format!("{}{}", base_path.display(), ext))
         };

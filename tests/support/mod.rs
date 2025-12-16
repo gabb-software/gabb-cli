@@ -1,3 +1,6 @@
+// Test support utilities - re-exports for future test use
+#![allow(unused_imports)]
+
 mod cli;
 mod file_builders;
 mod fixtures;

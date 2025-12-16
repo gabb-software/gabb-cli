@@ -92,6 +92,71 @@ fn is_process_running(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
+/// Get the path to the lock file for a workspace
+fn lock_file_path(root: &Path) -> PathBuf {
+    root.join(".gabb").join("daemon.lock")
+}
+
+/// A guard that holds the lock file open and releases it on drop
+pub struct LockFileGuard {
+    _file: fs::File,
+    path: PathBuf,
+}
+
+impl Drop for LockFileGuard {
+    fn drop(&mut self) {
+        // Lock is automatically released when file is closed
+        // Optionally remove the lock file
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Acquire an exclusive lock on the workspace.
+/// Returns a guard that releases the lock when dropped.
+fn acquire_lock(root: &Path) -> Result<LockFileGuard> {
+    use std::os::unix::io::AsRawFd;
+
+    let path = lock_file_path(root);
+
+    // Ensure .gabb directory exists
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    // Open or create the lock file
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("failed to open lock file {}", path.display()))?;
+
+    // Try to acquire exclusive lock (non-blocking)
+    let fd = file.as_raw_fd();
+    let result = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+
+    if result != 0 {
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::WouldBlock {
+            bail!(
+                "Another daemon is already running for this workspace.\n\
+                 Use 'gabb daemon status' to check or 'gabb daemon stop' to stop it."
+            );
+        }
+        return Err(err).with_context(|| "failed to acquire lock");
+    }
+
+    // Write our PID to the lock file for debugging
+    use std::io::Seek;
+    let mut file = file;
+    file.set_len(0)?;
+    file.seek(std::io::SeekFrom::Start(0))?;
+    writeln!(file, "{}", std::process::id())?;
+
+    Ok(LockFileGuard { _file: file, path })
+}
+
 /// Start the indexing daemon
 pub fn start(
     root: &Path,
@@ -195,7 +260,11 @@ fn run_foreground(root: &Path, db_path: &Path, rebuild: bool) -> Result<()> {
         .canonicalize()
         .with_context(|| format!("failed to canonicalize root {}", root.display()))?;
 
-    // Check if daemon is already running
+    // Acquire exclusive lock to prevent multiple daemons
+    let _lock_guard = acquire_lock(&root)?;
+    debug!("Acquired workspace lock");
+
+    // Check if daemon is already running (belt and suspenders with lock)
     if let Some(pid_info) = read_pid_file(&root)? {
         if is_process_running(pid_info.pid) {
             bail!(

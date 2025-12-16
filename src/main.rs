@@ -4,12 +4,28 @@ mod languages;
 mod store;
 
 use anyhow::{anyhow, bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use store::{normalize_path, DbOpenResult, IndexStore, SymbolRecord};
+
+/// Output format for command results
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+pub enum OutputFormat {
+    /// Human-readable text output (default)
+    #[default]
+    Text,
+    /// JSON array output
+    Json,
+    /// JSON Lines (one JSON object per line)
+    Jsonl,
+    /// Comma-separated values
+    Csv,
+    /// Tab-separated values
+    Tsv,
+}
 
 /// Open index store for query commands with version checking.
 /// Returns a helpful error if the database needs regeneration.
@@ -26,6 +42,197 @@ fn open_store_for_query(db: &Path) -> Result<IndexStore> {
     }
 }
 
+// ==================== Output Formatting ====================
+
+/// A symbol with resolved line/column positions for output
+#[derive(serde::Serialize)]
+struct SymbolOutput {
+    id: String,
+    name: String,
+    kind: String,
+    file: String,
+    start: Position,
+    end: Position,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    visibility: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    container: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    qualifier: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct Position {
+    line: usize,
+    character: usize,
+}
+
+impl SymbolOutput {
+    fn from_record(sym: &SymbolRecord) -> Option<Self> {
+        let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start).ok()?;
+        let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end).ok()?;
+        Some(Self {
+            id: sym.id.clone(),
+            name: sym.name.clone(),
+            kind: sym.kind.clone(),
+            file: sym.file.clone(),
+            start: Position {
+                line,
+                character: col,
+            },
+            end: Position {
+                line: end_line,
+                character: end_col,
+            },
+            visibility: sym.visibility.clone(),
+            container: sym.container.clone(),
+            qualifier: sym.qualifier.clone(),
+        })
+    }
+
+    /// Compact file:line:col format for text output
+    fn location(&self) -> String {
+        format!("{}:{}:{}", self.file, self.start.line, self.start.character)
+    }
+
+    /// CSV/TSV row
+    fn to_row(&self) -> Vec<String> {
+        vec![
+            self.name.clone(),
+            self.kind.clone(),
+            self.location(),
+            self.visibility.clone().unwrap_or_default(),
+            self.container.clone().unwrap_or_default(),
+        ]
+    }
+}
+
+/// Format and output a list of symbols
+fn output_symbols(symbols: &[SymbolRecord], format: OutputFormat) -> Result<()> {
+    let outputs: Vec<SymbolOutput> = symbols
+        .iter()
+        .filter_map(SymbolOutput::from_record)
+        .collect();
+
+    match format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&outputs)?);
+        }
+        OutputFormat::Jsonl => {
+            for sym in &outputs {
+                println!("{}", serde_json::to_string(sym)?);
+            }
+        }
+        OutputFormat::Csv => {
+            let mut wtr = csv::Writer::from_writer(std::io::stdout());
+            wtr.write_record(["name", "kind", "location", "visibility", "container"])?;
+            for sym in &outputs {
+                wtr.write_record(sym.to_row())?;
+            }
+            wtr.flush()?;
+        }
+        OutputFormat::Tsv => {
+            println!("name\tkind\tlocation\tvisibility\tcontainer");
+            for sym in &outputs {
+                let row = sym.to_row();
+                println!("{}", row.join("\t"));
+            }
+        }
+        OutputFormat::Text => {
+            for sym in &outputs {
+                let container = sym
+                    .container
+                    .as_deref()
+                    .map(|c| format!(" in {c}"))
+                    .unwrap_or_default();
+                println!(
+                    "{:<10} {:<30} {}{}",
+                    sym.kind,
+                    sym.name,
+                    sym.location(),
+                    container
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Output for implementation/usages results with a target symbol
+#[derive(serde::Serialize)]
+struct TargetedResultOutput {
+    target: SymbolOutput,
+    results: Vec<SymbolOutput>,
+}
+
+/// Format and output implementations for a target symbol
+fn output_implementations(
+    target: &SymbolRecord,
+    implementations: &[SymbolRecord],
+    format: OutputFormat,
+) -> Result<()> {
+    let target_out = SymbolOutput::from_record(target)
+        .ok_or_else(|| anyhow!("Failed to resolve target position"))?;
+    let impl_outputs: Vec<SymbolOutput> = implementations
+        .iter()
+        .filter_map(SymbolOutput::from_record)
+        .collect();
+
+    match format {
+        OutputFormat::Json => {
+            let output = TargetedResultOutput {
+                target: target_out,
+                results: impl_outputs,
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        OutputFormat::Jsonl => {
+            // First line is target, rest are implementations
+            println!("{}", serde_json::to_string(&target_out)?);
+            for sym in &impl_outputs {
+                println!("{}", serde_json::to_string(sym)?);
+            }
+        }
+        OutputFormat::Csv => {
+            let mut wtr = csv::Writer::from_writer(std::io::stdout());
+            wtr.write_record(["name", "kind", "location", "visibility", "container"])?;
+            for sym in &impl_outputs {
+                wtr.write_record(sym.to_row())?;
+            }
+            wtr.flush()?;
+        }
+        OutputFormat::Tsv => {
+            println!("name\tkind\tlocation\tvisibility\tcontainer");
+            for sym in &impl_outputs {
+                println!("{}", sym.to_row().join("\t"));
+            }
+        }
+        OutputFormat::Text => {
+            println!(
+                "Target: {} {} {}",
+                target_out.kind,
+                target_out.name,
+                target_out.location()
+            );
+            for sym in &impl_outputs {
+                let container = sym
+                    .container
+                    .as_deref()
+                    .map(|c| format!(" in {c}"))
+                    .unwrap_or_default();
+                println!(
+                    "{:<10} {:<30} {}{}",
+                    sym.kind,
+                    sym.name,
+                    sym.location(),
+                    container
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "gabb", version, about = "Gabb CLI indexing daemon")]
 struct Cli {
@@ -33,9 +240,9 @@ struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     verbose: u8,
 
-    /// Output results as JSON (for agent integration)
-    #[arg(long, global = true)]
-    json: bool,
+    /// Output format (text, json, jsonl, csv, tsv)
+    #[arg(long, short = 'f', global = true, value_enum, default_value = "text")]
+    format: OutputFormat,
 
     #[command(subcommand)]
     command: Commands,
@@ -168,7 +375,7 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     init_logging(cli.verbose);
-    let json_output = cli.json;
+    let format = cli.format;
 
     match cli.command {
         Commands::Daemon { root, db, rebuild } => daemon::run(&root, &db, rebuild),
@@ -184,7 +391,7 @@ fn main() -> Result<()> {
             kind.as_deref(),
             name.as_deref(),
             limit,
-            json_output,
+            format,
         ),
         Commands::Implementation {
             db,
@@ -193,56 +400,34 @@ fn main() -> Result<()> {
             character,
             limit,
             kind,
-        } => find_implementation(
-            &db,
-            &file,
-            line,
-            character,
-            limit,
-            kind.as_deref(),
-            json_output,
-        ),
+        } => find_implementation(&db, &file, line, character, limit, kind.as_deref(), format),
         Commands::Usages {
             db,
             file,
             line,
             character,
             limit,
-        } => find_usages(&db, &file, line, character, limit, json_output),
+        } => find_usages(&db, &file, line, character, limit, format),
         Commands::Symbol {
             db,
             name,
             file,
             kind,
             limit,
-        } => show_symbol(
-            &db,
-            &name,
-            file.as_ref(),
-            kind.as_deref(),
-            limit,
-            json_output,
-        ),
+        } => show_symbol(&db, &name, file.as_ref(), kind.as_deref(), limit, format),
         Commands::Definition {
             db,
             file,
             line,
             character,
-        } => find_definition(&db, &file, line, character, json_output),
+        } => find_definition(&db, &file, line, character, format),
         Commands::Duplicates {
             db,
             uncommitted,
             staged,
             kind,
             min_count,
-        } => find_duplicates(
-            &db,
-            uncommitted,
-            staged,
-            kind.as_deref(),
-            min_count,
-            json_output,
-        ),
+        } => find_duplicates(&db, uncommitted, staged, kind.as_deref(), min_count, format),
     }
 }
 
@@ -263,50 +448,12 @@ fn list_symbols(
     kind: Option<&str>,
     name: Option<&str>,
     limit: Option<usize>,
-    json_output: bool,
+    format: OutputFormat,
 ) -> Result<()> {
     let store = open_store_for_query(db)?;
     let file_str = file.map(|p| p.to_string_lossy().to_string());
     let symbols: Vec<SymbolRecord> = store.list_symbols(file_str.as_deref(), kind, name, limit)?;
-
-    if json_output {
-        let json_symbols: Vec<serde_json::Value> = symbols
-            .iter()
-            .filter_map(|sym| {
-                let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start).ok()?;
-                let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end).ok()?;
-                Some(serde_json::json!({
-                    "id": sym.id,
-                    "name": sym.name,
-                    "kind": sym.kind,
-                    "file": sym.file,
-                    "start": { "line": line, "character": col },
-                    "end": { "line": end_line, "character": end_col },
-                    "visibility": sym.visibility,
-                    "container": sym.container,
-                    "qualifier": sym.qualifier
-                }))
-            })
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&json_symbols)?);
-        return Ok(());
-    }
-
-    for sym in symbols {
-        let container = sym
-            .container
-            .as_deref()
-            .map(|c| format!(" in {c}"))
-            .unwrap_or_default();
-        let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start)?;
-        let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end)?;
-        println!(
-            "{:<10} {:<30} {} [{}:{}-{}:{}]{container}",
-            sym.kind, sym.name, sym.file, line, col, end_line, end_col
-        );
-    }
-
-    Ok(())
+    output_symbols(&symbols, format)
 }
 
 fn find_implementation(
@@ -316,7 +463,7 @@ fn find_implementation(
     character: Option<usize>,
     limit: Option<usize>,
     kind: Option<&str>,
-    json_output: bool,
+    format: OutputFormat,
 ) -> Result<()> {
     let store = open_store_for_query(db)?;
     let (file, line, character) = parse_file_position(file, line, character)?;
@@ -351,62 +498,7 @@ fn find_implementation(
         impl_symbols.truncate(lim);
     }
 
-    if json_output {
-        let (t_line, t_col) = offset_to_line_char_in_file(&target.file, target.start)?;
-        let (t_end_line, t_end_col) = offset_to_line_char_in_file(&target.file, target.end)?;
-        let json_implementations: Vec<serde_json::Value> = impl_symbols
-            .iter()
-            .filter_map(|sym| {
-                let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start).ok()?;
-                let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end).ok()?;
-                Some(serde_json::json!({
-                    "id": sym.id,
-                    "name": sym.name,
-                    "kind": sym.kind,
-                    "file": sym.file,
-                    "start": { "line": line, "character": col },
-                    "end": { "line": end_line, "character": end_col },
-                    "visibility": sym.visibility,
-                    "container": sym.container
-                }))
-            })
-            .collect();
-        let output = serde_json::json!({
-            "target": {
-                "id": target.id,
-                "name": target.name,
-                "kind": target.kind,
-                "file": target.file,
-                "start": { "line": t_line, "character": t_col },
-                "end": { "line": t_end_line, "character": t_end_col }
-            },
-            "implementations": json_implementations
-        });
-        println!("{}", serde_json::to_string_pretty(&output)?);
-        return Ok(());
-    }
-
-    let (t_line, t_col) = offset_to_line_char_in_file(&target.file, target.start)?;
-    let (t_end_line, t_end_col) = offset_to_line_char_in_file(&target.file, target.end)?;
-    println!(
-        "Target: {} {} {} [{}:{}-{}:{}]",
-        target.kind, target.name, target.file, t_line, t_col, t_end_line, t_end_col
-    );
-    for sym in impl_symbols {
-        let container = sym
-            .container
-            .as_deref()
-            .map(|c| format!(" in {c}"))
-            .unwrap_or_default();
-        let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start)?;
-        let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end)?;
-        println!(
-            "{:<10} {:<30} {} [{}:{}-{}:{}]{container}",
-            sym.kind, sym.name, sym.file, line, col, end_line, end_col
-        );
-    }
-
-    Ok(())
+    output_implementations(&target, &impl_symbols, format)
 }
 
 fn find_usages(
@@ -415,7 +507,7 @@ fn find_usages(
     line: Option<usize>,
     character: Option<usize>,
     limit: Option<usize>,
-    json_output: bool,
+    format: OutputFormat,
 ) -> Result<()> {
     let store = open_store_for_query(db)?;
     let (file, line, character) = parse_file_position(file, line, character)?;
@@ -450,239 +542,186 @@ fn find_usages(
         refs.truncate(lim);
     }
 
+    output_usages(&target, &refs, format)
+}
+
+/// Output for usages with file grouping
+#[derive(serde::Serialize)]
+struct UsagesOutput {
+    target: SymbolOutput,
+    files: Vec<FileUsages>,
+    summary: UsagesSummary,
+}
+
+#[derive(serde::Serialize)]
+struct FileUsages {
+    file: String,
+    context: String,
+    count: usize,
+    usages: Vec<UsageLocation>,
+}
+
+#[derive(serde::Serialize)]
+struct UsageLocation {
+    start: Position,
+    end: Position,
+}
+
+#[derive(serde::Serialize)]
+struct UsagesSummary {
+    total: usize,
+    files: usize,
+    prod: usize,
+    test: usize,
+}
+
+/// Format and output usages for a target symbol
+fn output_usages(
+    target: &SymbolRecord,
+    refs: &[store::ReferenceRecord],
+    format: OutputFormat,
+) -> Result<()> {
+    let target_out = SymbolOutput::from_record(target)
+        .ok_or_else(|| anyhow!("Failed to resolve target position"))?;
+
     // Group references by file
     let mut by_file: std::collections::BTreeMap<String, Vec<&store::ReferenceRecord>> =
         std::collections::BTreeMap::new();
-    for r in &refs {
+    for r in refs {
         by_file.entry(r.file.clone()).or_default().push(r);
     }
 
-    if json_output {
-        let (t_line, t_col) = offset_to_line_char_in_file(&target.file, target.start)?;
-        let (t_end_line, t_end_col) = offset_to_line_char_in_file(&target.file, target.end)?;
-
-        let mut test_count = 0;
-        let mut prod_count = 0;
-        let mut total_usages = 0;
-
-        let json_files: Vec<serde_json::Value> = by_file
-            .iter()
-            .map(|(file, file_refs)| {
-                let is_test = is_test_file(file);
-                let usages: Vec<serde_json::Value> = file_refs
-                    .iter()
-                    .filter_map(|r| {
-                        let (line, col) = offset_to_line_char_in_file(&r.file, r.start).ok()?;
-                        let (end_line, end_col) =
-                            offset_to_line_char_in_file(&r.file, r.end).ok()?;
-                        Some(serde_json::json!({
-                            "start": { "line": line, "character": col },
-                            "end": { "line": end_line, "character": end_col }
-                        }))
-                    })
-                    .collect();
-
-                if is_test {
-                    test_count += usages.len();
-                } else {
-                    prod_count += usages.len();
-                }
-                total_usages += usages.len();
-
-                serde_json::json!({
-                    "file": file,
-                    "context": if is_test { "test" } else { "prod" },
-                    "count": usages.len(),
-                    "usages": usages
-                })
-            })
-            .collect();
-
-        let output = serde_json::json!({
-            "target": {
-                "id": target.id,
-                "name": target.name,
-                "kind": target.kind,
-                "file": target.file,
-                "start": { "line": t_line, "character": t_col },
-                "end": { "line": t_end_line, "character": t_end_col }
-            },
-            "files": json_files,
-            "summary": {
-                "total": total_usages,
-                "files": by_file.len(),
-                "prod": prod_count,
-                "test": test_count
-            }
-        });
-        println!("{}", serde_json::to_string_pretty(&output)?);
-        return Ok(());
-    }
-
-    let (t_line, t_col) = offset_to_line_char_in_file(&target.file, target.start)?;
-    let (t_end_line, t_end_col) = offset_to_line_char_in_file(&target.file, target.end)?;
-    println!(
-        "Target: {} {} {} [{}:{}-{}:{}]",
-        target.kind, target.name, target.file, t_line, t_col, t_end_line, t_end_col
-    );
-    if refs.is_empty() {
-        println!("No usages found.");
-    } else {
-        let mut test_count = 0;
-        let mut prod_count = 0;
-
-        for (file, file_refs) in &by_file {
+    // Build structured output
+    let mut test_count = 0;
+    let mut prod_count = 0;
+    let file_usages: Vec<FileUsages> = by_file
+        .iter()
+        .map(|(file, file_refs)| {
             let is_test = is_test_file(file);
-            let context = if is_test { "[test]" } else { "[prod]" };
-            if is_test {
-                test_count += file_refs.len();
-            } else {
-                prod_count += file_refs.len();
-            }
-
-            println!("\n{} {} ({} usages)", context, file, file_refs.len());
-            for r in file_refs {
-                let (line, col) = offset_to_line_char_in_file(&r.file, r.start)?;
-                let (end_line, end_col) = offset_to_line_char_in_file(&r.file, r.end)?;
-                println!("  {}:{}-{}:{}", line, col, end_line, end_col);
-            }
-        }
-        println!(
-            "\nSummary: {} usages in {} files ({} prod, {} test)",
-            refs.len(),
-            by_file.len(),
-            prod_count,
-            test_count
-        );
-    }
-
-    Ok(())
-}
-
-fn show_symbol(
-    db: &Path,
-    name: &str,
-    file: Option<&PathBuf>,
-    kind: Option<&str>,
-    limit: Option<usize>,
-    json_output: bool,
-) -> Result<()> {
-    let store = open_store_for_query(db)?;
-    let file_str = file.map(|p| p.to_string_lossy().to_string());
-    let symbols = store.list_symbols(file_str.as_deref(), kind, Some(name), limit)?;
-
-    if symbols.is_empty() {
-        if json_output {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({ "symbols": [] }))?
-            );
-        } else {
-            println!("No symbols found for name '{}'.", name);
-        }
-        return Ok(());
-    }
-
-    let workspace_root = workspace_root_from_db(db)
-        .unwrap_or_else(|_| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-
-    if json_output {
-        let json_symbols: Vec<serde_json::Value> = symbols
-            .iter()
-            .filter_map(|sym| {
-                let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start).ok()?;
-                let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end).ok()?;
-                let outgoing = store.edges_from(&sym.id).ok()?;
-                let incoming = store.edges_to(&sym.id).ok()?;
-                let mut refs = store.references_for_symbol(&sym.id).ok()?;
-                if refs.is_empty() {
-                    refs = search_usages_by_name(&store, sym, &workspace_root).ok()?;
-                }
-
-                let json_refs: Vec<serde_json::Value> = refs
-                    .iter()
-                    .filter_map(|r| {
-                        let (r_line, r_col) = offset_to_line_char_in_file(&r.file, r.start).ok()?;
-                        let (r_end_line, r_end_col) =
-                            offset_to_line_char_in_file(&r.file, r.end).ok()?;
-                        Some(serde_json::json!({
-                            "file": r.file,
-                            "start": { "line": r_line, "character": r_col },
-                            "end": { "line": r_end_line, "character": r_end_col }
-                        }))
+            let usages: Vec<UsageLocation> = file_refs
+                .iter()
+                .filter_map(|r| {
+                    let (line, col) = offset_to_line_char_in_file(&r.file, r.start).ok()?;
+                    let (end_line, end_col) = offset_to_line_char_in_file(&r.file, r.end).ok()?;
+                    Some(UsageLocation {
+                        start: Position {
+                            line,
+                            character: col,
+                        },
+                        end: Position {
+                            line: end_line,
+                            character: end_col,
+                        },
                     })
-                    .collect();
+                })
+                .collect();
 
-                Some(serde_json::json!({
-                    "id": sym.id,
-                    "name": sym.name,
-                    "kind": sym.kind,
-                    "file": sym.file,
-                    "start": { "line": line, "character": col },
-                    "end": { "line": end_line, "character": end_col },
-                    "visibility": sym.visibility,
-                    "container": sym.container,
-                    "qualifier": sym.qualifier,
-                    "outgoing_edges": outgoing.iter().map(|e| serde_json::json!({
-                        "src": e.src,
-                        "dst": e.dst,
-                        "kind": e.kind
-                    })).collect::<Vec<_>>(),
-                    "incoming_edges": incoming.iter().map(|e| serde_json::json!({
-                        "src": e.src,
-                        "dst": e.dst,
-                        "kind": e.kind
-                    })).collect::<Vec<_>>(),
-                    "references": json_refs
-                }))
-            })
-            .collect();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({ "symbols": json_symbols }))?
-        );
-        return Ok(());
-    }
+            if is_test {
+                test_count += usages.len();
+            } else {
+                prod_count += usages.len();
+            }
 
-    for sym in symbols.iter() {
-        let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start)?;
-        let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end)?;
-        let qualifier = sym.qualifier.as_deref().unwrap_or("");
-        let visibility = sym.visibility.as_deref().unwrap_or("");
-        let container = sym.container.as_deref().unwrap_or("");
-        println!(
-            "Symbol: {} {} {} [{}:{}-{}:{}] vis={} container={}",
-            sym.kind, sym.name, sym.file, line, col, end_line, end_col, visibility, container
-        );
-        if !qualifier.is_empty() {
-            println!("  qualifier: {}", qualifier);
+            FileUsages {
+                file: file.clone(),
+                context: if is_test { "test" } else { "prod" }.to_string(),
+                count: usages.len(),
+                usages,
+            }
+        })
+        .collect();
+
+    let total = test_count + prod_count;
+    let summary = UsagesSummary {
+        total,
+        files: by_file.len(),
+        prod: prod_count,
+        test: test_count,
+    };
+
+    match format {
+        OutputFormat::Json => {
+            let output = UsagesOutput {
+                target: target_out,
+                files: file_usages,
+                summary,
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
         }
-        let outgoing = store.edges_from(&sym.id)?;
-        if !outgoing.is_empty() {
-            println!("  outgoing edges:");
-            for e in outgoing {
-                println!("    {} -> {} ({})", e.src, e.dst, e.kind);
+        OutputFormat::Jsonl => {
+            // First line is target, then each file's usages
+            println!("{}", serde_json::to_string(&target_out)?);
+            for fu in &file_usages {
+                println!("{}", serde_json::to_string(fu)?);
             }
         }
-        let incoming = store.edges_to(&sym.id)?;
-        if !incoming.is_empty() {
-            println!("  incoming edges:");
-            for e in incoming {
-                println!("    {} -> {} ({})", e.src, e.dst, e.kind);
+        OutputFormat::Csv => {
+            let mut wtr = csv::Writer::from_writer(std::io::stdout());
+            wtr.write_record([
+                "file",
+                "line",
+                "character",
+                "end_line",
+                "end_character",
+                "context",
+            ])?;
+            for fu in &file_usages {
+                for u in &fu.usages {
+                    wtr.write_record([
+                        &fu.file,
+                        &u.start.line.to_string(),
+                        &u.start.character.to_string(),
+                        &u.end.line.to_string(),
+                        &u.end.character.to_string(),
+                        &fu.context,
+                    ])?;
+                }
+            }
+            wtr.flush()?;
+        }
+        OutputFormat::Tsv => {
+            println!("file\tline\tcharacter\tend_line\tend_character\tcontext");
+            for fu in &file_usages {
+                for u in &fu.usages {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}\t{}",
+                        fu.file,
+                        u.start.line,
+                        u.start.character,
+                        u.end.line,
+                        u.end.character,
+                        fu.context
+                    );
+                }
             }
         }
-        let mut refs = store.references_for_symbol(&sym.id)?;
-        if refs.is_empty() {
-            refs = search_usages_by_name(&store, sym, &workspace_root)?;
-        }
-        if !refs.is_empty() {
-            println!("  references:");
-            for r in refs {
-                let (r_line, r_col) = offset_to_line_char_in_file(&r.file, r.start)?;
-                let (r_end_line, r_end_col) = offset_to_line_char_in_file(&r.file, r.end)?;
+        OutputFormat::Text => {
+            println!(
+                "Target: {} {} {}",
+                target_out.kind,
+                target_out.name,
+                target_out.location()
+            );
+            if refs.is_empty() {
+                println!("No usages found.");
+            } else {
+                for fu in &file_usages {
+                    let context = if fu.context == "test" {
+                        "[test]"
+                    } else {
+                        "[prod]"
+                    };
+                    println!("\n{} {} ({} usages)", context, fu.file, fu.count);
+                    for u in &fu.usages {
+                        println!(
+                            "  {}:{}-{}:{}",
+                            u.start.line, u.start.character, u.end.line, u.end.character
+                        );
+                    }
+                }
                 println!(
-                    "    {} [{}:{}-{}:{}]",
-                    r.file, r_line, r_col, r_end_line, r_end_col
+                    "\nSummary: {} usages in {} files ({} prod, {} test)",
+                    summary.total, summary.files, summary.prod, summary.test
                 );
             }
         }
@@ -691,12 +730,241 @@ fn show_symbol(
     Ok(())
 }
 
+/// Detailed symbol output with edges and references
+#[derive(serde::Serialize)]
+struct SymbolDetailOutput {
+    #[serde(flatten)]
+    base: SymbolOutput,
+    outgoing_edges: Vec<EdgeOutput>,
+    incoming_edges: Vec<EdgeOutput>,
+    references: Vec<ReferenceOutput>,
+}
+
+#[derive(serde::Serialize)]
+struct EdgeOutput {
+    src: String,
+    dst: String,
+    kind: String,
+}
+
+#[derive(serde::Serialize)]
+struct ReferenceOutput {
+    file: String,
+    start: Position,
+    end: Position,
+}
+
+fn show_symbol(
+    db: &Path,
+    name: &str,
+    file: Option<&PathBuf>,
+    kind: Option<&str>,
+    limit: Option<usize>,
+    format: OutputFormat,
+) -> Result<()> {
+    let store = open_store_for_query(db)?;
+    let file_str = file.map(|p| p.to_string_lossy().to_string());
+    let symbols = store.list_symbols(file_str.as_deref(), kind, Some(name), limit)?;
+
+    if symbols.is_empty() {
+        match format {
+            OutputFormat::Json => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({ "symbols": [] }))?
+                );
+            }
+            OutputFormat::Jsonl => {} // No output for empty results
+            OutputFormat::Csv | OutputFormat::Tsv => {
+                // Just headers for empty results
+                let sep = if matches!(format, OutputFormat::Csv) {
+                    ","
+                } else {
+                    "\t"
+                };
+                println!(
+                    "name{}kind{}location{}visibility{}container",
+                    sep, sep, sep, sep
+                );
+            }
+            OutputFormat::Text => {
+                println!("No symbols found for name '{}'.", name);
+            }
+        }
+        return Ok(());
+    }
+
+    let workspace_root = workspace_root_from_db(db)
+        .unwrap_or_else(|_| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    // Build detailed output for each symbol
+    let detailed_symbols: Vec<SymbolDetailOutput> = symbols
+        .iter()
+        .filter_map(|sym| {
+            let base = SymbolOutput::from_record(sym)?;
+            let outgoing = store.edges_from(&sym.id).ok()?;
+            let incoming = store.edges_to(&sym.id).ok()?;
+            let mut refs = store.references_for_symbol(&sym.id).ok()?;
+            if refs.is_empty() {
+                refs = search_usages_by_name(&store, sym, &workspace_root).ok()?;
+            }
+
+            let outgoing_edges: Vec<EdgeOutput> = outgoing
+                .iter()
+                .map(|e| EdgeOutput {
+                    src: e.src.clone(),
+                    dst: e.dst.clone(),
+                    kind: e.kind.clone(),
+                })
+                .collect();
+
+            let incoming_edges: Vec<EdgeOutput> = incoming
+                .iter()
+                .map(|e| EdgeOutput {
+                    src: e.src.clone(),
+                    dst: e.dst.clone(),
+                    kind: e.kind.clone(),
+                })
+                .collect();
+
+            let references: Vec<ReferenceOutput> = refs
+                .iter()
+                .filter_map(|r| {
+                    let (r_line, r_col) = offset_to_line_char_in_file(&r.file, r.start).ok()?;
+                    let (r_end_line, r_end_col) =
+                        offset_to_line_char_in_file(&r.file, r.end).ok()?;
+                    Some(ReferenceOutput {
+                        file: r.file.clone(),
+                        start: Position {
+                            line: r_line,
+                            character: r_col,
+                        },
+                        end: Position {
+                            line: r_end_line,
+                            character: r_end_col,
+                        },
+                    })
+                })
+                .collect();
+
+            Some(SymbolDetailOutput {
+                base,
+                outgoing_edges,
+                incoming_edges,
+                references,
+            })
+        })
+        .collect();
+
+    match format {
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({ "symbols": detailed_symbols }))?
+            );
+        }
+        OutputFormat::Jsonl => {
+            for sym in &detailed_symbols {
+                println!("{}", serde_json::to_string(sym)?);
+            }
+        }
+        OutputFormat::Csv => {
+            let mut wtr = csv::Writer::from_writer(std::io::stdout());
+            wtr.write_record([
+                "name",
+                "kind",
+                "location",
+                "visibility",
+                "container",
+                "outgoing_edges",
+                "incoming_edges",
+                "references_count",
+            ])?;
+            for sym in &detailed_symbols {
+                wtr.write_record([
+                    sym.base.name.as_str(),
+                    sym.base.kind.as_str(),
+                    &sym.base.location(),
+                    sym.base.visibility.as_deref().unwrap_or(""),
+                    sym.base.container.as_deref().unwrap_or(""),
+                    &sym.outgoing_edges.len().to_string(),
+                    &sym.incoming_edges.len().to_string(),
+                    &sym.references.len().to_string(),
+                ])?;
+            }
+            wtr.flush()?;
+        }
+        OutputFormat::Tsv => {
+            println!("name\tkind\tlocation\tvisibility\tcontainer\toutgoing_edges\tincoming_edges\treferences_count");
+            for sym in &detailed_symbols {
+                println!(
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    sym.base.name,
+                    sym.base.kind,
+                    sym.base.location(),
+                    sym.base.visibility.as_deref().unwrap_or(""),
+                    sym.base.container.as_deref().unwrap_or(""),
+                    sym.outgoing_edges.len(),
+                    sym.incoming_edges.len(),
+                    sym.references.len()
+                );
+            }
+        }
+        OutputFormat::Text => {
+            for sym in &detailed_symbols {
+                let visibility = sym.base.visibility.as_deref().unwrap_or("");
+                let container = sym.base.container.as_deref().unwrap_or("");
+                println!(
+                    "Symbol: {} {} {} vis={} container={}",
+                    sym.base.kind,
+                    sym.base.name,
+                    sym.base.location(),
+                    visibility,
+                    container
+                );
+                if let Some(qualifier) = &sym.base.qualifier {
+                    println!("  qualifier: {}", qualifier);
+                }
+                if !sym.outgoing_edges.is_empty() {
+                    println!("  outgoing edges:");
+                    for e in &sym.outgoing_edges {
+                        println!("    {} -> {} ({})", e.src, e.dst, e.kind);
+                    }
+                }
+                if !sym.incoming_edges.is_empty() {
+                    println!("  incoming edges:");
+                    for e in &sym.incoming_edges {
+                        println!("    {} -> {} ({})", e.src, e.dst, e.kind);
+                    }
+                }
+                if !sym.references.is_empty() {
+                    println!("  references:");
+                    for r in &sym.references {
+                        println!(
+                            "    {}:{}:{}-{}:{}",
+                            r.file, r.start.line, r.start.character, r.end.line, r.end.character
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Definition output wrapper
+#[derive(serde::Serialize)]
+struct DefinitionOutput {
+    definition: SymbolOutput,
+}
+
 fn find_definition(
     db: &Path,
     file: &Path,
     line: Option<usize>,
     character: Option<usize>,
-    json_output: bool,
+    format: OutputFormat,
 ) -> Result<()> {
     let store = open_store_for_query(db)?;
     let (file, line, character) = parse_file_position(file, line, character)?;
@@ -722,47 +990,66 @@ fn find_definition(
         resolve_symbol_at(&store, &file, line, character)?
     };
 
-    if json_output {
-        let (d_line, d_col) = offset_to_line_char_in_file(&definition.file, definition.start)?;
-        let (d_end_line, d_end_col) =
-            offset_to_line_char_in_file(&definition.file, definition.end)?;
-        let output = serde_json::json!({
-            "definition": {
-                "id": definition.id,
-                "name": definition.name,
-                "kind": definition.kind,
-                "file": definition.file,
-                "start": { "line": d_line, "character": d_col },
-                "end": { "line": d_end_line, "character": d_end_col },
-                "visibility": definition.visibility,
-                "container": definition.container,
-                "qualifier": definition.qualifier
-            }
-        });
-        println!("{}", serde_json::to_string_pretty(&output)?);
-        return Ok(());
+    let def_out = SymbolOutput::from_record(&definition)
+        .ok_or_else(|| anyhow!("Failed to resolve definition position"))?;
+
+    match format {
+        OutputFormat::Json => {
+            let output = DefinitionOutput {
+                definition: def_out,
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        OutputFormat::Jsonl => {
+            println!("{}", serde_json::to_string(&def_out)?);
+        }
+        OutputFormat::Csv => {
+            let mut wtr = csv::Writer::from_writer(std::io::stdout());
+            wtr.write_record(["name", "kind", "location", "visibility", "container"])?;
+            wtr.write_record(def_out.to_row())?;
+            wtr.flush()?;
+        }
+        OutputFormat::Tsv => {
+            println!("name\tkind\tlocation\tvisibility\tcontainer");
+            println!("{}", def_out.to_row().join("\t"));
+        }
+        OutputFormat::Text => {
+            let container = def_out
+                .container
+                .as_deref()
+                .map(|c| format!(" in {c}"))
+                .unwrap_or_default();
+            println!(
+                "Definition: {} {} {}{}",
+                def_out.kind,
+                def_out.name,
+                def_out.location(),
+                container
+            );
+        }
     }
 
-    let (d_line, d_col) = offset_to_line_char_in_file(&definition.file, definition.start)?;
-    let (d_end_line, d_end_col) = offset_to_line_char_in_file(&definition.file, definition.end)?;
-    let container = definition
-        .container
-        .as_deref()
-        .map(|c| format!(" in {c}"))
-        .unwrap_or_default();
-    println!(
-        "Definition: {} {} {} [{}:{}-{}:{}]{}",
-        definition.kind,
-        definition.name,
-        definition.file,
-        d_line,
-        d_col,
-        d_end_line,
-        d_end_col,
-        container
-    );
-
     Ok(())
+}
+
+/// Duplicates output structure
+#[derive(serde::Serialize)]
+struct DuplicatesOutput {
+    groups: Vec<DuplicateGroupOutput>,
+    summary: DuplicatesSummary,
+}
+
+#[derive(serde::Serialize)]
+struct DuplicateGroupOutput {
+    content_hash: String,
+    count: usize,
+    symbols: Vec<SymbolOutput>,
+}
+
+#[derive(serde::Serialize)]
+struct DuplicatesSummary {
+    total_groups: usize,
+    total_duplicates: usize,
 }
 
 fn find_duplicates(
@@ -771,7 +1058,7 @@ fn find_duplicates(
     staged: bool,
     kind: Option<&str>,
     min_count: usize,
-    json_output: bool,
+    format: OutputFormat,
 ) -> Result<()> {
     let store = open_store_for_query(db)?;
     let workspace_root = workspace_root_from_db(db)?;
@@ -780,17 +1067,7 @@ fn find_duplicates(
     let file_filter: Option<Vec<String>> = if uncommitted || staged {
         let files = get_git_changed_files(&workspace_root, uncommitted, staged)?;
         if files.is_empty() {
-            if json_output {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "groups": [],
-                        "summary": { "total_groups": 0, "total_duplicates": 0 }
-                    }))?
-                );
-            } else {
-                println!("No changed files found.");
-            }
+            output_empty_duplicates(format)?;
             return Ok(());
         }
         Some(files)
@@ -800,83 +1077,141 @@ fn find_duplicates(
 
     let groups = store.find_duplicate_groups(min_count, kind, file_filter.as_deref())?;
 
-    if json_output {
-        let json_groups: Vec<serde_json::Value> = groups
-            .iter()
-            .map(|group| {
-                let symbols: Vec<serde_json::Value> = group
-                    .symbols
-                    .iter()
-                    .filter_map(|sym| {
-                        let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start).ok()?;
-                        let (end_line, end_col) =
-                            offset_to_line_char_in_file(&sym.file, sym.end).ok()?;
-                        Some(serde_json::json!({
-                            "id": sym.id,
-                            "name": sym.name,
-                            "kind": sym.kind,
-                            "file": sym.file,
-                            "start": { "line": line, "character": col },
-                            "end": { "line": end_line, "character": end_col },
-                            "container": sym.container
-                        }))
-                    })
-                    .collect();
-                serde_json::json!({
-                    "content_hash": group.content_hash,
-                    "count": group.symbols.len(),
-                    "symbols": symbols
-                })
-            })
-            .collect();
-
-        let total_duplicates: usize = groups.iter().map(|g| g.symbols.len()).sum();
-        let output = serde_json::json!({
-            "groups": json_groups,
-            "summary": {
-                "total_groups": groups.len(),
-                "total_duplicates": total_duplicates
+    // Build structured output
+    let group_outputs: Vec<DuplicateGroupOutput> = groups
+        .iter()
+        .map(|group| {
+            let symbols: Vec<SymbolOutput> = group
+                .symbols
+                .iter()
+                .filter_map(SymbolOutput::from_record)
+                .collect();
+            DuplicateGroupOutput {
+                content_hash: group.content_hash.clone(),
+                count: symbols.len(),
+                symbols,
             }
-        });
-        println!("{}", serde_json::to_string_pretty(&output)?);
-        return Ok(());
-    }
+        })
+        .collect();
 
-    if groups.is_empty() {
-        println!("No duplicates found.");
-        return Ok(());
-    }
+    let total_duplicates: usize = group_outputs.iter().map(|g| g.count).sum();
+    let summary = DuplicatesSummary {
+        total_groups: group_outputs.len(),
+        total_duplicates,
+    };
 
-    let total_duplicates: usize = groups.iter().map(|g| g.symbols.len()).sum();
-    println!(
-        "Found {} duplicate groups ({} total symbols)\n",
-        groups.len(),
-        total_duplicates
-    );
-
-    for (i, group) in groups.iter().enumerate() {
-        println!(
-            "Group {} ({} duplicates, hash: {}):",
-            i + 1,
-            group.symbols.len(),
-            &group.content_hash[..8]
-        );
-        for sym in &group.symbols {
-            let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start)?;
-            let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end)?;
-            let container = sym
-                .container
-                .as_deref()
-                .map(|c| format!(" in {c}"))
-                .unwrap_or_default();
-            println!(
-                "  {:<10} {:<30} {} [{}:{}-{}:{}]{container}",
-                sym.kind, sym.name, sym.file, line, col, end_line, end_col
-            );
+    match format {
+        OutputFormat::Json => {
+            let output = DuplicatesOutput {
+                groups: group_outputs,
+                summary,
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
         }
-        println!();
+        OutputFormat::Jsonl => {
+            for group in &group_outputs {
+                println!("{}", serde_json::to_string(group)?);
+            }
+        }
+        OutputFormat::Csv => {
+            let mut wtr = csv::Writer::from_writer(std::io::stdout());
+            wtr.write_record(["group_hash", "name", "kind", "location", "container"])?;
+            for group in &group_outputs {
+                let short_hash = &group.content_hash[..8.min(group.content_hash.len())];
+                for sym in &group.symbols {
+                    wtr.write_record([
+                        short_hash,
+                        &sym.name,
+                        &sym.kind,
+                        &sym.location(),
+                        sym.container.as_deref().unwrap_or(""),
+                    ])?;
+                }
+            }
+            wtr.flush()?;
+        }
+        OutputFormat::Tsv => {
+            println!("group_hash\tname\tkind\tlocation\tcontainer");
+            for group in &group_outputs {
+                let short_hash = &group.content_hash[..8.min(group.content_hash.len())];
+                for sym in &group.symbols {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}",
+                        short_hash,
+                        sym.name,
+                        sym.kind,
+                        sym.location(),
+                        sym.container.as_deref().unwrap_or("")
+                    );
+                }
+            }
+        }
+        OutputFormat::Text => {
+            if group_outputs.is_empty() {
+                println!("No duplicates found.");
+                return Ok(());
+            }
+
+            println!(
+                "Found {} duplicate groups ({} total symbols)\n",
+                summary.total_groups, summary.total_duplicates
+            );
+
+            for (i, group) in group_outputs.iter().enumerate() {
+                let short_hash = &group.content_hash[..8.min(group.content_hash.len())];
+                println!(
+                    "Group {} ({} duplicates, hash: {}):",
+                    i + 1,
+                    group.count,
+                    short_hash
+                );
+                for sym in &group.symbols {
+                    let container = sym
+                        .container
+                        .as_deref()
+                        .map(|c| format!(" in {c}"))
+                        .unwrap_or_default();
+                    println!(
+                        "  {:<10} {:<30} {}{}",
+                        sym.kind,
+                        sym.name,
+                        sym.location(),
+                        container
+                    );
+                }
+                println!();
+            }
+        }
     }
 
+    Ok(())
+}
+
+fn output_empty_duplicates(format: OutputFormat) -> Result<()> {
+    match format {
+        OutputFormat::Json => {
+            let output = DuplicatesOutput {
+                groups: vec![],
+                summary: DuplicatesSummary {
+                    total_groups: 0,
+                    total_duplicates: 0,
+                },
+            };
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        OutputFormat::Jsonl => {} // No output for empty results
+        OutputFormat::Csv => {
+            let mut wtr = csv::Writer::from_writer(std::io::stdout());
+            wtr.write_record(["group_hash", "name", "kind", "location", "container"])?;
+            wtr.flush()?;
+        }
+        OutputFormat::Tsv => {
+            println!("group_hash\tname\tkind\tlocation\tcontainer");
+        }
+        OutputFormat::Text => {
+            println!("No changed files found.");
+        }
+    }
     Ok(())
 }
 

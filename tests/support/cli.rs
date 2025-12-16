@@ -113,7 +113,7 @@ impl<'a> CliRunner<'a> {
         let mut cmd = Command::new(TestWorkspace::cli_bin());
 
         if self.json {
-            cmd.arg("--json");
+            cmd.args(["--format", "json"]);
         }
 
         cmd.args(&self.args)
@@ -198,7 +198,10 @@ impl CliOutput {
 
     /// Parse JSON output
     pub fn json<T: serde::de::DeserializeOwned>(&self) -> Result<T> {
-        assert!(self.json_mode, "Command was not run with --json flag");
+        assert!(
+            self.json_mode,
+            "Command was not run with --format json flag"
+        );
         Ok(serde_json::from_str(&self.stdout)?)
     }
 

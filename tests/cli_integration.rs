@@ -460,7 +460,8 @@ fn definition_command_with_json_output() {
     let def_out = Command::new(bin)
         .args([
             "definition",
-            "--json",
+            "--format",
+            "json",
             "--db",
             db_path.to_str().unwrap(),
             "--file",
@@ -593,7 +594,13 @@ export function processData(data: string[]): string[] {
 
     // Run duplicates command with JSON output
     let dup_out = Command::new(bin)
-        .args(["duplicates", "--json", "--db", db_path.to_str().unwrap()])
+        .args([
+            "duplicates",
+            "--format",
+            "json",
+            "--db",
+            db_path.to_str().unwrap(),
+        ])
         .current_dir(root)
         .output()
         .unwrap();

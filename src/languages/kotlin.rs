@@ -390,16 +390,57 @@ fn handle_function(
     symbol_by_name: &mut HashMap<String, String>,
 ) {
     if let Some(name) = find_name(node, source) {
-        let kind = if container.is_some() {
-            "method"
+        // Check for receiver_type (indicates extension function)
+        let receiver_type = extract_receiver_type(node, source);
+
+        let (kind, qualifier) = if let Some(ref recv_type) = receiver_type {
+            // Extension function/method
+            let kind = if container.is_some() {
+                "extension_method"
+            } else {
+                "extension_function"
+            };
+            // Qualifier includes receiver type for searchability
+            let qual = match &container {
+                Some(c) => Some(format!("{}.{}", c, recv_type)),
+                None => Some(recv_type.clone()),
+            };
+            (kind, qual)
         } else {
-            "function"
+            // Regular function/method
+            let kind = if container.is_some() {
+                "method"
+            } else {
+                "function"
+            };
+            (kind, container.clone())
         };
-        let sym = make_symbol(path, node, &name, kind, container, source.as_bytes());
+
+        let sym = make_symbol_with_qualifier(
+            path,
+            node,
+            &name,
+            kind,
+            container,
+            qualifier,
+            source.as_bytes(),
+        );
         declared_spans.insert((sym.start as usize, sym.end as usize));
         symbol_by_name.insert(name.clone(), sym.id.clone());
         symbols.push(sym);
     }
+}
+
+/// Extract the receiver type from a function declaration if it's an extension function
+fn extract_receiver_type(node: &Node, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "receiver_type" {
+            // Extract the type name from the receiver_type node
+            return extract_type_name(&child, source);
+        }
+    }
+    None
 }
 
 fn handle_property(
@@ -412,7 +453,29 @@ fn handle_property(
     symbol_by_name: &mut HashMap<String, String>,
 ) {
     if let Some(name) = find_property_name(node, source) {
-        let sym = make_symbol(path, node, &name, "property", container, source.as_bytes());
+        // Check for receiver_type (indicates extension property)
+        let receiver_type = extract_receiver_type(node, source);
+
+        let (kind, qualifier) = if let Some(ref recv_type) = receiver_type {
+            // Extension property
+            let qual = match &container {
+                Some(c) => Some(format!("{}.{}", c, recv_type)),
+                None => Some(recv_type.clone()),
+            };
+            ("extension_property", qual)
+        } else {
+            ("property", container.clone())
+        };
+
+        let sym = make_symbol_with_qualifier(
+            path,
+            node,
+            &name,
+            kind,
+            container,
+            qualifier,
+            source.as_bytes(),
+        );
         declared_spans.insert((sym.start as usize, sym.end as usize));
         symbol_by_name.insert(name.clone(), sym.id.clone());
         symbols.push(sym);
@@ -470,11 +533,15 @@ fn record_inheritance_edges(
     }
 }
 
-/// Extract type name from a type node
+/// Extract the primary type name from a type node (e.g., "List" from "List<Int>")
 fn extract_type_name(node: &Node, source: &str) -> Option<String> {
-    // Look for type_identifier or simple_identifier within the type
-    let mut stack = vec![*node];
-    while let Some(n) = stack.pop() {
+    // BFS approach to find the first type_identifier at the shallowest level
+    // This ensures we get "List" from "List<Int>" rather than "Int"
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back(*node);
+
+    while let Some(n) = queue.pop_front() {
+        // Check if this node is a type identifier
         if n.kind() == "type_identifier"
             || n.kind() == "simple_identifier"
             || n.kind() == "identifier"
@@ -484,9 +551,14 @@ fn extract_type_name(node: &Node, source: &str) -> Option<String> {
                 return Some(name);
             }
         }
+
+        // Add children, but skip type_arguments to avoid descending into generic params
         let mut cursor = n.walk();
         for child in n.children(&mut cursor) {
-            stack.push(child);
+            // Skip type_arguments to avoid getting type params like <Int> in List<Int>
+            if child.kind() != "type_arguments" {
+                queue.push_back(child);
+            }
         }
     }
     None
@@ -686,6 +758,39 @@ fn make_symbol(
     let visibility = extract_visibility(node);
     let content_hash = super::compute_content_hash(source, node.start_byte(), node.end_byte());
     let qualifier = container.as_ref().map(|c| c.to_string());
+
+    SymbolRecord {
+        id: format!(
+            "{}#{}-{}",
+            normalize_path(path),
+            node.start_byte(),
+            node.end_byte()
+        ),
+        file: normalize_path(path),
+        kind: kind.to_string(),
+        name: name.to_string(),
+        start: node.start_byte() as i64,
+        end: node.end_byte() as i64,
+        qualifier,
+        visibility,
+        container,
+        content_hash,
+    }
+}
+
+/// Create a symbol with separate qualifier (used for extension functions where
+/// qualifier shows the receiver type but container shows the enclosing class)
+fn make_symbol_with_qualifier(
+    path: &Path,
+    node: &Node,
+    name: &str,
+    kind: &str,
+    container: Option<String>,
+    qualifier: Option<String>,
+    source: &[u8],
+) -> SymbolRecord {
+    let visibility = extract_visibility(node);
+    let content_hash = super::compute_content_hash(source, node.start_byte(), node.end_byte());
 
     SymbolRecord {
         id: format!(
@@ -943,6 +1048,98 @@ enum class Direction(val degrees: Int) {
             north.container.as_deref(),
             Some("Direction"),
             "NORTH should be inside Direction"
+        );
+    }
+
+    #[test]
+    fn extracts_extension_functions_and_properties() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("Extensions.kt");
+        let source = r#"
+fun String.addExclamation() = "$this!"
+
+fun List<Int>.sum(): Int = this.fold(0) { acc, i -> acc + i }
+
+fun <T> MutableList<T>.swap(i: Int, j: Int) {
+    val tmp = this[i]
+    this[i] = this[j]
+    this[j] = tmp
+}
+
+val String.lastChar: Char
+    get() = this[length - 1]
+
+class StringUtils {
+    fun String.toTitleCase(): String = this.capitalize()
+}
+        "#;
+        fs::write(&path, source).unwrap();
+
+        let (symbols, _edges, _refs, _deps, _imports) = index_file(&path, source).unwrap();
+
+        // Check extension function
+        let add_excl = symbols.iter().find(|s| s.name == "addExclamation").unwrap();
+        assert_eq!(
+            add_excl.kind, "extension_function",
+            "addExclamation should be an extension_function"
+        );
+        assert_eq!(
+            add_excl.qualifier.as_deref(),
+            Some("String"),
+            "addExclamation should have String as qualifier"
+        );
+
+        // Check extension function on generic type
+        let sum = symbols.iter().find(|s| s.name == "sum").unwrap();
+        assert_eq!(
+            sum.kind, "extension_function",
+            "sum should be an extension_function"
+        );
+        assert_eq!(
+            sum.qualifier.as_deref(),
+            Some("List"),
+            "sum should have List as qualifier"
+        );
+
+        // Check generic extension function
+        let swap = symbols.iter().find(|s| s.name == "swap").unwrap();
+        assert_eq!(
+            swap.kind, "extension_function",
+            "swap should be an extension_function"
+        );
+        assert_eq!(
+            swap.qualifier.as_deref(),
+            Some("MutableList"),
+            "swap should have MutableList as qualifier"
+        );
+
+        // Check extension property
+        let last_char = symbols.iter().find(|s| s.name == "lastChar").unwrap();
+        assert_eq!(
+            last_char.kind, "extension_property",
+            "lastChar should be an extension_property"
+        );
+        assert_eq!(
+            last_char.qualifier.as_deref(),
+            Some("String"),
+            "lastChar should have String as qualifier"
+        );
+
+        // Check extension function defined inside a class
+        let to_title = symbols.iter().find(|s| s.name == "toTitleCase").unwrap();
+        assert_eq!(
+            to_title.kind, "extension_method",
+            "toTitleCase should be an extension_method"
+        );
+        assert_eq!(
+            to_title.container.as_deref(),
+            Some("StringUtils"),
+            "toTitleCase should be inside StringUtils"
+        );
+        assert_eq!(
+            to_title.qualifier.as_deref(),
+            Some("StringUtils.String"),
+            "toTitleCase should have StringUtils.String as qualifier"
         );
     }
 }

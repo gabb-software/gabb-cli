@@ -236,42 +236,53 @@ impl McpServer {
         let tools = vec![
             Tool {
                 name: "gabb_symbols".to_string(),
-                description: "List or search symbols in the codebase. Returns functions, classes, interfaces, types, etc.".to_string(),
+                description: concat!(
+                    "Search for code symbols (functions, classes, interfaces, types, structs, enums, traits) in the indexed codebase. ",
+                    "USE THIS INSTEAD OF grep/ripgrep when: finding where a function or class is defined, ",
+                    "exploring what methods/functions exist, listing symbols in a file, or searching by symbol kind. ",
+                    "Returns precise file:line:column locations. Faster and more accurate than text search for code navigation. ",
+                    "Supports TypeScript, Rust, and Kotlin."
+                ).to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
                         "name": {
                             "type": "string",
-                            "description": "Filter by symbol name (exact match)"
+                            "description": "Filter by symbol name (exact match). Use this when you know the name you're looking for."
                         },
                         "kind": {
                             "type": "string",
-                            "description": "Filter by kind (function, class, interface, type, etc.)"
+                            "description": "Filter by symbol kind: function, class, interface, type, struct, enum, trait, method, const, variable"
                         },
                         "file": {
                             "type": "string",
-                            "description": "Filter by file path"
+                            "description": "Filter to symbols in this file path. Use to explore a specific file's structure."
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum number of results (default: 50)"
+                            "description": "Maximum number of results (default: 50). Increase for comprehensive searches."
                         }
                     }
                 }),
             },
             Tool {
                 name: "gabb_symbol".to_string(),
-                description: "Get detailed information about a symbol by name.".to_string(),
+                description: concat!(
+                    "Get detailed information about a symbol when you know its name. ",
+                    "USE THIS when you have a specific symbol name and want to find where it's defined. ",
+                    "Returns the symbol's location, kind, visibility, and container. ",
+                    "For exploring unknown code, use gabb_symbols instead."
+                ).to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
                         "name": {
                             "type": "string",
-                            "description": "Symbol name to find"
+                            "description": "The exact symbol name to look up (e.g., 'MyClass', 'process_data', 'UserService')"
                         },
                         "kind": {
                             "type": "string",
-                            "description": "Filter by kind (function, class, interface, type, etc.)"
+                            "description": "Optionally filter by kind if the name is ambiguous (function, class, interface, etc.)"
                         }
                     },
                     "required": ["name"]
@@ -279,21 +290,26 @@ impl McpServer {
             },
             Tool {
                 name: "gabb_definition".to_string(),
-                description: "Go to definition for a symbol at a source position.".to_string(),
+                description: concat!(
+                    "Jump from a symbol usage to its definition/declaration. ",
+                    "USE THIS when you see a function call, type reference, or variable and want to see where it's defined. ",
+                    "Works across files and through imports. Provide the file and position where the symbol is USED, ",
+                    "and this returns where it's DEFINED. Essential for understanding unfamiliar code."
+                ).to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
                         "file": {
                             "type": "string",
-                            "description": "Source file path"
+                            "description": "Path to the file containing the symbol usage (absolute or relative to workspace)"
                         },
                         "line": {
                             "type": "integer",
-                            "description": "1-based line number"
+                            "description": "1-based line number where the symbol appears"
                         },
                         "character": {
                             "type": "integer",
-                            "description": "1-based column number"
+                            "description": "1-based column number (position within the line)"
                         }
                     },
                     "required": ["file", "line", "character"]
@@ -301,25 +317,30 @@ impl McpServer {
             },
             Tool {
                 name: "gabb_usages".to_string(),
-                description: "Find all usages/references of a symbol at a source position.".to_string(),
+                description: concat!(
+                    "Find ALL places where a symbol is used/referenced across the codebase. ",
+                    "USE THIS BEFORE REFACTORING to understand impact, when investigating how a function is called, ",
+                    "or to find all consumers of an API. More accurate than text search - understands code structure ",
+                    "and won't match comments or strings. Point to a symbol definition to find all its usages."
+                ).to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
                         "file": {
                             "type": "string",
-                            "description": "Source file path"
+                            "description": "Path to the file containing the symbol definition"
                         },
                         "line": {
                             "type": "integer",
-                            "description": "1-based line number"
+                            "description": "1-based line number of the symbol"
                         },
                         "character": {
                             "type": "integer",
-                            "description": "1-based column number"
+                            "description": "1-based column number within the line"
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum number of results (default: 50)"
+                            "description": "Maximum usages to return (default: 50). Increase for thorough analysis."
                         }
                     },
                     "required": ["file", "line", "character"]
@@ -327,25 +348,30 @@ impl McpServer {
             },
             Tool {
                 name: "gabb_implementations".to_string(),
-                description: "Find implementations of an interface, trait, or abstract class.".to_string(),
+                description: concat!(
+                    "Find all implementations of an interface, trait, or abstract class. ",
+                    "USE THIS when you have an interface/trait and want to find concrete implementations, ",
+                    "or when exploring a codebase's architecture to understand what classes implement a contract. ",
+                    "Point to the interface/trait definition to find all implementing classes/structs."
+                ).to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
                         "file": {
                             "type": "string",
-                            "description": "Source file path"
+                            "description": "Path to the file containing the interface/trait definition"
                         },
                         "line": {
                             "type": "integer",
-                            "description": "1-based line number"
+                            "description": "1-based line number of the interface/trait"
                         },
                         "character": {
                             "type": "integer",
-                            "description": "1-based column number"
+                            "description": "1-based column number within the line"
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum number of results (default: 50)"
+                            "description": "Maximum implementations to return (default: 50)"
                         }
                     },
                     "required": ["file", "line", "character"]
@@ -353,7 +379,11 @@ impl McpServer {
             },
             Tool {
                 name: "gabb_daemon_status".to_string(),
-                description: "Check the status of the gabb indexing daemon.".to_string(),
+                description: concat!(
+                    "Check if the gabb indexing daemon is running and get workspace info. ",
+                    "USE THIS to diagnose issues if other gabb tools aren't working, ",
+                    "or to verify the index is up-to-date. Returns daemon PID, version, and index location."
+                ).to_string(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {}

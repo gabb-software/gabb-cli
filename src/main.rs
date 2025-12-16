@@ -26,7 +26,7 @@ fn open_store_for_query(db: &Path) -> Result<IndexStore> {
 }
 
 /// Ensure the index is available, auto-starting the daemon if needed.
-/// Returns the workspace root derived from the db path.
+/// Also handles automatic rebuild when schema version changes.
 fn ensure_index_available(db: &Path, opts: &DaemonOptions) -> Result<()> {
     // Derive workspace root from db path
     let workspace_root = workspace_root_from_db(db)
@@ -35,7 +35,6 @@ fn ensure_index_available(db: &Path, opts: &DaemonOptions) -> Result<()> {
     // Check if index exists
     if !db.exists() {
         if opts.no_start_daemon {
-            // User explicitly disabled auto-start
             bail!(
                 "Index not found at {}\n\n\
                  Start the daemon to build an index:\n\
@@ -47,33 +46,118 @@ fn ensure_index_available(db: &Path, opts: &DaemonOptions) -> Result<()> {
 
         // Auto-start daemon and wait for initial index
         log::info!("Index not found. Starting daemon to build index...");
-        daemon::start(&workspace_root, db, false, true, None)?;
+        start_daemon_and_wait(&workspace_root, db, false)?;
+        return Ok(());
+    }
 
-        // Wait for index to be created (with timeout)
-        let max_wait = std::time::Duration::from_secs(60);
-        let start = std::time::Instant::now();
-        let check_interval = std::time::Duration::from_millis(500);
-
-        while !db.exists() && start.elapsed() < max_wait {
-            std::thread::sleep(check_interval);
+    // Index exists - check if it needs regeneration (version mismatch)
+    match IndexStore::try_open(db) {
+        Ok(DbOpenResult::Ready(_)) => {
+            // Index is good, check daemon version (unless suppressed)
+            if !opts.no_daemon {
+                check_daemon_version(&workspace_root);
+            }
         }
+        Ok(DbOpenResult::NeedsRegeneration { reason, .. }) => {
+            if opts.no_start_daemon {
+                bail!(
+                    "{}\n\nRun `gabb daemon start --rebuild` to regenerate the index.",
+                    reason.message()
+                );
+            }
 
-        if !db.exists() {
+            // Auto-rebuild the index
+            log::info!("{}", reason.message());
+            log::info!("Automatically rebuilding index...");
+
+            // Stop any running daemon first
+            if let Ok(Some(pid_info)) = daemon::read_pid_file(&workspace_root) {
+                if daemon::is_process_running(pid_info.pid) {
+                    log::info!("Stopping existing daemon (PID {})...", pid_info.pid);
+                    let _ = daemon::stop(&workspace_root, false);
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+            }
+
+            // Delete the old database and WAL files
+            let _ = fs::remove_file(db);
+            let _ = fs::remove_file(db.with_extension("db-wal"));
+            let _ = fs::remove_file(db.with_extension("db-shm"));
+
+            // Start daemon with rebuild
+            start_daemon_and_wait(&workspace_root, db, true)?;
+        }
+        Err(e) => {
+            // Database is corrupted or unreadable
+            if opts.no_start_daemon {
+                bail!(
+                    "Failed to open index: {}\n\nRun `gabb daemon start --rebuild` to regenerate.",
+                    e
+                );
+            }
+
+            log::warn!("Failed to open index: {}. Rebuilding...", e);
+
+            // Stop daemon if running
+            if let Ok(Some(pid_info)) = daemon::read_pid_file(&workspace_root) {
+                if daemon::is_process_running(pid_info.pid) {
+                    let _ = daemon::stop(&workspace_root, false);
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+            }
+
+            // Delete corrupted database and WAL files
+            let _ = fs::remove_file(db);
+            let _ = fs::remove_file(db.with_extension("db-wal"));
+            let _ = fs::remove_file(db.with_extension("db-shm"));
+
+            // Rebuild
+            start_daemon_and_wait(&workspace_root, db, true)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Start daemon in background and wait for index to be ready.
+fn start_daemon_and_wait(workspace_root: &Path, db: &Path, rebuild: bool) -> Result<()> {
+    // Delete any leftover WAL files that might interfere
+    let wal_path = db.with_extension("db-wal");
+    let shm_path = db.with_extension("db-shm");
+    let _ = fs::remove_file(&wal_path);
+    let _ = fs::remove_file(&shm_path);
+
+    daemon::start(workspace_root, db, rebuild, true, None)?;
+
+    // Wait for index to be created AND readable (with timeout)
+    let max_wait = std::time::Duration::from_secs(60);
+    let start_time = std::time::Instant::now();
+    let check_interval = std::time::Duration::from_millis(500);
+
+    loop {
+        if start_time.elapsed() >= max_wait {
             bail!(
-                "Daemon started but index not created within 60 seconds.\n\
+                "Daemon started but index not ready within 60 seconds.\n\
                  Check daemon logs at {}/.gabb/daemon.log",
                 workspace_root.display()
             );
         }
-        log::info!("Index created. Proceeding with query.");
-    }
 
-    // Check daemon status and version (unless suppressed)
-    if !opts.no_daemon {
-        check_daemon_version(&workspace_root);
-    }
+        if db.exists() {
+            // Try to open the database to verify it's ready
+            match IndexStore::try_open(db) {
+                Ok(DbOpenResult::Ready(_)) => {
+                    log::info!("Index ready. Proceeding with query.");
+                    return Ok(());
+                }
+                _ => {
+                    // Database exists but not ready yet, keep waiting
+                }
+            }
+        }
 
-    Ok(())
+        std::thread::sleep(check_interval);
+    }
 }
 
 /// Check daemon version and warn about mismatches.

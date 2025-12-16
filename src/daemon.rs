@@ -52,7 +52,7 @@ fn pid_file_path(root: &Path) -> PathBuf {
 }
 
 /// Read the PID file for a workspace
-fn read_pid_file(root: &Path) -> Result<Option<PidFile>> {
+pub fn read_pid_file(root: &Path) -> Result<Option<PidFile>> {
     let path = pid_file_path(root);
     if !path.exists() {
         return Ok(None);
@@ -87,7 +87,7 @@ fn remove_pid_file(root: &Path) -> Result<()> {
 }
 
 /// Check if a process with the given PID is running
-fn is_process_running(pid: u32) -> bool {
+pub fn is_process_running(pid: u32) -> bool {
     // Use kill with signal 0 to check if process exists
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }

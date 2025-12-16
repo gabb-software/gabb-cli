@@ -229,13 +229,90 @@ fn handle_class(
                 path,
                 source,
                 node,
-                Some(name),
+                Some(name.clone()),
                 symbols,
                 declared_spans,
                 symbol_by_name,
             );
         }
+
+        // Extract constructor properties (val/var parameters in primary constructor)
+        extract_constructor_properties(
+            path,
+            source,
+            node,
+            Some(name),
+            symbols,
+            declared_spans,
+            symbol_by_name,
+        );
     }
+}
+
+/// Extract properties defined in primary constructor (val/var parameters)
+fn extract_constructor_properties(
+    path: &Path,
+    source: &str,
+    node: &Node,
+    container: Option<String>,
+    symbols: &mut Vec<SymbolRecord>,
+    declared_spans: &mut HashSet<(usize, usize)>,
+    symbol_by_name: &mut HashMap<String, String>,
+) {
+    // Find primary_constructor
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "primary_constructor" {
+            // Find class_parameter nodes
+            let mut param_cursor = child.walk();
+            for param in child.children(&mut param_cursor) {
+                if param.kind() == "class_parameter" {
+                    // Check if this parameter has val/var (making it a property)
+                    if has_property_binding(&param) {
+                        if let Some(prop_name) = find_parameter_name(&param, source) {
+                            let sym = make_symbol(
+                                path,
+                                &param,
+                                &prop_name,
+                                "property",
+                                container.clone(),
+                                source.as_bytes(),
+                            );
+                            declared_spans.insert((sym.start as usize, sym.end as usize));
+                            symbol_by_name.insert(prop_name, sym.id.clone());
+                            symbols.push(sym);
+                        }
+                    }
+                }
+            }
+            break;
+        }
+    }
+}
+
+/// Check if a class_parameter has val/var binding (making it a property)
+fn has_property_binding(node: &Node) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "binding_pattern_kind" {
+            return true;
+        }
+    }
+    false
+}
+
+/// Find the parameter name from a class_parameter node
+fn find_parameter_name(node: &Node, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "simple_identifier" {
+            let name = slice(source, &child);
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+    }
+    None
 }
 
 /// Determine the kind of a class_declaration node
@@ -1140,6 +1217,78 @@ class StringUtils {
             to_title.qualifier.as_deref(),
             Some("StringUtils.String"),
             "toTitleCase should have StringUtils.String as qualifier"
+        );
+    }
+
+    #[test]
+    fn extracts_constructor_properties() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("Constructors.kt");
+        let source = r#"
+class Person(val name: String, var age: Int, email: String)
+
+data class User(val id: Long, val username: String)
+
+class Config(private val secret: String, public val host: String)
+        "#;
+        fs::write(&path, source).unwrap();
+
+        let (symbols, _edges, _refs, _deps, _imports) = index_file(&path, source).unwrap();
+
+        // Check Person class
+        let person = symbols.iter().find(|s| s.name == "Person").unwrap();
+        assert_eq!(person.kind, "class");
+
+        // Check constructor properties
+        let name = symbols.iter().find(|s| s.name == "name").unwrap();
+        assert_eq!(name.kind, "property", "name should be a property");
+        assert_eq!(
+            name.container.as_deref(),
+            Some("Person"),
+            "name should be inside Person"
+        );
+
+        let age = symbols.iter().find(|s| s.name == "age").unwrap();
+        assert_eq!(age.kind, "property", "age should be a property");
+        assert_eq!(
+            age.container.as_deref(),
+            Some("Person"),
+            "age should be inside Person"
+        );
+
+        // email is NOT a property (no val/var)
+        assert!(
+            !symbols.iter().any(|s| s.name == "email"),
+            "email should not be extracted (no val/var)"
+        );
+
+        // Check data class properties
+        let id = symbols.iter().find(|s| s.name == "id").unwrap();
+        assert_eq!(id.kind, "property", "id should be a property");
+        assert_eq!(
+            id.container.as_deref(),
+            Some("User"),
+            "id should be inside User"
+        );
+
+        let username = symbols.iter().find(|s| s.name == "username").unwrap();
+        assert_eq!(username.kind, "property", "username should be a property");
+
+        // Check properties with visibility modifiers
+        let secret = symbols.iter().find(|s| s.name == "secret").unwrap();
+        assert_eq!(secret.kind, "property", "secret should be a property");
+        assert_eq!(
+            secret.visibility.as_deref(),
+            Some("private"),
+            "secret should be private"
+        );
+
+        let host = symbols.iter().find(|s| s.name == "host").unwrap();
+        assert_eq!(host.kind, "property", "host should be a property");
+        assert_eq!(
+            host.visibility.as_deref(),
+            Some("public"),
+            "host should be public"
         );
     }
 }

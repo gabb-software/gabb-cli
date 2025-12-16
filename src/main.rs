@@ -25,7 +25,7 @@ fn open_store_for_query(db: &Path) -> Result<IndexStore> {
     }
 }
 
-/// Ensure the index is available, optionally starting the daemon.
+/// Ensure the index is available, auto-starting the daemon if needed.
 /// Returns the workspace root derived from the db path.
 fn ensure_index_available(db: &Path, opts: &DaemonOptions) -> Result<()> {
     // Derive workspace root from db path
@@ -34,41 +34,38 @@ fn ensure_index_available(db: &Path, opts: &DaemonOptions) -> Result<()> {
 
     // Check if index exists
     if !db.exists() {
-        if opts.start_daemon {
-            // Auto-start daemon and wait for initial index
-            log::info!("Index not found. Starting daemon to build index...");
-            daemon::start(&workspace_root, db, false, true, None)?;
-
-            // Wait for index to be created (with timeout)
-            let max_wait = std::time::Duration::from_secs(60);
-            let start = std::time::Instant::now();
-            let check_interval = std::time::Duration::from_millis(500);
-
-            while !db.exists() && start.elapsed() < max_wait {
-                std::thread::sleep(check_interval);
-            }
-
-            if !db.exists() {
-                bail!(
-                    "Daemon started but index not created within 60 seconds.\n\
-                     Check daemon logs at {}/.gabb/daemon.log",
-                    workspace_root.display()
-                );
-            }
-            log::info!("Index created. Proceeding with query.");
-        } else {
+        if opts.no_start_daemon {
+            // User explicitly disabled auto-start
             bail!(
                 "Index not found at {}\n\n\
                  Start the daemon to build an index:\n\
                  \n\
-                     gabb daemon start\n\
-                 \n\
-                 Or use --start-daemon to auto-start:\n\
-                 \n\
-                     gabb --start-daemon symbols",
+                     gabb daemon start",
                 db.display()
             );
         }
+
+        // Auto-start daemon and wait for initial index
+        log::info!("Index not found. Starting daemon to build index...");
+        daemon::start(&workspace_root, db, false, true, None)?;
+
+        // Wait for index to be created (with timeout)
+        let max_wait = std::time::Duration::from_secs(60);
+        let start = std::time::Instant::now();
+        let check_interval = std::time::Duration::from_millis(500);
+
+        while !db.exists() && start.elapsed() < max_wait {
+            std::thread::sleep(check_interval);
+        }
+
+        if !db.exists() {
+            bail!(
+                "Daemon started but index not created within 60 seconds.\n\
+                 Check daemon logs at {}/.gabb/daemon.log",
+                workspace_root.display()
+            );
+        }
+        log::info!("Index created. Proceeding with query.");
     }
 
     // Check daemon status and version (unless suppressed)
@@ -299,9 +296,9 @@ struct Cli {
     #[arg(long, short = 'f', global = true, value_enum, default_value = "text")]
     format: OutputFormat,
 
-    /// Auto-start daemon in background if index doesn't exist
+    /// Don't auto-start daemon if index doesn't exist
     #[arg(long, global = true)]
-    start_daemon: bool,
+    no_start_daemon: bool,
 
     /// Suppress daemon-related warnings and status checks
     #[arg(long, global = true)]
@@ -313,7 +310,9 @@ struct Cli {
 
 /// Options for daemon auto-start behavior
 struct DaemonOptions {
-    start_daemon: bool,
+    /// If true, don't auto-start daemon (default: false, meaning auto-start is enabled)
+    no_start_daemon: bool,
+    /// If true, suppress daemon warnings
     no_daemon: bool,
 }
 
@@ -488,7 +487,7 @@ fn main() -> Result<()> {
     init_logging(cli.verbose);
     let format = cli.format;
     let daemon_opts = DaemonOptions {
-        start_daemon: cli.start_daemon,
+        no_start_daemon: cli.no_start_daemon,
         no_daemon: cli.no_daemon,
     };
 

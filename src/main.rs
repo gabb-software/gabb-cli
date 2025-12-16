@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use gabb_cli::daemon;
+use gabb_cli::mcp;
 use gabb_cli::store;
 use gabb_cli::store::{normalize_path, DbOpenResult, IndexStore, SymbolRecord};
 use gabb_cli::OutputFormat;
@@ -515,6 +516,15 @@ enum Commands {
         #[arg(long, default_value = "2")]
         min_count: usize,
     },
+    /// Start MCP (Model Context Protocol) server for AI assistant integration
+    McpServer {
+        /// Workspace root to index (auto-detected if not specified)
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        /// Path to the SQLite index database
+        #[arg(long, default_value = ".gabb/index.db")]
+        db: PathBuf,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -654,6 +664,11 @@ fn main() -> Result<()> {
         } => {
             ensure_index_available(&db, &daemon_opts)?;
             find_duplicates(&db, uncommitted, staged, kind.as_deref(), min_count, format)
+        }
+        Commands::McpServer { root, db } => {
+            let root = root.canonicalize().unwrap_or(root);
+            let db = if db.is_absolute() { db } else { root.join(&db) };
+            mcp::run_server(&root, &db)
         }
     }
 }

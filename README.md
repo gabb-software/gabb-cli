@@ -4,21 +4,27 @@ Gabb is a Rust CLI that builds a local code index so editors and AI coding assis
 
 ## Status
 - Indexes TypeScript/TSX, Rust, and Kotlin, storing results in a local SQLite database
-- Commands: `gabb daemon` (watches a workspace and keeps the index fresh), `gabb symbols` (list indexed symbols), `gabb symbol` (show details for a symbol), `gabb implementation` (find implementations for a symbol), `gabb usages` (find call sites/usages for a symbol)
+- Commands: `gabb daemon start/stop/restart/status`, `gabb symbols`, `gabb symbol`, `gabb implementation`, `gabb usages`, `gabb definition`, `gabb duplicates`, `gabb mcp-server`
 - Outputs: symbol definitions, relationships (implements/extends), and references
+- MCP server for AI assistant integration (Claude Desktop, Claude Code)
 
 ## Quickstart
 ```bash
 # 1) Build (or install) the CLI
 cargo build        # or: cargo install --path .
 
-# 2) Start the daemon from your project root
-cargo run -- daemon --root . --db .gabb/index.db
+# 2) Start the daemon in background from your project root
+gabb daemon start --background
 
-# 3) Let the daemon watch for changes; the index lives at .gabb/index.db
+# 3) Query the index
+gabb symbols --kind function --limit 10
+gabb symbol --name MyClass
+gabb usages --file src/main.rs:10:5
 ```
 
 The daemon will crawl your workspace, index all supported files, and keep the SQLite database up to date as files change. Use `-v`/`-vv` to increase logging.
+
+Query commands (symbols, usages, etc.) will auto-start the daemon if it's not running.
 
 ## Installation
 - Prerequisite: Rust toolchain (Edition 2024). Install via [rustup](https://rustup.rs/).
@@ -33,11 +39,14 @@ The daemon will crawl your workspace, index all supported files, and keep the SQ
 
 ## Usage
 ```bash
-gabb daemon --root <workspace> --db <path/to/index.db> [--rebuild] [-v|-vv]
+gabb daemon start --root <workspace> --db <path/to/index.db> [--rebuild] [--background] [-v|-vv]
+gabb daemon stop [--root <workspace>] [--force]
+gabb daemon status [--root <workspace>]
 gabb symbols --db <path/to/index.db> [--file <path>] [--kind <kind>] [--limit <n>]
 gabb symbol --db <path/to/index.db> --name <name> [--file <path>] [--kind <kind>] [--limit <n>]
 gabb implementation --db <path/to/index.db> --file <path[:line:char]> [--line <line>] [--character <char>] [--limit <n>] [--kind <kind>]
 gabb usages --db <path/to/index.db> --file <path[:line:char]> [--line <line>] [--character <char>] [--limit <n>]
+gabb mcp-server --root <workspace> --db <path/to/index.db>
 ```
 
 Flags:
@@ -67,12 +76,65 @@ What gets indexed:
 - Data stored: symbols (functions, classes, interfaces, methods, etc.), relationships (implements/extends), references
 - Storage: SQLite with WAL enabled for safe concurrent reads
 
+## MCP Server (AI Assistant Integration)
+
+Gabb includes an MCP (Model Context Protocol) server that exposes code indexing tools to AI assistants like Claude. This allows Claude to search symbols, find definitions, usages, and implementations in your codebase.
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `gabb_symbols` | List or search symbols in the codebase |
+| `gabb_symbol` | Get detailed information about a symbol by name |
+| `gabb_definition` | Go to definition for a symbol at a source position |
+| `gabb_usages` | Find all usages/references of a symbol |
+| `gabb_implementations` | Find implementations of an interface, trait, or abstract class |
+| `gabb_daemon_status` | Check the status of the gabb indexing daemon |
+
+### Claude Desktop Configuration
+
+Add the following to your Claude Desktop configuration file:
+
+**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "gabb": {
+      "command": "gabb",
+      "args": ["mcp-server", "--root", "/path/to/your/project"]
+    }
+  }
+}
+```
+
+Replace `/path/to/your/project` with your workspace path. The MCP server will auto-start the daemon if needed.
+
+### Claude Code Configuration
+
+Add the following to your Claude Code MCP settings:
+
+```json
+{
+  "mcpServers": {
+    "gabb": {
+      "command": "gabb",
+      "args": ["mcp-server", "--root", "."]
+    }
+  }
+}
+```
+
+Using `--root .` means gabb will use the current working directory as the workspace root.
+
 ## Project Layout
 - `src/main.rs`: CLI entrypoint and logging setup
 - `src/daemon.rs`: filesystem watcher and incremental indexing loop
 - `src/indexer.rs`: full/index-one routines and workspace traversal
 - `src/languages/`: language parsers (TypeScript, Rust, Kotlin) built on tree-sitter
 - `src/store.rs`: SQLite-backed index store
+- `src/mcp.rs`: MCP server implementation for AI assistant integration
 - `ARCHITECTURE.md`: deeper design notes
 
 ## Development

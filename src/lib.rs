@@ -1,6 +1,7 @@
 pub mod daemon;
 pub mod indexer;
 pub mod languages;
+pub mod mcp;
 pub mod store;
 
 use clap::ValueEnum;

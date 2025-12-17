@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "gabb": {
+      "args": [
+        "mcp-server",
+        "--root",
+        "."
+      ],
+      "command": "/opt/homebrew/bin/gabb"
+    }
+  }
+}

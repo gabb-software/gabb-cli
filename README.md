@@ -10,8 +10,8 @@ Gabb is a Rust CLI that builds a local code index so editors and AI coding assis
 
 ## Quickstart
 ```bash
-# 1) Build (or install) the CLI
-cargo build        # or: cargo install --path .
+# 1) Install via Homebrew
+brew install dmb23/tap/gabb
 
 # 2) Start the daemon in background from your project root
 gabb daemon start --background
@@ -27,15 +27,15 @@ The daemon will crawl your workspace, index all supported files, and keep the SQ
 Query commands (symbols, usages, etc.) will auto-start the daemon if it's not running.
 
 ## Installation
-- Prerequisite: Rust toolchain (Edition 2024). Install via [rustup](https://rustup.rs/).
-- Install locally from source:
-  ```bash
-  cargo install --path .
-  ```
-- Or build without installing:
-  ```bash
-  cargo build
-  ```
+
+### Homebrew (Recommended)
+
+```bash
+brew tap gabb-software/homebrew-tap
+brew install gabb
+```
+
+This installs pre-built binaries for macOS (Intel and Apple Silicon) and Linux.
 
 ## Usage
 ```bash
@@ -237,6 +237,25 @@ The `gabb mcp command` creates a `/gabb` slash command in your project that help
 - `ARCHITECTURE.md`: deeper design notes
 
 ## Development
+
+### Building from Source
+
+Prerequisite: Rust toolchain (Edition 2024). Install via [rustup](https://rustup.rs/).
+
+```bash
+# Clone the repository
+git clone https://github.com/dmb23/gabb-cli.git
+cd gabb-cli
+
+# Install locally
+cargo install --path .
+
+# Or build without installing
+cargo build
+```
+
+### Commands
+
 - Format and lint: `cargo fmt && cargo clippy --all-targets --all-features`
 - Tests: `cargo test`
 - Docs: `cargo doc --open`

@@ -541,6 +541,9 @@ enum Commands {
         /// Add .gabb/ and .claude/ to .gitignore
         #[arg(long)]
         gitignore: bool,
+        /// Create .claude/skills/gabb/ agent skill for discoverability
+        #[arg(long)]
+        skill: bool,
     },
 }
 
@@ -744,7 +747,8 @@ fn main() -> Result<()> {
             root,
             mcp,
             gitignore,
-        } => init_project(&root, mcp, gitignore),
+            skill,
+        } => init_project(&root, mcp, gitignore, skill),
     }
 }
 
@@ -2334,7 +2338,12 @@ If the index doesn't exist, gabb will auto-start the daemon to build it.
 // ==================== Init Command ====================
 
 /// Initialize gabb in a project
-fn init_project(root: &Path, setup_mcp: bool, setup_gitignore: bool) -> Result<()> {
+fn init_project(
+    root: &Path,
+    setup_mcp: bool,
+    setup_gitignore: bool,
+    setup_skill: bool,
+) -> Result<()> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
 
     println!("Initializing gabb in {}", root.display());
@@ -2358,13 +2367,20 @@ fn init_project(root: &Path, setup_mcp: bool, setup_gitignore: bool) -> Result<(
         init_gitignore(&root)?;
     }
 
+    // Setup agent skill if requested
+    if setup_skill {
+        init_skill(&root)?;
+    }
+
     println!();
     println!("Next steps:");
     println!("  1. Start the daemon:    gabb daemon start");
     if setup_mcp {
         println!("  2. Restart Claude Code to load the MCP server");
+    } else if setup_skill {
+        println!("  2. The skill will auto-activate when Claude Code sees relevant requests");
     } else {
-        println!("  2. For AI integration: gabb init --mcp");
+        println!("  2. For AI integration: gabb init --mcp --skill");
     }
 
     Ok(())
@@ -2487,6 +2503,72 @@ fn init_gitignore(root: &Path) -> Result<()> {
             .collect::<Vec<_>>()
             .join(", ")
     );
+
+    Ok(())
+}
+
+/// Create .claude/skills/gabb/ agent skill for Claude Code discoverability
+fn init_skill(root: &Path) -> Result<()> {
+    // Create .claude/skills/gabb directory
+    let skills_dir = root.join(".claude").join("skills").join("gabb");
+    if !skills_dir.exists() {
+        fs::create_dir_all(&skills_dir)?;
+        println!("  Created .claude/skills/gabb/");
+    }
+
+    let skill_file = skills_dir.join("SKILL.md");
+
+    // The SKILL.md template - embedded at compile time
+    // This teaches Claude when and how to use gabb's MCP tools
+    let content = r#"---
+name: gabb-code-navigation
+description: |
+  Use gabb MCP tools for code navigation. Prefer gabb_symbols, gabb_usages,
+  gabb_definition over grep/ripgrep when finding symbol definitions, usages,
+  and implementations. Gabb understands code structure, not just text patterns.
+---
+
+# Code Navigation with gabb
+
+This project uses gabb for fast, accurate code navigation. The gabb MCP tools
+provide precise file:line:column locations and understand code structure.
+
+## When to Use gabb Instead of grep/rg
+
+| Task | gabb Tool | Why Better |
+|------|-----------|------------|
+| Find where something is defined | `gabb_symbol`, `gabb_definition` | Precise location, not text match |
+| Find all usages of a symbol | `gabb_usages` | Understands imports, avoids false matches |
+| Find interface implementations | `gabb_implementations` | Follows type relationships |
+| Explore codebase structure | `gabb_symbols` | Filter by kind (function, class, etc.) |
+| Find duplicate code | `gabb_duplicates` | Content-aware, not text search |
+
+## Available MCP Tools
+
+- **gabb_symbols**: Search for symbols by name, kind, or file. Use for exploration.
+- **gabb_symbol**: Get details for a specific symbol by exact name.
+- **gabb_definition**: Jump to definition from a usage location (file:line:col).
+- **gabb_usages**: Find all references to a symbol before refactoring.
+- **gabb_implementations**: Find classes/structs implementing an interface/trait.
+- **gabb_duplicates**: Find copy-paste code for refactoring opportunities.
+- **gabb_daemon_status**: Check if the indexing daemon is running.
+
+## Tips
+
+- The daemon auto-starts when needed - no manual setup required
+- Results include precise locations in `file:line:column` format
+- Use `--kind` filters to narrow symbol searches (function, class, interface, etc.)
+- The index updates automatically when files change
+"#;
+
+    if skill_file.exists() {
+        println!("  .claude/skills/gabb/SKILL.md already exists");
+        return Ok(());
+    }
+
+    fs::write(&skill_file, content)?;
+    println!("  Created .claude/skills/gabb/SKILL.md");
+    println!("  Claude will auto-discover this skill for code navigation tasks");
 
     Ok(())
 }

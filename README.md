@@ -13,14 +13,21 @@ Gabb is a Rust CLI that builds a local code index so editors and AI coding assis
 # 1) Install via Homebrew
 brew install dmb23/tap/gabb
 
-# 2) Start the daemon in background from your project root
+# 2) Initialize gabb with AI assistant integration
+gabb init --mcp --skill
+
+# 3) Start the daemon in background
 gabb daemon start --background
 
-# 3) Query the index
+# 4) Query the index
 gabb symbols --kind function --limit 10
 gabb symbol --name MyClass
 gabb usages --file src/main.rs:10:5
 ```
+
+The `gabb init --mcp --skill` command sets up:
+- `.claude/mcp.json` - MCP server config for Claude Code
+- `.claude/skills/gabb/SKILL.md` - Agent skill that teaches Claude to prefer gabb over grep
 
 The daemon will crawl your workspace, index all supported files, and keep the SQLite database up to date as files change. Use `-v`/`-vv` to increase logging.
 
@@ -226,6 +233,27 @@ gabb mcp command                    # Creates .claude/commands/gabb.md
 ```
 
 The `gabb mcp command` creates a `/gabb` slash command in your project that helps Claude Code discover and use gabb's MCP tools for code navigation.
+
+---
+
+### Agent Skill for Discoverability
+
+In addition to the MCP server, gabb can generate an **Agent Skill** that teaches Claude when to prefer gabb tools over grep/ripgrep for code navigation:
+
+```bash
+# Create the skill during project initialization
+gabb init --skill
+
+# Or create skill alongside MCP config
+gabb init --mcp --skill
+```
+
+This creates `.claude/skills/gabb/SKILL.md` which Claude auto-discovers. The skill:
+- Guides Claude to use `gabb_symbols` instead of grep for finding definitions
+- Recommends `gabb_usages` for refactoring impact analysis
+- Explains when each gabb tool is the best choice
+
+**Skills vs MCP**: The MCP server provides the actual tools. The skill provides guidance on *when* to use them. Both complement each other for optimal AI assistant integration.
 
 ## Project Layout
 - `src/main.rs`: CLI entrypoint and logging setup

@@ -290,7 +290,7 @@ impl McpServer {
                     "USE THIS INSTEAD OF grep/ripgrep when: finding where a function or class is defined, ",
                     "exploring what methods/functions exist, listing symbols in a file, or searching by symbol kind. ",
                     "Returns precise file:line:column locations. Faster and more accurate than text search for code navigation. ",
-                    "Supports TypeScript, Rust, and Kotlin."
+                    "Supports TypeScript, Rust, Kotlin, and C++."
                 ).to_string(),
                 input_schema: json!({
                     "type": "object",

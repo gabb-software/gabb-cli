@@ -1,4 +1,4 @@
-use crate::languages::{kotlin, rust, typescript, ImportBindingInfo};
+use crate::languages::{cpp, kotlin, rust, typescript, ImportBindingInfo};
 use crate::store::{normalize_path, now_unix, FileRecord, IndexStore, ReferenceRecord};
 use anyhow::{bail, Context, Result};
 use blake3::Hasher;
@@ -173,6 +173,8 @@ fn index_first_pass(
         rust::index_file(path, &source)?
     } else if is_kotlin_file(path) {
         kotlin::index_file(path, &source)?
+    } else if is_cpp_file(path) {
+        cpp::index_file(path, &source)?
     } else {
         bail!("unsupported file type: {}", path.display());
     };
@@ -208,6 +210,8 @@ pub fn index_one(path: &Path, store: &IndexStore) -> Result<String> {
         rust::index_file(path, &source)?
     } else if is_kotlin_file(path) {
         kotlin::index_file(path, &source)?
+    } else if is_cpp_file(path) {
+        cpp::index_file(path, &source)?
     } else {
         bail!("unsupported file type: {}", path.display());
     };
@@ -270,8 +274,15 @@ pub fn is_kotlin_file(path: &Path) -> bool {
     )
 }
 
+pub fn is_cpp_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("cpp" | "cc" | "cxx" | "c++" | "hpp" | "hh" | "hxx" | "h++")
+    )
+}
+
 pub fn is_indexed_file(path: &Path) -> bool {
-    is_ts_file(path) || is_rust_file(path) || is_kotlin_file(path)
+    is_ts_file(path) || is_rust_file(path) || is_kotlin_file(path) || is_cpp_file(path)
 }
 
 fn to_record(path: &Path, contents: &[u8]) -> Result<FileRecord> {

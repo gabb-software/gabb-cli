@@ -365,7 +365,7 @@ dependencies = [
 
 [[package]]
 name = "gabb-cli"
-version = "0.8.4"
+version = "0.8.5"
 dependencies = [
  "anyhow",
  "blake3",
@@ -384,6 +384,7 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "tree-sitter",
+ "tree-sitter-cpp",
  "tree-sitter-kotlin-codanna",
  "tree-sitter-rust",
  "tree-sitter-typescript",
@@ -923,6 +924,16 @@ dependencies = [
  "regex-syntax",
  "serde_json",
  "streaming-iterator",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-cpp"
+version = "0.23.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df2196ea9d47b4ab4a31b9297eaa5a5d19a0b121dceb9f118f6790ad0ab94743"
+dependencies = [
+ "cc",
  "tree-sitter-language",
 ]
 

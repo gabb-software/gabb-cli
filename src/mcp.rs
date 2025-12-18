@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
-use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
+use syntect::util::LinesWithEndings;
 
 /// Lazy-loaded syntax highlighting resources
 /// Uses two-face's extended syntax set which includes TypeScript, Kotlin, and many more languages
@@ -1182,8 +1182,12 @@ pub fn highlight_source(source: &str, file_path: &str) -> String {
     for line in LinesWithEndings::from(source) {
         match highlighter.highlight_line(line, &SYNTAX_SET) {
             Ok(ranges) => {
-                let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
-                output.push_str(&escaped);
+                // Only use foreground colors, never background (for terminal compatibility)
+                for (style, text) in ranges {
+                    let fg = style.foreground;
+                    // Set foreground color only using 24-bit ANSI escape
+                    output.push_str(&format!("\x1b[38;2;{};{};{}m{}", fg.r, fg.g, fg.b, text));
+                }
             }
             Err(_) => {
                 // Fall back to plain text on error

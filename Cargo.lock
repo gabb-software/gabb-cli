@@ -428,6 +428,7 @@ dependencies = [
  "tree-sitter-kotlin-codanna",
  "tree-sitter-rust",
  "tree-sitter-typescript",
+ "two-face",
  "walkdir",
 ]
 
@@ -1077,6 +1078,17 @@ checksum = "6c5f76ed8d947a75cc446d5fccd8b602ebf0cde64ccf2ffa434d873d7a575eff"
 dependencies = [
  "cc",
  "tree-sitter-language",
+]
+
+[[package]]
+name = "two-face"
+version = "0.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39e51b6e60e545cfdae5a4639ff423818f52372211a8d9a3e892b4b0761f76b2"
+dependencies = [
+ "serde",
+ "serde_derive",
+ "syntect",
 ]
 
 [[package]]

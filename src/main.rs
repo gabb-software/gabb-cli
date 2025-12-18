@@ -128,7 +128,7 @@ fn start_daemon_and_wait(workspace_root: &Path, db: &Path, rebuild: bool) -> Res
     let _ = fs::remove_file(&wal_path);
     let _ = fs::remove_file(&shm_path);
 
-    daemon::start(workspace_root, db, rebuild, true, None)?;
+    daemon::start(workspace_root, db, rebuild, true, None, true)?; // quiet=true for background
 
     // Wait for index to be created AND readable (with timeout)
     let max_wait = std::time::Duration::from_secs(60);
@@ -667,6 +667,9 @@ enum DaemonCommands {
         /// Log file path (default: .gabb/daemon.log when backgrounded)
         #[arg(long)]
         log_file: Option<PathBuf>,
+        /// Suppress progress output
+        #[arg(long, short = 'q')]
+        quiet: bool,
     },
     /// Stop a running daemon
     Stop {
@@ -714,7 +717,8 @@ fn main() -> Result<()> {
                 rebuild,
                 background,
                 log_file,
-            } => daemon::start(&root, &db, rebuild, background, log_file.as_deref()),
+                quiet,
+            } => daemon::start(&root, &db, rebuild, background, log_file.as_deref(), quiet),
             DaemonCommands::Stop { root, force } => daemon::stop(&root, force),
             DaemonCommands::Restart { root, db, rebuild } => daemon::restart(&root, &db, rebuild),
             DaemonCommands::Status { root } => daemon::status(&root, format),
@@ -2734,7 +2738,7 @@ mod tests {
 
         let db_path = root.join(".gabb/index.db");
         let store = IndexStore::open(&db_path).unwrap();
-        indexer::build_full_index(root, &store).unwrap();
+        indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
         let symbol = resolve_symbol_at(&store, &file_path, 1, 10).unwrap();
         assert_eq!(symbol.name, "foo");
@@ -2760,7 +2764,7 @@ mod tests {
 
         let db_path = root.join(".gabb/index.db");
         let store = IndexStore::open(&db_path).unwrap();
-        indexer::build_full_index(root, &store).unwrap();
+        indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
         let offset = call_src.find("build_full_index").unwrap();
         let (line, character) = offset_to_line_char(call_src.as_bytes(), offset).unwrap();
@@ -2781,7 +2785,7 @@ mod tests {
 
         let db_path = root.join(".gabb/index.db");
         let store = IndexStore::open(&db_path).unwrap();
-        indexer::build_full_index(root, &store).unwrap();
+        indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
         let symbol = resolve_symbol_at(&store, &file_path, 1, 10).unwrap();
         let root = db_path.parent().and_then(|p| p.parent()).unwrap_or(root);
@@ -2819,7 +2823,7 @@ mod tests {
 
         let db_path = root.join(".gabb/index.db");
         let store = IndexStore::open(&db_path).unwrap();
-        indexer::build_full_index(root, &store).unwrap();
+        indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
         let def_path = def_path.canonicalize().unwrap();
         let src = fs::read_to_string(&def_path).unwrap();

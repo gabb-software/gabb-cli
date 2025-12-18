@@ -120,7 +120,7 @@ impl TestWorkspaceBuilder {
         let store = IndexStore::open(&db_path)?;
 
         if self.auto_index {
-            indexer::build_full_index(&root, &store)?;
+            indexer::build_full_index(&root, &store, None::<fn(&indexer::IndexProgress)>)?;
         }
 
         Ok(TestWorkspace {
@@ -190,7 +190,8 @@ impl TestWorkspace {
 
     /// Re-index the entire workspace
     pub fn reindex(&self) -> Result<()> {
-        indexer::build_full_index(&self.root, &self.store)
+        indexer::build_full_index(&self.root, &self.store, None::<fn(&indexer::IndexProgress)>)?;
+        Ok(())
     }
 
     /// Index a single file

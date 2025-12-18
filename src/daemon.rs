@@ -1,7 +1,11 @@
-use crate::indexer::{build_full_index, index_one, is_indexed_file, remove_if_tracked};
+use crate::indexer::{
+    build_full_index, index_one, is_indexed_file, remove_if_tracked, IndexPhase, IndexProgress,
+    IndexSummary,
+};
 use crate::store::{DbOpenResult, IndexStore, RegenerationReason};
 use crate::OutputFormat;
 use anyhow::{bail, Context, Result};
+use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, info, warn};
 use notify::event::{ModifyKind, RenameMode};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -211,11 +215,12 @@ pub fn start(
     rebuild: bool,
     background: bool,
     log_file: Option<&Path>,
+    quiet: bool,
 ) -> Result<()> {
     if background {
         return start_background(root, db_path, rebuild, log_file);
     }
-    run_foreground(root, db_path, rebuild)
+    run_foreground(root, db_path, rebuild, quiet)
 }
 
 /// Start daemon in background (daemonize)
@@ -301,8 +306,120 @@ fn start_background(
     Ok(())
 }
 
+/// Format a duration in human-readable format
+fn format_duration(secs: f64) -> String {
+    if secs < 60.0 {
+        format!("{:.1}s", secs)
+    } else if secs < 3600.0 {
+        let mins = (secs / 60.0).floor();
+        let remaining_secs = secs % 60.0;
+        format!("{:.0}m {:.0}s", mins, remaining_secs)
+    } else {
+        let hours = (secs / 3600.0).floor();
+        let remaining_mins = ((secs % 3600.0) / 60.0).floor();
+        format!("{:.0}h {:.0}m", hours, remaining_mins)
+    }
+}
+
+/// Run indexing with progress reporting
+fn run_indexing_with_progress(
+    root: &Path,
+    store: &IndexStore,
+    quiet: bool,
+) -> Result<IndexSummary> {
+    use std::sync::{Arc, Mutex};
+
+    if quiet {
+        // No progress output, just run indexing
+        return build_full_index(root, store, None::<fn(&IndexProgress)>);
+    }
+
+    // Create progress bar
+    let pb = Arc::new(Mutex::new(ProgressBar::new(0)));
+
+    // Set initial style for scanning phase
+    {
+        let pb = pb.lock().unwrap();
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.cyan} {msg}")
+                .unwrap(),
+        );
+        pb.set_message("Scanning for files...");
+        pb.enable_steady_tick(Duration::from_millis(100));
+    }
+
+    let pb_clone = Arc::clone(&pb);
+    let progress_callback = move |progress: &IndexProgress| {
+        let pb = pb_clone.lock().unwrap();
+
+        match progress.phase {
+            IndexPhase::Scanning => {
+                pb.set_message("Scanning for files...");
+            }
+            IndexPhase::Parsing => {
+                // Switch to progress bar style when we know the total
+                if progress.files_total > 0 && pb.length() != Some(progress.files_total as u64) {
+                    pb.set_length(progress.files_total as u64);
+                    pb.set_style(
+                        ProgressStyle::default_bar()
+                            .template("{spinner:.cyan} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}")
+                            .unwrap()
+                            .progress_chars("=>-"),
+                    );
+                }
+
+                pb.set_position(progress.files_done as u64);
+
+                // Build message with rate and ETA
+                let mut msg = format!(
+                    "{:.0} files/sec, {} symbols",
+                    progress.files_per_sec, progress.symbols_found
+                );
+                if let Some(eta) = progress.eta_secs {
+                    msg.push_str(&format!(", ETA: {}", format_duration(eta)));
+                }
+                pb.set_message(msg);
+            }
+            IndexPhase::Resolving => {
+                pb.set_style(
+                    ProgressStyle::default_spinner()
+                        .template("{spinner:.cyan} {msg}")
+                        .unwrap(),
+                );
+                pb.set_message(format!(
+                    "Resolving cross-file references ({} symbols)...",
+                    progress.symbols_found
+                ));
+            }
+            IndexPhase::Finalizing => {
+                pb.set_message("Finalizing index...");
+            }
+        }
+    };
+
+    let summary = build_full_index(root, store, Some(progress_callback))?;
+
+    // Finish progress bar and print summary
+    {
+        let pb = pb.lock().unwrap();
+        pb.finish_and_clear();
+    }
+
+    // Print final summary
+    println!(
+        "Indexed {} files ({} symbols) in {} ({:.1} files/sec)",
+        summary.files_indexed,
+        summary.symbols_found,
+        format_duration(summary.duration_secs),
+        summary.files_per_sec
+    );
+
+    Ok(summary)
+}
+
 /// Run the daemon in the foreground
-fn run_foreground(root: &Path, db_path: &Path, rebuild: bool) -> Result<()> {
+fn run_foreground(root: &Path, db_path: &Path, rebuild: bool, quiet: bool) -> Result<()> {
     let root = root
         .canonicalize()
         .with_context(|| format!("failed to canonicalize root {}", root.display()))?;
@@ -368,7 +485,8 @@ fn run_foreground(root: &Path, db_path: &Path, rebuild: bool) -> Result<()> {
         }
     };
 
-    build_full_index(&root, &store)?;
+    // Run indexing with progress reporting
+    let _summary = run_indexing_with_progress(&root, &store, quiet)?;
 
     let (tx, rx) = mpsc::channel();
     let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |res| {
@@ -555,8 +673,8 @@ pub fn restart(root: &Path, db_path: &Path, rebuild: bool) -> Result<()> {
         }
     }
 
-    // Start new daemon in background
-    start(&root, db_path, rebuild, true, None)
+    // Start new daemon in background (quiet=true since it's backgrounded)
+    start(&root, db_path, rebuild, true, None, true)
 }
 
 /// Show daemon status

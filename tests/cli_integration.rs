@@ -23,7 +23,7 @@ fn cross_file_usages_via_dependency_graph() {
 
     let db_path = root.join(".gabb/index.db");
     let store = IndexStore::open(&db_path).unwrap();
-    indexer::build_full_index(root, &store).unwrap();
+    indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
     // Verify dependencies are recorded
     let deps = store.get_all_dependencies().unwrap();
@@ -102,7 +102,7 @@ fn symbols_and_implementation_commands_work() {
 
     let db_path = root.join(".gabb/index.db");
     let store = IndexStore::open(&db_path).unwrap();
-    indexer::build_full_index(root, &store).unwrap();
+    indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
     let contents = fs::read(&ts_path).unwrap();
     let all_syms = store.list_symbols(None, None, None, None).unwrap();
     assert!(
@@ -242,7 +242,7 @@ fn file_modification_identifies_dependents() {
 
     let db_path = root.join(".gabb/index.db");
     let store = IndexStore::open(&db_path).unwrap();
-    indexer::build_full_index(root, &store).unwrap();
+    indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
     // Get the invalidation set for base.ts - should include derived.ts
     let base_canonical = base_path.canonicalize().unwrap();
@@ -295,7 +295,7 @@ fn circular_dependency_handling() {
     let store = IndexStore::open(&db_path).unwrap();
 
     // Indexing should complete without hanging or crashing
-    indexer::build_full_index(root, &store).unwrap();
+    indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
     // Verify both files were indexed
     let symbols = store.list_symbols(None, None, None, None).unwrap();
@@ -356,7 +356,7 @@ fn two_phase_indexing_resolves_import_aliases() {
 
     let db_path = root.join(".gabb/index.db");
     let store = IndexStore::open(&db_path).unwrap();
-    indexer::build_full_index(root, &store).unwrap();
+    indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
     // Get the symbol ID for 'helper' in utils.ts
     let utils_symbols = store
@@ -409,7 +409,7 @@ fn definition_command_finds_symbol_declaration() {
 
     let db_path = root.join(".gabb/index.db");
     let store = IndexStore::open(&db_path).unwrap();
-    indexer::build_full_index(root, &store).unwrap();
+    indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
     let bin = env!("CARGO_BIN_EXE_gabb");
 
@@ -452,7 +452,7 @@ fn definition_command_with_json_output() {
 
     let db_path = root.join(".gabb/index.db");
     let store = IndexStore::open(&db_path).unwrap();
-    indexer::build_full_index(root, &store).unwrap();
+    indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
     let bin = env!("CARGO_BIN_EXE_gabb");
 
@@ -531,7 +531,7 @@ function somethingUnique(x: number): number {
 
     let db_path = root.join(".gabb/index.db");
     let store = IndexStore::open(&db_path).unwrap();
-    indexer::build_full_index(root, &store).unwrap();
+    indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
     let bin = env!("CARGO_BIN_EXE_gabb");
 
@@ -588,7 +588,7 @@ export function processData(data: string[]): string[] {
 
     let db_path = root.join(".gabb/index.db");
     let store = IndexStore::open(&db_path).unwrap();
-    indexer::build_full_index(root, &store).unwrap();
+    indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
     let bin = env!("CARGO_BIN_EXE_gabb");
 

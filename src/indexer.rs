@@ -6,10 +6,68 @@ use log::{debug, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use walkdir::{DirEntry, WalkDir};
 
 const SKIP_DIRS: &[&str] = &[".git", ".gabb", "target", "node_modules"];
+
+/// Progress information during indexing
+#[derive(Debug, Clone)]
+pub struct IndexProgress {
+    /// Number of files indexed so far
+    pub files_done: usize,
+    /// Total number of files to index
+    pub files_total: usize,
+    /// Number of symbols found so far
+    pub symbols_found: usize,
+    /// Elapsed time in seconds
+    pub elapsed_secs: f64,
+    /// Files indexed per second (rolling average)
+    pub files_per_sec: f64,
+    /// Estimated seconds remaining (None if not enough data)
+    pub eta_secs: Option<f64>,
+    /// Current file being indexed (if any)
+    pub current_file: Option<String>,
+    /// Phase of indexing (scanning, parsing, resolving)
+    pub phase: IndexPhase,
+}
+
+/// Phase of the indexing process
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexPhase {
+    /// Scanning directory for files to index
+    Scanning,
+    /// Parsing files and extracting symbols (phase 1)
+    Parsing,
+    /// Resolving cross-file references (phase 2)
+    Resolving,
+    /// Finalizing (analyze, cleanup)
+    Finalizing,
+}
+
+impl std::fmt::Display for IndexPhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IndexPhase::Scanning => write!(f, "Scanning"),
+            IndexPhase::Parsing => write!(f, "Parsing"),
+            IndexPhase::Resolving => write!(f, "Resolving"),
+            IndexPhase::Finalizing => write!(f, "Finalizing"),
+        }
+    }
+}
+
+/// Summary of indexing results
+#[derive(Debug, Clone)]
+pub struct IndexSummary {
+    /// Total files indexed
+    pub files_indexed: usize,
+    /// Total symbols found
+    pub symbols_found: usize,
+    /// Total duration in seconds
+    pub duration_secs: f64,
+    /// Average files per second
+    pub files_per_sec: f64,
+}
 
 /// Collected data from first pass of indexing, before reference resolution
 struct FirstPassData {
@@ -22,40 +80,108 @@ struct FirstPassData {
 /// Uses two-phase indexing:
 /// 1. First pass: parse all files, store symbols/edges/deps, collect unresolved references
 /// 2. Resolution pass: resolve references using global symbol table + import bindings
-pub fn build_full_index(root: &Path, store: &IndexStore) -> Result<()> {
+///
+/// If `progress_callback` is provided, it will be called periodically with progress updates.
+pub fn build_full_index<F>(
+    root: &Path,
+    store: &IndexStore,
+    progress_callback: Option<F>,
+) -> Result<IndexSummary>
+where
+    F: Fn(&IndexProgress),
+{
     let root = root
         .canonicalize()
         .with_context(|| format!("failed to canonicalize root {}", root.display()))?;
     info!("Starting full index at {}", root.display());
+
+    let start_time = Instant::now();
+    let mut total_symbols = 0usize;
+
+    // Report scanning phase
+    if let Some(ref cb) = progress_callback {
+        cb(&IndexProgress {
+            files_done: 0,
+            files_total: 0,
+            symbols_found: 0,
+            elapsed_secs: 0.0,
+            files_per_sec: 0.0,
+            eta_secs: None,
+            current_file: None,
+            phase: IndexPhase::Scanning,
+        });
+    }
+
+    // First, collect all files to index (scanning phase)
+    let files_to_index: Vec<_> = WalkDir::new(&root)
+        .into_iter()
+        .filter_entry(|e| should_descend(e, &root))
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file() && is_indexed_file(e.path()))
+        .map(|e| e.path().to_path_buf())
+        .collect();
+
+    let files_total = files_to_index.len();
+    info!("Found {} files to index", files_total);
+
     let mut seen = HashSet::new();
     let mut first_pass_data: Vec<FirstPassData> = Vec::new();
 
     // Phase 1: Parse all files, store symbols/edges/deps, collect references for later resolution
-    for entry in WalkDir::new(&root)
-        .into_iter()
-        .filter_entry(|e| should_descend(e, &root))
-    {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(err) => {
-                warn!("walk error: {}", err);
-                continue;
-            }
+    for (i, path) in files_to_index.iter().enumerate() {
+        let elapsed = start_time.elapsed().as_secs_f64();
+        let files_per_sec = if elapsed > 0.0 {
+            i as f64 / elapsed
+        } else {
+            0.0
         };
-        if !entry.file_type().is_file() || !is_indexed_file(entry.path()) {
-            continue;
+        let remaining = files_total.saturating_sub(i);
+        let eta_secs = if files_per_sec > 0.0 {
+            Some(remaining as f64 / files_per_sec)
+        } else {
+            None
+        };
+
+        // Report progress
+        if let Some(ref cb) = progress_callback {
+            cb(&IndexProgress {
+                files_done: i,
+                files_total,
+                symbols_found: total_symbols,
+                elapsed_secs: elapsed,
+                files_per_sec,
+                eta_secs,
+                current_file: Some(path.to_string_lossy().to_string()),
+                phase: IndexPhase::Parsing,
+            });
         }
-        match index_first_pass(entry.path(), store) {
-            Ok((path, refs, imports)) => {
-                seen.insert(path.clone());
+
+        match index_first_pass(path, store) {
+            Ok((norm_path, refs, imports, sym_count)) => {
+                seen.insert(norm_path.clone());
+                total_symbols += sym_count;
                 first_pass_data.push(FirstPassData {
-                    file_path: path,
+                    file_path: norm_path,
                     references: refs,
                     import_bindings: imports,
                 });
             }
-            Err(err) => warn!("indexing failed for {}: {err}", entry.path().display()),
+            Err(err) => warn!("indexing failed for {}: {err}", path.display()),
         }
+    }
+
+    // Report resolving phase
+    if let Some(ref cb) = progress_callback {
+        cb(&IndexProgress {
+            files_done: files_total,
+            files_total,
+            symbols_found: total_symbols,
+            elapsed_secs: start_time.elapsed().as_secs_f64(),
+            files_per_sec: files_total as f64 / start_time.elapsed().as_secs_f64().max(0.001),
+            eta_secs: None,
+            current_file: None,
+            phase: IndexPhase::Resolving,
+        });
     }
 
     prune_deleted(store, &seen)?;
@@ -64,11 +190,41 @@ pub fn build_full_index(root: &Path, store: &IndexStore) -> Result<()> {
     let symbol_table = build_global_symbol_table(store)?;
     resolve_and_store_references(store, &first_pass_data, &symbol_table)?;
 
+    // Report finalizing phase
+    if let Some(ref cb) = progress_callback {
+        cb(&IndexProgress {
+            files_done: files_total,
+            files_total,
+            symbols_found: total_symbols,
+            elapsed_secs: start_time.elapsed().as_secs_f64(),
+            files_per_sec: files_total as f64 / start_time.elapsed().as_secs_f64().max(0.001),
+            eta_secs: None,
+            current_file: None,
+            phase: IndexPhase::Finalizing,
+        });
+    }
+
     // Update query optimizer statistics for optimal index usage
     store.analyze()?;
 
-    info!("Full index complete. DB at {}", store.db_path().display());
-    Ok(())
+    let duration_secs = start_time.elapsed().as_secs_f64();
+    let files_per_sec = files_total as f64 / duration_secs.max(0.001);
+
+    info!(
+        "Full index complete: {} files, {} symbols in {:.1}s ({:.1} files/sec). DB at {}",
+        files_total,
+        total_symbols,
+        duration_secs,
+        files_per_sec,
+        store.db_path().display()
+    );
+
+    Ok(IndexSummary {
+        files_indexed: files_total,
+        symbols_found: total_symbols,
+        duration_secs,
+        files_per_sec,
+    })
 }
 
 /// Build a global symbol table mapping (file, name) -> symbol_id
@@ -160,10 +316,11 @@ fn resolve_and_store_references(
 }
 
 /// First pass of indexing: parse file, store symbols/edges/deps, return references for later resolution
+/// Returns (normalized_path, references, import_bindings, symbol_count)
 fn index_first_pass(
     path: &Path,
     store: &IndexStore,
-) -> Result<(String, Vec<ReferenceRecord>, Vec<ImportBindingInfo>)> {
+) -> Result<(String, Vec<ReferenceRecord>, Vec<ImportBindingInfo>, usize)> {
     let contents = fs::read(path)?;
     let source = String::from_utf8_lossy(&contents).to_string();
     let record = to_record(path, &contents)?;
@@ -179,6 +336,8 @@ fn index_first_pass(
         bail!("unsupported file type: {}", path.display());
     };
 
+    let symbol_count = symbols.len();
+
     // Store symbols and edges in first pass (but NOT references - those come in phase 2)
     store.save_file_index_without_refs(&record, &symbols, &edges)?;
     store.save_file_dependencies(&record.path, &dependencies)?;
@@ -186,14 +345,14 @@ fn index_first_pass(
     debug!(
         "First pass indexed {} symbols={} edges={} refs={} deps={} imports={}",
         record.path,
-        symbols.len(),
+        symbol_count,
         edges.len(),
         references.len(),
         dependencies.len(),
         import_bindings.len()
     );
 
-    Ok((record.path, references, import_bindings))
+    Ok((record.path, references, import_bindings, symbol_count))
 }
 
 /// Index a single file, updating or inserting its record.

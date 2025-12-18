@@ -608,7 +608,7 @@ impl McpServer {
                 "Index not found for {}. Starting daemon...",
                 info.root.display()
             );
-            daemon::start(&info.root, &info.db_path, false, true, None)?;
+            daemon::start(&info.root, &info.db_path, false, true, None, true)?; // quiet=true for background
 
             // Wait for index to be ready
             let max_wait = std::time::Duration::from_secs(60);

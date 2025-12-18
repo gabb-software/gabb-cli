@@ -106,6 +106,7 @@ Gabb includes an MCP (Model Context Protocol) server that exposes code indexing 
 | `name` | Exact symbol name match |
 | `name_pattern` | Glob-style pattern (e.g., `get*`, `*Handler`, `*User*`) |
 | `name_contains` | Substring match (e.g., `User` matches `getUser`, `UserService`) |
+| `case_insensitive` | Make name matching case-insensitive (default: false) |
 | `kind` | Filter by symbol kind: `function`, `class`, `interface`, `type`, `struct`, `enum`, `trait`, `method`, `const`, `variable` |
 | `file` | Filter to symbols in a specific file |
 | `limit` | Maximum results (default: 50) |

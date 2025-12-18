@@ -198,6 +198,8 @@ pub struct SymbolQuery<'a> {
     pub name_pattern: Option<&'a str>,
     /// Filter by substring match (case-sensitive by default)
     pub name_contains: Option<&'a str>,
+    /// Make name matching case-insensitive (applies to name, name_pattern, name_contains)
+    pub case_insensitive: bool,
     /// Maximum number of results to return
     pub limit: Option<usize>,
 }
@@ -1217,18 +1219,31 @@ impl IndexStore {
         }
 
         // Handle name filtering with priority: exact > pattern > contains
+        // Use LOWER() for case-insensitive matching when requested
         if let Some(n) = query.name {
-            clauses.push("name = ?".to_string());
+            if query.case_insensitive {
+                clauses.push("LOWER(name) = LOWER(?)".to_string());
+            } else {
+                clauses.push("name = ?".to_string());
+            }
             values.push(Value::from(n.to_string()));
         } else if let Some(pattern) = query.name_pattern {
             // Convert glob pattern to SQL LIKE pattern: * -> %, ? -> _
             let like_pattern = pattern.replace('*', "%").replace('?', "_");
-            clauses.push("name LIKE ?".to_string());
+            if query.case_insensitive {
+                clauses.push("LOWER(name) LIKE LOWER(?)".to_string());
+            } else {
+                clauses.push("name LIKE ?".to_string());
+            }
             values.push(Value::from(like_pattern));
         } else if let Some(contains) = query.name_contains {
             // Substring match: wrap with %
             let like_pattern = format!("%{}%", contains);
-            clauses.push("name LIKE ?".to_string());
+            if query.case_insensitive {
+                clauses.push("LOWER(name) LIKE LOWER(?)".to_string());
+            } else {
+                clauses.push("name LIKE ?".to_string());
+            }
             values.push(Value::from(like_pattern));
         }
 

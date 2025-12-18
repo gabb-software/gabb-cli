@@ -297,6 +297,10 @@ impl McpServer {
                             "type": "string",
                             "description": "Filter by substring (e.g., 'User' matches 'getUser', 'UserService', 'createUser')."
                         },
+                        "case_insensitive": {
+                            "type": "boolean",
+                            "description": "Make name matching case-insensitive. Applies to name, name_pattern, and name_contains."
+                        },
                         "kind": {
                             "type": "string",
                             "description": "Filter by symbol kind: function, class, interface, type, struct, enum, trait, method, const, variable"
@@ -633,6 +637,10 @@ impl McpServer {
         let name = args.get("name").and_then(|v| v.as_str());
         let name_pattern = args.get("name_pattern").and_then(|v| v.as_str());
         let name_contains = args.get("name_contains").and_then(|v| v.as_str());
+        let case_insensitive = args
+            .get("case_insensitive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let kind = args.get("kind").and_then(|v| v.as_str());
         let file = args.get("file").and_then(|v| v.as_str());
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
@@ -647,6 +655,7 @@ impl McpServer {
             name,
             name_pattern,
             name_contains,
+            case_insensitive,
             limit: Some(limit),
         };
 

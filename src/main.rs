@@ -758,7 +758,16 @@ fn main() -> Result<()> {
                 include_source: source,
                 context_lines: context,
             };
-            find_implementation(&db, &file, line, character, limit, kind.as_deref(), format, source_opts)
+            find_implementation(
+                &db,
+                &file,
+                line,
+                character,
+                limit,
+                kind.as_deref(),
+                format,
+                source_opts,
+            )
         }
         Commands::Usages {
             db,
@@ -790,7 +799,15 @@ fn main() -> Result<()> {
                 include_source: source,
                 context_lines: context,
             };
-            show_symbol(&db, &name, file.as_ref(), kind.as_deref(), limit, format, source_opts)
+            show_symbol(
+                &db,
+                &name,
+                file.as_ref(),
+                kind.as_deref(),
+                limit,
+                format,
+                source_opts,
+            )
         }
         Commands::Definition {
             db,

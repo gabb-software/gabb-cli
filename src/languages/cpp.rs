@@ -402,7 +402,11 @@ fn walk_symbols(
                 if let Some(declarator) = node.child_by_field_name("declarator") {
                     if declarator.kind() == "function_declarator" {
                         if let Some(name) = extract_function_name(source, &declarator) {
-                            let kind = if container.is_some() { "method" } else { "function" };
+                            let kind = if container.is_some() {
+                                "method"
+                            } else {
+                                "function"
+                            };
                             let sym = make_symbol(
                                 path,
                                 namespace_path,
@@ -485,7 +489,12 @@ fn extract_function_name(source: &str, declarator: &Node) -> Option<String> {
 }
 
 /// Record inheritance edges from base_class_clause
-fn record_inheritance_edges(source: &str, node: &Node, class_id: &str, edges: &mut Vec<EdgeRecord>) {
+fn record_inheritance_edges(
+    source: &str,
+    node: &Node,
+    class_id: &str,
+    edges: &mut Vec<EdgeRecord>,
+) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "base_class_clause" {
@@ -510,7 +519,10 @@ fn record_inheritance_edges(source: &str, node: &Node, class_id: &str, edges: &m
                     "base_class_specifier" => {
                         let mut specifier_cursor = base_child.walk();
                         for type_child in base_child.children(&mut specifier_cursor) {
-                            if matches!(type_child.kind(), "type_identifier" | "qualified_identifier" | "template_type") {
+                            if matches!(
+                                type_child.kind(),
+                                "type_identifier" | "qualified_identifier" | "template_type"
+                            ) {
                                 let base_name = slice(source, &type_child);
                                 if !base_name.is_empty() {
                                     edges.push(EdgeRecord {
@@ -706,7 +718,10 @@ mod tests {
         let names: Vec<_> = symbols.iter().map(|s| s.name.as_str()).collect();
 
         assert!(names.contains(&"MyClass"), "Should find MyClass");
-        assert!(names.contains(&"doSomething"), "Should find doSomething method");
+        assert!(
+            names.contains(&"doSomething"),
+            "Should find doSomething method"
+        );
         assert!(names.contains(&"Point"), "Should find Point struct");
         assert!(names.contains(&"Color"), "Should find Color enum");
         assert!(names.contains(&"freeFunction"), "Should find freeFunction");
@@ -714,7 +729,11 @@ mod tests {
         let my_class = symbols.iter().find(|s| s.name == "MyClass").unwrap();
         assert_eq!(my_class.kind, "class");
         assert!(
-            my_class.qualifier.as_deref().unwrap().contains("MyNamespace"),
+            my_class
+                .qualifier
+                .as_deref()
+                .unwrap()
+                .contains("MyNamespace"),
             "MyClass should have MyNamespace in qualifier"
         );
 
@@ -797,7 +816,13 @@ mod tests {
         let (symbols, _edges, _refs, _deps, _imports) = index_file(&path, source).unwrap();
         let names: Vec<_> = symbols.iter().map(|s| s.name.as_str()).collect();
 
-        assert!(names.contains(&"Container"), "Should find Container template class");
-        assert!(names.contains(&"swap"), "Should find swap template function");
+        assert!(
+            names.contains(&"Container"),
+            "Should find Container template class"
+        );
+        assert!(
+            names.contains(&"swap"),
+            "Should find swap template function"
+        );
     }
 }

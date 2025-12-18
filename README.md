@@ -99,6 +99,17 @@ Gabb includes an MCP (Model Context Protocol) server that exposes code indexing 
 | `gabb_duplicates` | Find duplicate symbol definitions |
 | `gabb_daemon_status` | Check the status of the gabb indexing daemon |
 
+#### `gabb_symbols` Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `name` | Exact symbol name match |
+| `name_pattern` | Glob-style pattern (e.g., `get*`, `*Handler`, `*User*`) |
+| `name_contains` | Substring match (e.g., `User` matches `getUser`, `UserService`) |
+| `kind` | Filter by symbol kind: `function`, `class`, `interface`, `type`, `struct`, `enum`, `trait`, `method`, `const`, `variable` |
+| `file` | Filter to symbols in a specific file |
+| `limit` | Maximum results (default: 50) |
+
 ---
 
 ### Claude Code

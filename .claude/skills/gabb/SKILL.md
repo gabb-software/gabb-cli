@@ -23,7 +23,10 @@ provide precise file:line:column locations and understand code structure.
 
 ## Available MCP Tools
 
-- **gabb_symbols**: Search for symbols by name, kind, or file. Use for exploration.
+- **gabb_symbols**: Search for symbols by name, kind, or file. Supports:
+  - `name`: Exact match when you know the name
+  - `name_pattern`: Glob patterns like `get*`, `*Handler`, `*User*`
+  - `name_contains`: Substring search, e.g., `User` finds `getUser`, `UserService`
 - **gabb_symbol**: Get details for a specific symbol by exact name.
 - **gabb_definition**: Jump to definition from a usage location (file:line:col).
 - **gabb_usages**: Find all references to a symbol before refactoring.

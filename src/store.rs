@@ -184,6 +184,24 @@ pub struct DuplicateGroup {
     pub symbols: Vec<SymbolRecord>,
 }
 
+/// Query options for searching symbols with flexible filtering.
+#[derive(Debug, Clone, Default)]
+pub struct SymbolQuery<'a> {
+    /// Filter to symbols in this exact file path
+    pub file: Option<&'a str>,
+    /// Filter by symbol kind (function, class, interface, etc.)
+    pub kind: Option<&'a str>,
+    /// Filter by exact symbol name
+    pub name: Option<&'a str>,
+    /// Filter by glob-style pattern (e.g., "get*", "*Handler", "*User*")
+    /// Uses SQL LIKE with `*` converted to `%`
+    pub name_pattern: Option<&'a str>,
+    /// Filter by substring match (case-sensitive by default)
+    pub name_contains: Option<&'a str>,
+    /// Maximum number of results to return
+    pub limit: Option<usize>,
+}
+
 use std::collections::HashMap;
 
 /// In-memory dependency cache for O(1) lookups.
@@ -1153,6 +1171,73 @@ impl IndexStore {
         }
 
         if let Some(lim) = limit {
+            sql.push_str(" LIMIT ?");
+            values.push(Value::from(lim as i64));
+        }
+
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map(params_from_iter(values.iter()), |row| {
+                Ok(SymbolRecord {
+                    id: row.get(0)?,
+                    file: row.get(1)?,
+                    kind: row.get(2)?,
+                    name: row.get(3)?,
+                    start: row.get(4)?,
+                    end: row.get(5)?,
+                    qualifier: row.get(6)?,
+                    visibility: row.get(7)?,
+                    container: row.get(8)?,
+                    content_hash: row.get(9)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Query symbols with flexible filtering options.
+    /// Supports exact name, pattern matching (glob-style with `*`), and substring search.
+    pub fn list_symbols_filtered(&self, query: &SymbolQuery) -> Result<Vec<SymbolRecord>> {
+        let file_norm = query.file.map(|f| normalize_path(Path::new(f)));
+        let mut sql = String::from(
+            "SELECT id, file, kind, name, start, end, qualifier, visibility, container, content_hash FROM symbols",
+        );
+        let mut values: Vec<Value> = Vec::new();
+        let mut clauses: Vec<String> = Vec::new();
+
+        if let Some(f) = file_norm {
+            clauses.push("file = ?".to_string());
+            values.push(Value::from(f));
+        }
+
+        if let Some(k) = query.kind {
+            clauses.push("kind = ?".to_string());
+            values.push(Value::from(k.to_string()));
+        }
+
+        // Handle name filtering with priority: exact > pattern > contains
+        if let Some(n) = query.name {
+            clauses.push("name = ?".to_string());
+            values.push(Value::from(n.to_string()));
+        } else if let Some(pattern) = query.name_pattern {
+            // Convert glob pattern to SQL LIKE pattern: * -> %, ? -> _
+            let like_pattern = pattern.replace('*', "%").replace('?', "_");
+            clauses.push("name LIKE ?".to_string());
+            values.push(Value::from(like_pattern));
+        } else if let Some(contains) = query.name_contains {
+            // Substring match: wrap with %
+            let like_pattern = format!("%{}%", contains);
+            clauses.push("name LIKE ?".to_string());
+            values.push(Value::from(like_pattern));
+        }
+
+        if !clauses.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&clauses.join(" AND "));
+        }
+
+        if let Some(lim) = query.limit {
             sql.push_str(" LIMIT ?");
             values.push(Value::from(lim as i64));
         }

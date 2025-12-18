@@ -7,7 +7,7 @@
 //! from file paths passed to tools, enabling one MCP server to handle multiple
 //! projects.
 
-use crate::store::{DuplicateGroup, IndexStore, SymbolRecord};
+use crate::store::{DuplicateGroup, IndexStore, SymbolQuery, SymbolRecord};
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -287,7 +287,15 @@ impl McpServer {
                     "properties": {
                         "name": {
                             "type": "string",
-                            "description": "Filter by symbol name (exact match). Use this when you know the name you're looking for."
+                            "description": "Filter by symbol name (exact match). Use this when you know the exact name."
+                        },
+                        "name_pattern": {
+                            "type": "string",
+                            "description": "Filter by glob-style pattern (e.g., 'get*', '*Handler', '*User*'). Use * as wildcard."
+                        },
+                        "name_contains": {
+                            "type": "string",
+                            "description": "Filter by substring (e.g., 'User' matches 'getUser', 'UserService', 'createUser')."
                         },
                         "kind": {
                             "type": "string",
@@ -623,6 +631,8 @@ impl McpServer {
 
     fn tool_symbols(&mut self, args: &Value) -> Result<ToolResult> {
         let name = args.get("name").and_then(|v| v.as_str());
+        let name_pattern = args.get("name_pattern").and_then(|v| v.as_str());
+        let name_contains = args.get("name_contains").and_then(|v| v.as_str());
         let kind = args.get("kind").and_then(|v| v.as_str());
         let file = args.get("file").and_then(|v| v.as_str());
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
@@ -631,7 +641,16 @@ impl McpServer {
         let workspace = self.workspace_for_file(file);
         let store = self.get_store_for_workspace(&workspace)?;
 
-        let symbols = store.list_symbols(file, kind, name, Some(limit))?;
+        let query = SymbolQuery {
+            file,
+            kind,
+            name,
+            name_pattern,
+            name_contains,
+            limit: Some(limit),
+        };
+
+        let symbols = store.list_symbols_filtered(&query)?;
 
         if symbols.is_empty() {
             return Ok(ToolResult::text("No symbols found matching the criteria."));

@@ -87,9 +87,24 @@ fn remove_pid_file(root: &Path) -> Result<()> {
 }
 
 /// Check if a process with the given PID is running
+#[cfg(unix)]
 pub fn is_process_running(pid: u32) -> bool {
     // Use kill with signal 0 to check if process exists
     unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+#[cfg(windows)]
+pub fn is_process_running(pid: u32) -> bool {
+    use std::process::Command;
+    // Use tasklist to check if process exists on Windows
+    Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {}", pid), "/NH"])
+        .output()
+        .map(|output| {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            stdout.contains(&pid.to_string())
+        })
+        .unwrap_or(false)
 }
 
 /// Get the path to the lock file for a workspace
@@ -113,6 +128,7 @@ impl Drop for LockFileGuard {
 
 /// Acquire an exclusive lock on the workspace.
 /// Returns a guard that releases the lock when dropped.
+#[cfg(unix)]
 fn acquire_lock(root: &Path) -> Result<LockFileGuard> {
     use std::os::unix::io::AsRawFd;
 
@@ -149,6 +165,37 @@ fn acquire_lock(root: &Path) -> Result<LockFileGuard> {
 
     // Write our PID to the lock file for debugging
     use std::io::Seek;
+    let mut file = file;
+    file.set_len(0)?;
+    file.seek(std::io::SeekFrom::Start(0))?;
+    writeln!(file, "{}", std::process::id())?;
+
+    Ok(LockFileGuard { _file: file, path })
+}
+
+#[cfg(windows)]
+fn acquire_lock(root: &Path) -> Result<LockFileGuard> {
+    use std::io::Seek;
+
+    let path = lock_file_path(root);
+
+    // Ensure .gabb directory exists
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    // On Windows, opening with create_new acts as a simple lock mechanism
+    // If another process has the file open, this may still succeed,
+    // but we also check the PID file for running daemons
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("failed to open lock file {}", path.display()))?;
+
+    // Write our PID to the lock file
     let mut file = file;
     file.set_len(0)?;
     file.seek(std::io::SeekFrom::Start(0))?;
@@ -287,16 +334,8 @@ fn run_foreground(root: &Path, db_path: &Path, rebuild: bool) -> Result<()> {
 
     // Set up signal handling for graceful shutdown
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
-    #[cfg(unix)]
     {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use std::sync::Arc;
-
-        let running = Arc::new(AtomicBool::new(true));
-        let r = running.clone();
-
         ctrlc::set_handler(move || {
-            r.store(false, Ordering::SeqCst);
             let _ = shutdown_tx.send(());
         })
         .ok();
@@ -368,7 +407,8 @@ fn run_foreground(root: &Path, db_path: &Path, rebuild: bool) -> Result<()> {
     Ok(())
 }
 
-/// Stop a running daemon
+/// Stop a running daemon (Unix implementation)
+#[cfg(unix)]
 pub fn stop(root: &Path, force: bool) -> Result<()> {
     let root = root
         .canonicalize()
@@ -398,6 +438,74 @@ pub fn stop(root: &Path, force: bool) -> Result<()> {
             unsafe {
                 libc::kill(pid_info.pid as i32, signal);
             }
+
+            // Wait for process to exit (with timeout)
+            let max_wait = if force {
+                Duration::from_secs(2)
+            } else {
+                Duration::from_secs(10)
+            };
+            let start = std::time::Instant::now();
+
+            while is_process_running(pid_info.pid) && start.elapsed() < max_wait {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+
+            if is_process_running(pid_info.pid) {
+                if !force {
+                    warn!("Daemon did not stop gracefully. Use --force to kill immediately.");
+                    std::process::exit(1);
+                }
+            } else {
+                info!("Daemon stopped");
+                // Clean up PID file if still present
+                remove_pid_file(&root)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Stop a running daemon (Windows implementation)
+#[cfg(windows)]
+pub fn stop(root: &Path, force: bool) -> Result<()> {
+    use std::process::Command;
+
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize root {}", root.display()))?;
+
+    let pid_info = read_pid_file(&root)?;
+    match pid_info {
+        None => {
+            info!("No daemon running (no PID file found)");
+            std::process::exit(1);
+        }
+        Some(pid_info) => {
+            if !is_process_running(pid_info.pid) {
+                info!("Daemon not running (stale PID file). Cleaning up.");
+                remove_pid_file(&root)?;
+                std::process::exit(1);
+            }
+
+            info!(
+                "{}",
+                if force {
+                    format!("Forcefully killing daemon (PID {})", pid_info.pid)
+                } else {
+                    format!("Stopping daemon (PID {})", pid_info.pid)
+                }
+            );
+
+            // Use taskkill on Windows
+            let mut cmd = Command::new("taskkill");
+            if force {
+                cmd.arg("/F");
+            }
+            cmd.args(["/PID", &pid_info.pid.to_string()]);
+
+            let _ = cmd.output();
 
             // Wait for process to exit (with timeout)
             let max_wait = if force {

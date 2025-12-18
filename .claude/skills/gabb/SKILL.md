@@ -29,6 +29,9 @@ provide precise file:line:column locations and understand code structure.
   - `name_contains`: Substring search, e.g., `User` finds `getUser`, `UserService`
   - `case_insensitive`: Set to true for case-insensitive matching
   - `file`: Filter by exact path, directory (`src/`), or glob (`src/**/*.ts`)
+  - `include_source`: Include the symbol's source code in output
+  - `context_lines`: Lines before/after (like grep -C), use with `include_source`
+  - `highlight`: ANSI syntax highlighting for terminal display
 - **gabb_symbol**: Get details for a specific symbol by exact name.
 - **gabb_definition**: Jump to definition from a usage location (file:line:col).
 - **gabb_usages**: Find all references to a symbol before refactoring.

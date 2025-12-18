@@ -9,11 +9,32 @@
 
 use crate::store::{DuplicateGroup, IndexStore, SymbolQuery, SymbolRecord};
 use anyhow::{bail, Result};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+use syntect::easy::HighlightLines;
+use syntect::highlighting::ThemeSet;
+use syntect::parsing::SyntaxSet;
+use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
+
+/// Lazy-loaded syntax highlighting resources
+static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(SyntaxSet::load_defaults_newlines);
+static THEME_SET: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
+
+/// Options for formatting symbol output
+#[derive(Debug, Clone, Default)]
+pub struct FormatOptions {
+    /// Include the symbol's source code in output
+    pub include_source: bool,
+    /// Number of context lines before/after the symbol (like grep -C)
+    pub context_lines: Option<usize>,
+    /// Apply ANSI syntax highlighting to source code
+    pub highlight: bool,
+}
 
 /// Workspace markers - files/directories that indicate a project root
 const WORKSPACE_MARKERS: &[&str] = &[
@@ -312,6 +333,18 @@ impl McpServer {
                         "limit": {
                             "type": "integer",
                             "description": "Maximum number of results (default: 50). Increase for comprehensive searches."
+                        },
+                        "include_source": {
+                            "type": "boolean",
+                            "description": "Include the symbol's source code in the output. Useful for seeing implementation details."
+                        },
+                        "context_lines": {
+                            "type": "integer",
+                            "description": "Number of lines to show before and after the symbol (like grep -C). Only applies when include_source is true."
+                        },
+                        "highlight": {
+                            "type": "boolean",
+                            "description": "Apply ANSI syntax highlighting to source code. Best for terminal output, not for AI consumption."
                         }
                     }
                 }),
@@ -645,6 +678,20 @@ impl McpServer {
         let file = args.get("file").and_then(|v| v.as_str());
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
 
+        // Format options
+        let include_source = args
+            .get("include_source")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let context_lines = args
+            .get("context_lines")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+        let highlight = args
+            .get("highlight")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         // Infer workspace from file path if provided
         let workspace = self.workspace_for_file(file);
         let store = self.get_store_for_workspace(&workspace)?;
@@ -665,7 +712,13 @@ impl McpServer {
             return Ok(ToolResult::text("No symbols found matching the criteria."));
         }
 
-        let output = format_symbols(&symbols, &workspace);
+        let format_opts = FormatOptions {
+            include_source,
+            context_lines,
+            highlight,
+        };
+
+        let output = format_symbols(&symbols, &workspace, &format_opts);
         Ok(ToolResult::text(output))
     }
 
@@ -690,7 +743,7 @@ impl McpServer {
             )));
         }
 
-        let output = format_symbols(&symbols, &workspace);
+        let output = format_symbols(&symbols, &workspace, &FormatOptions::default());
         Ok(ToolResult::text(output))
     }
 
@@ -717,7 +770,7 @@ impl McpServer {
         if let Some(symbol) =
             self.find_symbol_at_in_workspace(&file_path, line, character, &workspace)?
         {
-            let output = format_symbol(&symbol, &workspace);
+            let output = format_symbol(&symbol, &workspace, &FormatOptions::default());
             return Ok(ToolResult::text(format!("Definition:\n{}", output)));
         }
 
@@ -830,7 +883,7 @@ impl McpServer {
                     symbol.name
                 )));
             }
-            let output = format_symbols(&fallback, &workspace);
+            let output = format_symbols(&fallback, &workspace, &FormatOptions::default());
             return Ok(ToolResult::text(format!(
                 "Implementations of '{}' (by name):\n\n{}",
                 symbol.name, output
@@ -838,7 +891,7 @@ impl McpServer {
         }
 
         impls.truncate(limit);
-        let output = format_symbols(&impls, &workspace);
+        let output = format_symbols(&impls, &workspace, &FormatOptions::default());
         Ok(ToolResult::text(format!(
             "Implementations of '{}':\n\n{}",
             symbol.name, output
@@ -996,16 +1049,16 @@ fn relative_path_for_workspace(path: &str, workspace: &Path) -> String {
         .unwrap_or_else(|_| path.to_string())
 }
 
-fn format_symbols(symbols: &[SymbolRecord], workspace_root: &Path) -> String {
+fn format_symbols(symbols: &[SymbolRecord], workspace_root: &Path, opts: &FormatOptions) -> String {
     let mut output = String::new();
     for sym in symbols {
-        output.push_str(&format_symbol(sym, workspace_root));
+        output.push_str(&format_symbol(sym, workspace_root, opts));
         output.push('\n');
     }
     output
 }
 
-fn format_symbol(sym: &SymbolRecord, workspace_root: &Path) -> String {
+fn format_symbol(sym: &SymbolRecord, workspace_root: &Path, opts: &FormatOptions) -> String {
     let rel_path = PathBuf::from(&sym.file)
         .strip_prefix(workspace_root)
         .map(|p| p.to_string_lossy().to_string())
@@ -1027,7 +1080,119 @@ fn format_symbol(sym: &SymbolRecord, workspace_root: &Path) -> String {
         parts.push(format!("  container: {}", container));
     }
 
+    // Include source code if requested
+    if opts.include_source {
+        if let Some(source) = extract_source(&sym.file, sym.start, sym.end, opts.context_lines) {
+            let formatted_source = if opts.highlight {
+                highlight_source(&source, &sym.file)
+            } else {
+                source
+            };
+            parts.push("  source: |".to_string());
+            for line in formatted_source.lines() {
+                parts.push(format!("    {}", line));
+            }
+        }
+    }
+
     parts.join("\n")
+}
+
+/// Extract source code from a file using byte offsets, optionally with context lines
+fn extract_source(
+    file_path: &str,
+    start_byte: i64,
+    end_byte: i64,
+    context_lines: Option<usize>,
+) -> Option<String> {
+    let content = fs::read_to_string(file_path).ok()?;
+    let bytes = content.as_bytes();
+
+    let start = start_byte as usize;
+    let end = end_byte as usize;
+
+    if start >= bytes.len() || end > bytes.len() || start >= end {
+        return None;
+    }
+
+    // If no context lines, just return the symbol source
+    if context_lines.is_none() || context_lines == Some(0) {
+        return Some(String::from_utf8_lossy(&bytes[start..end]).to_string());
+    }
+
+    let context = context_lines.unwrap();
+
+    // Find line boundaries for context
+    let mut line_starts: Vec<usize> = vec![0];
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'\n' && i + 1 < bytes.len() {
+            line_starts.push(i + 1);
+        }
+    }
+
+    // Find which line the symbol starts on
+    let symbol_start_line = line_starts
+        .iter()
+        .position(|&pos| pos > start)
+        .unwrap_or(line_starts.len())
+        .saturating_sub(1);
+
+    // Find which line the symbol ends on
+    let symbol_end_line = line_starts
+        .iter()
+        .position(|&pos| pos > end)
+        .unwrap_or(line_starts.len())
+        .saturating_sub(1);
+
+    // Calculate context range
+    let context_start_line = symbol_start_line.saturating_sub(context);
+    let context_end_line = (symbol_end_line + context + 1).min(line_starts.len());
+
+    // Get the byte range for context
+    let context_start_byte = line_starts[context_start_line];
+    let context_end_byte = if context_end_line >= line_starts.len() {
+        bytes.len()
+    } else {
+        line_starts
+            .get(context_end_line)
+            .copied()
+            .unwrap_or(bytes.len())
+    };
+
+    Some(String::from_utf8_lossy(&bytes[context_start_byte..context_end_byte]).to_string())
+}
+
+/// Apply syntax highlighting to source code using syntect
+fn highlight_source(source: &str, file_path: &str) -> String {
+    // Determine syntax from file extension
+    let extension = Path::new(file_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("txt");
+
+    let syntax = SYNTAX_SET
+        .find_syntax_by_extension(extension)
+        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
+
+    let theme = &THEME_SET.themes["base16-ocean.dark"];
+    let mut highlighter = HighlightLines::new(syntax, theme);
+
+    let mut output = String::new();
+    for line in LinesWithEndings::from(source) {
+        match highlighter.highlight_line(line, &SYNTAX_SET) {
+            Ok(ranges) => {
+                let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
+                output.push_str(&escaped);
+            }
+            Err(_) => {
+                // Fall back to plain text on error
+                output.push_str(line);
+            }
+        }
+    }
+    // Reset terminal colors at the end
+    output.push_str("\x1b[0m");
+    output
 }
 
 fn format_duplicate_groups(groups: &[DuplicateGroup], workspace_root: &Path) -> String {

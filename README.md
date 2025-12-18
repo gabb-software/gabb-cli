@@ -110,6 +110,9 @@ Gabb includes an MCP (Model Context Protocol) server that exposes code indexing 
 | `kind` | Filter by symbol kind: `function`, `class`, `interface`, `type`, `struct`, `enum`, `trait`, `method`, `const`, `variable` |
 | `file` | Filter by path: exact file (`src/main.ts`), directory (`src/` or `src/components`), or glob (`src/**/*.ts`) |
 | `limit` | Maximum results (default: 50) |
+| `include_source` | Include the symbol's source code in output |
+| `context_lines` | Lines before/after the symbol (like `grep -C`), requires `include_source` |
+| `highlight` | Apply ANSI syntax highlighting to source (for terminal display) |
 
 ---
 

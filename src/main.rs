@@ -181,6 +181,14 @@ fn check_daemon_version(workspace_root: &Path) {
 
 // ==================== Output Formatting ====================
 
+/// Options for displaying source code in output
+#[derive(Clone, Copy, Default)]
+struct SourceDisplayOptions {
+    include_source: bool,
+    context_lines: Option<usize>,
+    highlight: bool,
+}
+
 /// A symbol with resolved line/column positions for output
 #[derive(serde::Serialize)]
 struct SymbolOutput {
@@ -196,6 +204,8 @@ struct SymbolOutput {
     container: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     qualifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -206,8 +216,25 @@ struct Position {
 
 impl SymbolOutput {
     fn from_record(sym: &SymbolRecord) -> Option<Self> {
+        Self::from_record_with_source(sym, SourceDisplayOptions::default())
+    }
+
+    fn from_record_with_source(sym: &SymbolRecord, opts: SourceDisplayOptions) -> Option<Self> {
         let (line, col) = offset_to_line_char_in_file(&sym.file, sym.start).ok()?;
         let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end).ok()?;
+
+        let source = if opts.include_source {
+            mcp::extract_source(&sym.file, sym.start, sym.end, opts.context_lines).map(|s| {
+                if opts.highlight {
+                    mcp::highlight_source(&s, &sym.file)
+                } else {
+                    s
+                }
+            })
+        } else {
+            None
+        };
+
         Some(Self {
             id: sym.id.clone(),
             name: sym.name.clone(),
@@ -224,6 +251,7 @@ impl SymbolOutput {
             visibility: sym.visibility.clone(),
             container: sym.container.clone(),
             qualifier: sym.qualifier.clone(),
+            source,
         })
     }
 
@@ -245,10 +273,14 @@ impl SymbolOutput {
 }
 
 /// Format and output a list of symbols
-fn output_symbols(symbols: &[SymbolRecord], format: OutputFormat) -> Result<()> {
+fn output_symbols(
+    symbols: &[SymbolRecord],
+    format: OutputFormat,
+    source_opts: SourceDisplayOptions,
+) -> Result<()> {
     let outputs: Vec<SymbolOutput> = symbols
         .iter()
-        .filter_map(SymbolOutput::from_record)
+        .filter_map(|s| SymbolOutput::from_record_with_source(s, source_opts))
         .collect();
 
     match format {
@@ -289,6 +321,9 @@ fn output_symbols(symbols: &[SymbolRecord], format: OutputFormat) -> Result<()> 
                     sym.location(),
                     container
                 );
+                if let Some(src) = &sym.source {
+                    println!("{}\n", src);
+                }
             }
         }
     }
@@ -307,12 +342,13 @@ fn output_implementations(
     target: &SymbolRecord,
     implementations: &[SymbolRecord],
     format: OutputFormat,
+    source_opts: SourceDisplayOptions,
 ) -> Result<()> {
     let target_out = SymbolOutput::from_record(target)
         .ok_or_else(|| anyhow!("Failed to resolve target position"))?;
     let impl_outputs: Vec<SymbolOutput> = implementations
         .iter()
-        .filter_map(SymbolOutput::from_record)
+        .filter_map(|s| SymbolOutput::from_record_with_source(s, source_opts))
         .collect();
 
     match format {
@@ -364,6 +400,9 @@ fn output_implementations(
                     sym.location(),
                     container
                 );
+                if let Some(src) = &sym.source {
+                    println!("{}\n", src);
+                }
             }
         }
     }
@@ -425,6 +464,15 @@ enum Commands {
         /// Limit the number of results
         #[arg(long)]
         limit: Option<usize>,
+        /// Include source code in output
+        #[arg(long)]
+        source: bool,
+        /// Number of context lines before/after (like grep -C)
+        #[arg(short = 'C', long)]
+        context: Option<usize>,
+        /// Apply syntax highlighting to source code
+        #[arg(long)]
+        highlight: bool,
     },
     /// Find implementations for symbol at a source position
     Implementation {
@@ -446,6 +494,15 @@ enum Commands {
         /// Only show symbols of this kind (function, class, interface, method, struct, enum, trait)
         #[arg(long)]
         kind: Option<String>,
+        /// Include source code in output
+        #[arg(long)]
+        source: bool,
+        /// Number of context lines before/after (like grep -C)
+        #[arg(short = 'C', long)]
+        context: Option<usize>,
+        /// Apply syntax highlighting to source code
+        #[arg(long)]
+        highlight: bool,
     },
     /// Find usages of the symbol at a source position
     Usages {
@@ -464,6 +521,15 @@ enum Commands {
         /// Limit the number of results
         #[arg(long)]
         limit: Option<usize>,
+        /// Include source code in output
+        #[arg(long)]
+        source: bool,
+        /// Number of context lines before/after (like grep -C)
+        #[arg(short = 'C', long)]
+        context: Option<usize>,
+        /// Apply syntax highlighting to source code
+        #[arg(long)]
+        highlight: bool,
     },
     /// Show details for symbols with a given name
     Symbol {
@@ -482,6 +548,15 @@ enum Commands {
         /// Limit the number of results
         #[arg(long)]
         limit: Option<usize>,
+        /// Include source code in output
+        #[arg(long)]
+        source: bool,
+        /// Number of context lines before/after (like grep -C)
+        #[arg(short = 'C', long)]
+        context: Option<usize>,
+        /// Apply syntax highlighting to source code
+        #[arg(long)]
+        highlight: bool,
     },
     /// Go to definition: find where a symbol is declared
     Definition {
@@ -497,6 +572,15 @@ enum Commands {
         /// 1-based character offset within the line (optional if provided in --file)
         #[arg(long, alias = "col")]
         character: Option<usize>,
+        /// Include source code in output
+        #[arg(long)]
+        source: bool,
+        /// Number of context lines before/after (like grep -C)
+        #[arg(short = 'C', long)]
+        context: Option<usize>,
+        /// Apply syntax highlighting to source code
+        #[arg(long)]
+        highlight: bool,
     },
     /// Find duplicate code in the codebase
     Duplicates {
@@ -663,8 +747,16 @@ fn main() -> Result<()> {
             kind,
             name,
             limit,
+            source,
+            context,
+            highlight,
         } => {
             ensure_index_available(&db, &daemon_opts)?;
+            let source_opts = SourceDisplayOptions {
+                include_source: source,
+                context_lines: context,
+                highlight,
+            };
             list_symbols(
                 &db,
                 file.as_ref(),
@@ -672,6 +764,7 @@ fn main() -> Result<()> {
                 name.as_deref(),
                 limit,
                 format,
+                source_opts,
             )
         }
         Commands::Implementation {
@@ -681,9 +774,17 @@ fn main() -> Result<()> {
             character,
             limit,
             kind,
+            source,
+            context,
+            highlight,
         } => {
             ensure_index_available(&db, &daemon_opts)?;
-            find_implementation(&db, &file, line, character, limit, kind.as_deref(), format)
+            let source_opts = SourceDisplayOptions {
+                include_source: source,
+                context_lines: context,
+                highlight,
+            };
+            find_implementation(&db, &file, line, character, limit, kind.as_deref(), format, source_opts)
         }
         Commands::Usages {
             db,
@@ -691,9 +792,17 @@ fn main() -> Result<()> {
             line,
             character,
             limit,
+            source,
+            context,
+            highlight,
         } => {
             ensure_index_available(&db, &daemon_opts)?;
-            find_usages(&db, &file, line, character, limit, format)
+            let source_opts = SourceDisplayOptions {
+                include_source: source,
+                context_lines: context,
+                highlight,
+            };
+            find_usages(&db, &file, line, character, limit, format, source_opts)
         }
         Commands::Symbol {
             db,
@@ -701,18 +810,34 @@ fn main() -> Result<()> {
             file,
             kind,
             limit,
+            source,
+            context,
+            highlight,
         } => {
             ensure_index_available(&db, &daemon_opts)?;
-            show_symbol(&db, &name, file.as_ref(), kind.as_deref(), limit, format)
+            let source_opts = SourceDisplayOptions {
+                include_source: source,
+                context_lines: context,
+                highlight,
+            };
+            show_symbol(&db, &name, file.as_ref(), kind.as_deref(), limit, format, source_opts)
         }
         Commands::Definition {
             db,
             file,
             line,
             character,
+            source,
+            context,
+            highlight,
         } => {
             ensure_index_available(&db, &daemon_opts)?;
-            find_definition(&db, &file, line, character, format)
+            let source_opts = SourceDisplayOptions {
+                include_source: source,
+                context_lines: context,
+                highlight,
+            };
+            find_definition(&db, &file, line, character, format, source_opts)
         }
         Commands::Duplicates {
             db,
@@ -770,13 +895,15 @@ fn list_symbols(
     name: Option<&str>,
     limit: Option<usize>,
     format: OutputFormat,
+    source_opts: SourceDisplayOptions,
 ) -> Result<()> {
     let store = open_store_for_query(db)?;
     let file_str = file.map(|p| p.to_string_lossy().to_string());
     let symbols: Vec<SymbolRecord> = store.list_symbols(file_str.as_deref(), kind, name, limit)?;
-    output_symbols(&symbols, format)
+    output_symbols(&symbols, format, source_opts)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn find_implementation(
     db: &Path,
     file: &Path,
@@ -785,6 +912,7 @@ fn find_implementation(
     limit: Option<usize>,
     kind: Option<&str>,
     format: OutputFormat,
+    source_opts: SourceDisplayOptions,
 ) -> Result<()> {
     let store = open_store_for_query(db)?;
     let (file, line, character) = parse_file_position(file, line, character)?;
@@ -819,7 +947,7 @@ fn find_implementation(
         impl_symbols.truncate(lim);
     }
 
-    output_implementations(&target, &impl_symbols, format)
+    output_implementations(&target, &impl_symbols, format, source_opts)
 }
 
 fn find_usages(
@@ -829,6 +957,7 @@ fn find_usages(
     character: Option<usize>,
     limit: Option<usize>,
     format: OutputFormat,
+    source_opts: SourceDisplayOptions,
 ) -> Result<()> {
     let store = open_store_for_query(db)?;
     let (file, line, character) = parse_file_position(file, line, character)?;
@@ -863,7 +992,7 @@ fn find_usages(
         refs.truncate(lim);
     }
 
-    output_usages(&target, &refs, format)
+    output_usages(&target, &refs, format, source_opts)
 }
 
 /// Output for usages with file grouping
@@ -886,6 +1015,8 @@ struct FileUsages {
 struct UsageLocation {
     start: Position,
     end: Position,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -901,6 +1032,7 @@ fn output_usages(
     target: &SymbolRecord,
     refs: &[store::ReferenceRecord],
     format: OutputFormat,
+    source_opts: SourceDisplayOptions,
 ) -> Result<()> {
     let target_out = SymbolOutput::from_record(target)
         .ok_or_else(|| anyhow!("Failed to resolve target position"))?;
@@ -924,6 +1056,19 @@ fn output_usages(
                 .filter_map(|r| {
                     let (line, col) = offset_to_line_char_in_file(&r.file, r.start).ok()?;
                     let (end_line, end_col) = offset_to_line_char_in_file(&r.file, r.end).ok()?;
+
+                    let source = if source_opts.include_source {
+                        mcp::extract_source(&r.file, r.start, r.end, source_opts.context_lines).map(|s| {
+                            if source_opts.highlight {
+                                mcp::highlight_source(&s, &r.file)
+                            } else {
+                                s
+                            }
+                        })
+                    } else {
+                        None
+                    };
+
                     Some(UsageLocation {
                         start: Position {
                             line,
@@ -933,6 +1078,7 @@ fn output_usages(
                             line: end_line,
                             character: end_col,
                         },
+                        source,
                     })
                 })
                 .collect();
@@ -1038,6 +1184,9 @@ fn output_usages(
                             "  {}:{}-{}:{}",
                             u.start.line, u.start.character, u.end.line, u.end.character
                         );
+                        if let Some(src) = &u.source {
+                            println!("{}", src);
+                        }
                     }
                 }
                 println!(
@@ -1082,6 +1231,7 @@ fn show_symbol(
     kind: Option<&str>,
     limit: Option<usize>,
     format: OutputFormat,
+    source_opts: SourceDisplayOptions,
 ) -> Result<()> {
     let store = open_store_for_query(db)?;
     let file_str = file.map(|p| p.to_string_lossy().to_string());
@@ -1122,7 +1272,7 @@ fn show_symbol(
     let detailed_symbols: Vec<SymbolDetailOutput> = symbols
         .iter()
         .filter_map(|sym| {
-            let base = SymbolOutput::from_record(sym)?;
+            let base = SymbolOutput::from_record_with_source(sym, source_opts)?;
             let outgoing = store.edges_from(&sym.id).ok()?;
             let incoming = store.edges_to(&sym.id).ok()?;
             let mut refs = store.references_for_symbol(&sym.id).ok()?;
@@ -1246,6 +1396,9 @@ fn show_symbol(
                 if let Some(qualifier) = &sym.base.qualifier {
                     println!("  qualifier: {}", qualifier);
                 }
+                if let Some(src) = &sym.base.source {
+                    println!("{}\n", src);
+                }
                 if !sym.outgoing_edges.is_empty() {
                     println!("  outgoing edges:");
                     for e in &sym.outgoing_edges {
@@ -1286,6 +1439,7 @@ fn find_definition(
     line: Option<usize>,
     character: Option<usize>,
     format: OutputFormat,
+    source_opts: SourceDisplayOptions,
 ) -> Result<()> {
     let store = open_store_for_query(db)?;
     let (file, line, character) = parse_file_position(file, line, character)?;
@@ -1311,7 +1465,7 @@ fn find_definition(
         resolve_symbol_at(&store, &file, line, character)?
     };
 
-    let def_out = SymbolOutput::from_record(&definition)
+    let def_out = SymbolOutput::from_record_with_source(&definition, source_opts)
         .ok_or_else(|| anyhow!("Failed to resolve definition position"))?;
 
     match format {
@@ -1347,6 +1501,9 @@ fn find_definition(
                 def_out.location(),
                 container
             );
+            if let Some(src) = &def_out.source {
+                println!("{}", src);
+            }
         }
     }
 

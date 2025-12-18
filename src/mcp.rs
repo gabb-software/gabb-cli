@@ -1099,7 +1099,7 @@ fn format_symbol(sym: &SymbolRecord, workspace_root: &Path, opts: &FormatOptions
 }
 
 /// Extract source code from a file using byte offsets, optionally with context lines
-fn extract_source(
+pub fn extract_source(
     file_path: &str,
     start_byte: i64,
     end_byte: i64,
@@ -1163,7 +1163,7 @@ fn extract_source(
 }
 
 /// Apply syntax highlighting to source code using syntect
-fn highlight_source(source: &str, file_path: &str) -> String {
+pub fn highlight_source(source: &str, file_path: &str) -> String {
     // Determine syntax from file extension
     let extension = Path::new(file_path)
         .extension()

@@ -187,7 +187,10 @@ pub struct DuplicateGroup {
 /// Query options for searching symbols with flexible filtering.
 #[derive(Debug, Clone, Default)]
 pub struct SymbolQuery<'a> {
-    /// Filter to symbols in this exact file path
+    /// Filter to symbols in this path. Supports:
+    /// - Exact file path: `/path/to/file.ts`
+    /// - Directory prefix: `src/` or `src/components/`
+    /// - Glob pattern: `src/**/*.ts`, `*.test.ts`
     pub file: Option<&'a str>,
     /// Filter by symbol kind (function, class, interface, etc.)
     pub kind: Option<&'a str>,
@@ -1200,17 +1203,47 @@ impl IndexStore {
 
     /// Query symbols with flexible filtering options.
     /// Supports exact name, pattern matching (glob-style with `*`), and substring search.
+    /// File filtering supports exact paths, directory prefixes, and glob patterns.
     pub fn list_symbols_filtered(&self, query: &SymbolQuery) -> Result<Vec<SymbolRecord>> {
-        let file_norm = query.file.map(|f| normalize_path(Path::new(f)));
         let mut sql = String::from(
             "SELECT id, file, kind, name, start, end, qualifier, visibility, container, content_hash FROM symbols",
         );
         let mut values: Vec<Value> = Vec::new();
         let mut clauses: Vec<String> = Vec::new();
 
-        if let Some(f) = file_norm {
-            clauses.push("file = ?".to_string());
-            values.push(Value::from(f));
+        // Handle file path filtering with support for exact, directory, and glob patterns
+        if let Some(file_path) = query.file {
+            if file_path.contains('*') {
+                // Glob pattern: convert * to SQL LIKE % wildcard
+                // Both * and ** become % (consecutive % in LIKE is same as single %)
+                let like_pattern = file_path.replace('*', "%");
+                clauses.push("file LIKE ?".to_string());
+                values.push(Value::from(like_pattern));
+            } else if file_path.ends_with('/') {
+                // Directory prefix: match files starting with this path
+                let prefix = normalize_path(Path::new(file_path));
+                clauses.push("file LIKE ?".to_string());
+                values.push(Value::from(format!("{}%", prefix)));
+            } else {
+                // Check if it looks like a directory (no extension and not an existing exact match concept)
+                // For simplicity, treat paths without '.' in the last component as potential directories
+                let last_component = Path::new(file_path)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+                if !last_component.contains('.') && !file_path.is_empty() {
+                    // Could be a directory - match both exact and as prefix
+                    let normalized = normalize_path(Path::new(file_path));
+                    clauses.push("(file = ? OR file LIKE ?)".to_string());
+                    values.push(Value::from(normalized.clone()));
+                    values.push(Value::from(format!("{}/%", normalized)));
+                } else {
+                    // Exact file path match
+                    let normalized = normalize_path(Path::new(file_path));
+                    clauses.push("file = ?".to_string());
+                    values.push(Value::from(normalized));
+                }
+            }
         }
 
         if let Some(k) = query.kind {

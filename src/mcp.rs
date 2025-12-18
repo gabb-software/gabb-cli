@@ -307,7 +307,7 @@ impl McpServer {
                         },
                         "file": {
                             "type": "string",
-                            "description": "Filter to symbols in this file path. Use to explore a specific file's structure."
+                            "description": "Filter by file path. Supports: exact path ('src/main.ts'), directory ('src/' or 'src/components'), or glob pattern ('src/**/*.ts', '*.test.ts')."
                         },
                         "limit": {
                             "type": "integer",

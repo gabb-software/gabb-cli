@@ -108,7 +108,7 @@ Gabb includes an MCP (Model Context Protocol) server that exposes code indexing 
 | `name_contains` | Substring match (e.g., `User` matches `getUser`, `UserService`) |
 | `case_insensitive` | Make name matching case-insensitive (default: false) |
 | `kind` | Filter by symbol kind: `function`, `class`, `interface`, `type`, `struct`, `enum`, `trait`, `method`, `const`, `variable` |
-| `file` | Filter to symbols in a specific file |
+| `file` | Filter by path: exact file (`src/main.ts`), directory (`src/` or `src/components`), or glob (`src/**/*.ts`) |
 | `limit` | Maximum results (default: 50) |
 
 ---

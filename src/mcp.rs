@@ -9,22 +9,12 @@
 
 use crate::store::{DuplicateGroup, IndexStore, SymbolQuery, SymbolRecord};
 use anyhow::{bail, Result};
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
-use syntect::easy::HighlightLines;
-use syntect::highlighting::ThemeSet;
-use syntect::parsing::SyntaxSet;
-use syntect::util::LinesWithEndings;
-
-/// Lazy-loaded syntax highlighting resources
-/// Uses two-face's extended syntax set which includes TypeScript, Kotlin, and many more languages
-static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(two_face::syntax::extra_newlines);
-static THEME_SET: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
 
 /// Options for formatting symbol output
 #[derive(Debug, Clone, Default)]
@@ -33,8 +23,6 @@ pub struct FormatOptions {
     pub include_source: bool,
     /// Number of context lines before/after the symbol (like grep -C)
     pub context_lines: Option<usize>,
-    /// Apply ANSI syntax highlighting to source code
-    pub highlight: bool,
 }
 
 /// Workspace markers - files/directories that indicate a project root
@@ -342,10 +330,6 @@ impl McpServer {
                         "context_lines": {
                             "type": "integer",
                             "description": "Number of lines to show before and after the symbol (like grep -C). Only applies when include_source is true."
-                        },
-                        "highlight": {
-                            "type": "boolean",
-                            "description": "Apply ANSI syntax highlighting to source code. Best for terminal output, not for AI consumption."
                         }
                     }
                 }),
@@ -688,10 +672,6 @@ impl McpServer {
             .get("context_lines")
             .and_then(|v| v.as_u64())
             .map(|v| v as usize);
-        let highlight = args
-            .get("highlight")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
 
         // Infer workspace from file path if provided
         let workspace = self.workspace_for_file(file);
@@ -716,7 +696,6 @@ impl McpServer {
         let format_opts = FormatOptions {
             include_source,
             context_lines,
-            highlight,
         };
 
         let output = format_symbols(&symbols, &workspace, &format_opts);
@@ -1084,13 +1063,8 @@ fn format_symbol(sym: &SymbolRecord, workspace_root: &Path, opts: &FormatOptions
     // Include source code if requested
     if opts.include_source {
         if let Some(source) = extract_source(&sym.file, sym.start, sym.end, opts.context_lines) {
-            let formatted_source = if opts.highlight {
-                highlight_source(&source, &sym.file)
-            } else {
-                source
-            };
             parts.push("  source: |".to_string());
-            for line in formatted_source.lines() {
+            for line in source.lines() {
                 parts.push(format!("    {}", line));
             }
         }
@@ -1161,43 +1135,6 @@ pub fn extract_source(
     };
 
     Some(String::from_utf8_lossy(&bytes[context_start_byte..context_end_byte]).to_string())
-}
-
-/// Apply syntax highlighting to source code using syntect
-pub fn highlight_source(source: &str, file_path: &str) -> String {
-    // Determine syntax from file extension
-    let extension = Path::new(file_path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("txt");
-
-    let syntax = SYNTAX_SET
-        .find_syntax_by_extension(extension)
-        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
-
-    let theme = &THEME_SET.themes["base16-ocean.dark"];
-    let mut highlighter = HighlightLines::new(syntax, theme);
-
-    let mut output = String::new();
-    for line in LinesWithEndings::from(source) {
-        match highlighter.highlight_line(line, &SYNTAX_SET) {
-            Ok(ranges) => {
-                // Only use foreground colors, never background (for terminal compatibility)
-                for (style, text) in ranges {
-                    let fg = style.foreground;
-                    // Set foreground color only using 24-bit ANSI escape
-                    output.push_str(&format!("\x1b[38;2;{};{};{}m{}", fg.r, fg.g, fg.b, text));
-                }
-            }
-            Err(_) => {
-                // Fall back to plain text on error
-                output.push_str(line);
-            }
-        }
-    }
-    // Reset terminal colors at the end
-    output.push_str("\x1b[0m");
-    output
 }
 
 fn format_duplicate_groups(groups: &[DuplicateGroup], workspace_root: &Path) -> String {

@@ -186,7 +186,6 @@ fn check_daemon_version(workspace_root: &Path) {
 struct SourceDisplayOptions {
     include_source: bool,
     context_lines: Option<usize>,
-    highlight: bool,
 }
 
 /// A symbol with resolved line/column positions for output
@@ -224,13 +223,7 @@ impl SymbolOutput {
         let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end).ok()?;
 
         let source = if opts.include_source {
-            mcp::extract_source(&sym.file, sym.start, sym.end, opts.context_lines).map(|s| {
-                if opts.highlight {
-                    mcp::highlight_source(&s, &sym.file)
-                } else {
-                    s
-                }
-            })
+            mcp::extract_source(&sym.file, sym.start, sym.end, opts.context_lines)
         } else {
             None
         };
@@ -470,9 +463,6 @@ enum Commands {
         /// Number of context lines before/after (like grep -C)
         #[arg(short = 'C', long)]
         context: Option<usize>,
-        /// Apply syntax highlighting to source code
-        #[arg(long)]
-        highlight: bool,
     },
     /// Find implementations for symbol at a source position
     Implementation {
@@ -500,9 +490,6 @@ enum Commands {
         /// Number of context lines before/after (like grep -C)
         #[arg(short = 'C', long)]
         context: Option<usize>,
-        /// Apply syntax highlighting to source code
-        #[arg(long)]
-        highlight: bool,
     },
     /// Find usages of the symbol at a source position
     Usages {
@@ -527,9 +514,6 @@ enum Commands {
         /// Number of context lines before/after (like grep -C)
         #[arg(short = 'C', long)]
         context: Option<usize>,
-        /// Apply syntax highlighting to source code
-        #[arg(long)]
-        highlight: bool,
     },
     /// Show details for symbols with a given name
     Symbol {
@@ -554,9 +538,6 @@ enum Commands {
         /// Number of context lines before/after (like grep -C)
         #[arg(short = 'C', long)]
         context: Option<usize>,
-        /// Apply syntax highlighting to source code
-        #[arg(long)]
-        highlight: bool,
     },
     /// Go to definition: find where a symbol is declared
     Definition {
@@ -578,9 +559,6 @@ enum Commands {
         /// Number of context lines before/after (like grep -C)
         #[arg(short = 'C', long)]
         context: Option<usize>,
-        /// Apply syntax highlighting to source code
-        #[arg(long)]
-        highlight: bool,
     },
     /// Find duplicate code in the codebase
     Duplicates {
@@ -749,13 +727,11 @@ fn main() -> Result<()> {
             limit,
             source,
             context,
-            highlight,
         } => {
             ensure_index_available(&db, &daemon_opts)?;
             let source_opts = SourceDisplayOptions {
                 include_source: source,
                 context_lines: context,
-                highlight,
             };
             list_symbols(
                 &db,
@@ -776,13 +752,11 @@ fn main() -> Result<()> {
             kind,
             source,
             context,
-            highlight,
         } => {
             ensure_index_available(&db, &daemon_opts)?;
             let source_opts = SourceDisplayOptions {
                 include_source: source,
                 context_lines: context,
-                highlight,
             };
             find_implementation(&db, &file, line, character, limit, kind.as_deref(), format, source_opts)
         }
@@ -794,13 +768,11 @@ fn main() -> Result<()> {
             limit,
             source,
             context,
-            highlight,
         } => {
             ensure_index_available(&db, &daemon_opts)?;
             let source_opts = SourceDisplayOptions {
                 include_source: source,
                 context_lines: context,
-                highlight,
             };
             find_usages(&db, &file, line, character, limit, format, source_opts)
         }
@@ -812,13 +784,11 @@ fn main() -> Result<()> {
             limit,
             source,
             context,
-            highlight,
         } => {
             ensure_index_available(&db, &daemon_opts)?;
             let source_opts = SourceDisplayOptions {
                 include_source: source,
                 context_lines: context,
-                highlight,
             };
             show_symbol(&db, &name, file.as_ref(), kind.as_deref(), limit, format, source_opts)
         }
@@ -829,13 +799,11 @@ fn main() -> Result<()> {
             character,
             source,
             context,
-            highlight,
         } => {
             ensure_index_available(&db, &daemon_opts)?;
             let source_opts = SourceDisplayOptions {
                 include_source: source,
                 context_lines: context,
-                highlight,
             };
             find_definition(&db, &file, line, character, format, source_opts)
         }
@@ -1058,13 +1026,7 @@ fn output_usages(
                     let (end_line, end_col) = offset_to_line_char_in_file(&r.file, r.end).ok()?;
 
                     let source = if source_opts.include_source {
-                        mcp::extract_source(&r.file, r.start, r.end, source_opts.context_lines).map(|s| {
-                            if source_opts.highlight {
-                                mcp::highlight_source(&s, &r.file)
-                            } else {
-                                s
-                            }
-                        })
+                        mcp::extract_source(&r.file, r.start, r.end, source_opts.context_lines)
                     } else {
                         None
                     };
@@ -2710,7 +2672,6 @@ provide precise file:line:column locations and understand code structure.
   - `file`: Filter by exact path, directory (`src/`), or glob (`src/**/*.ts`)
   - `include_source`: Include the symbol's source code in output
   - `context_lines`: Lines before/after (like grep -C), use with `include_source`
-  - `highlight`: ANSI syntax highlighting for terminal display
 - **gabb_symbol**: Get details for a specific symbol by exact name.
 - **gabb_definition**: Jump to definition from a usage location (file:line:col).
 - **gabb_usages**: Find all references to a symbol before refactoring.

@@ -22,6 +22,8 @@ jobs:
             os: macos-latest
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -36,16 +38,31 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package (Unix)
+        if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
           tar -czvf ../../../gabb-${{ matrix.target }}.tar.gz gabb
           cd ../../..
 
-      - name: Upload artifact
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/${{ matrix.target }}/release/gabb.exe -DestinationPath gabb-${{ matrix.target }}.zip
+
+      - name: Upload artifact (Unix)
+        if: runner.os != 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: gabb-${{ matrix.target }}
           path: gabb-${{ matrix.target }}.tar.gz
+
+      - name: Upload artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gabb-${{ matrix.target }}
+          path: gabb-${{ matrix.target }}.zip
 
   universal-macos:
     name: Create Universal macOS Binary
@@ -100,8 +117,9 @@ jobs:
           mv artifacts/gabb-aarch64-apple-darwin/*.tar.gz release/
           mv artifacts/gabb-universal-apple-darwin/*.tar.gz release/
           mv artifacts/gabb-x86_64-unknown-linux-gnu/*.tar.gz release/
+          mv artifacts/gabb-x86_64-pc-windows-msvc/*.zip release/
           cd release
-          sha256sum *.tar.gz > SHA256SUMS.txt
+          sha256sum *.tar.gz *.zip > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Create GitHub Release

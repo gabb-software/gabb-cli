@@ -699,3 +699,94 @@ export class MyService implements Svc {
         stdout
     );
 }
+
+#[test]
+fn symbols_command_fuzzy_search_works() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    // Create files with various function names
+    let utils_path = root.join("utils.ts");
+    fs::write(
+        &utils_path,
+        r#"
+export function getUserById(id: number) { return id; }
+export function getUserByName(name: string) { return name; }
+export function createUser(data: any) { return data; }
+export function deleteUser(id: number) { return id; }
+export function processOrder(order: any) { return order; }
+"#,
+    )
+    .unwrap();
+
+    let db_path = root.join(".gabb/index.db");
+    let store = IndexStore::open(&db_path).unwrap();
+    indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_gabb");
+
+    // Test prefix search with --fuzzy and "getUser*"
+    let output = Command::new(bin)
+        .args([
+            "symbols",
+            "--fuzzy",
+            "--name",
+            "getUser*",
+            "--db",
+            db_path.to_str().unwrap(),
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "symbols --fuzzy exited {:?}, stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should find both getUserById and getUserByName
+    assert!(
+        stdout.contains("getUserById"),
+        "expected to find getUserById, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("getUserByName"),
+        "expected to find getUserByName, got: {}",
+        stdout
+    );
+    // Should NOT find createUser (different prefix)
+    assert!(
+        !stdout.contains("createUser"),
+        "should not find createUser with getUser* pattern, got: {}",
+        stdout
+    );
+
+    // Test substring search (without trailing *)
+    let output2 = Command::new(bin)
+        .args([
+            "symbols",
+            "--fuzzy",
+            "--name",
+            "User",
+            "--db",
+            db_path.to_str().unwrap(),
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    assert!(output2.status.success());
+    let stdout2 = String::from_utf8_lossy(&output2.stdout);
+
+    // FTS5 trigram should find all functions containing "User"
+    assert!(
+        stdout2.contains("getUserById") || stdout2.contains("createUser"),
+        "expected to find User-related functions with substring search, got: {}",
+        stdout2
+    );
+}

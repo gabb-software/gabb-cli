@@ -451,9 +451,12 @@ enum Commands {
         /// Only show symbols of this kind (function, class, interface, method, struct, enum, trait)
         #[arg(long)]
         kind: Option<String>,
-        /// Only show symbols with this exact name
+        /// Only show symbols with this exact name (or fuzzy pattern if --fuzzy is used)
         #[arg(long)]
         name: Option<String>,
+        /// Enable fuzzy/prefix search using FTS5 (supports patterns like "getUser*" or "usrsvc")
+        #[arg(long)]
+        fuzzy: bool,
         /// Limit the number of results
         #[arg(long)]
         limit: Option<usize>,
@@ -520,7 +523,7 @@ enum Commands {
         /// Path to the SQLite index database
         #[arg(long, default_value = ".gabb/index.db")]
         db: PathBuf,
-        /// Symbol name to look up
+        /// Symbol name to look up (or fuzzy pattern if --fuzzy is used)
         #[arg(long)]
         name: String,
         /// Only show symbols from this file
@@ -529,6 +532,9 @@ enum Commands {
         /// Only show symbols of this kind (function, class, interface, method, struct, enum, trait)
         #[arg(long)]
         kind: Option<String>,
+        /// Enable fuzzy/prefix search using FTS5 (supports patterns like "getUser*" or "usrsvc")
+        #[arg(long)]
+        fuzzy: bool,
         /// Limit the number of results
         #[arg(long)]
         limit: Option<usize>,
@@ -756,6 +762,7 @@ fn main() -> Result<()> {
             file,
             kind,
             name,
+            fuzzy,
             limit,
             source,
             context,
@@ -770,6 +777,7 @@ fn main() -> Result<()> {
                 file.as_ref(),
                 kind.as_deref(),
                 name.as_deref(),
+                fuzzy,
                 limit,
                 format,
                 source_opts,
@@ -822,6 +830,7 @@ fn main() -> Result<()> {
             name,
             file,
             kind,
+            fuzzy,
             limit,
             source,
             context,
@@ -836,6 +845,7 @@ fn main() -> Result<()> {
                 &name,
                 file.as_ref(),
                 kind.as_deref(),
+                fuzzy,
                 limit,
                 format,
                 source_opts,
@@ -923,18 +933,45 @@ fn init_logging(verbosity: u8) {
         .init();
 }
 
+#[allow(clippy::too_many_arguments)]
 fn list_symbols(
     db: &Path,
     file: Option<&PathBuf>,
     kind: Option<&str>,
     name: Option<&str>,
+    fuzzy: bool,
     limit: Option<usize>,
     format: OutputFormat,
     source_opts: SourceDisplayOptions,
 ) -> Result<()> {
     let store = open_store_for_query(db)?;
     let file_str = file.map(|p| p.to_string_lossy().to_string());
-    let symbols: Vec<SymbolRecord> = store.list_symbols(file_str.as_deref(), kind, name, limit)?;
+
+    let mut symbols: Vec<SymbolRecord> = if fuzzy && name.is_some() {
+        // Use FTS5 search for fuzzy matching
+        let query = name.unwrap();
+        let mut results = store.search_symbols_fts(query)?;
+
+        // Apply additional filters
+        if let Some(f) = &file_str {
+            results.retain(|s| s.file == *f);
+        }
+        if let Some(k) = kind {
+            results.retain(|s| s.kind == k);
+        }
+        if let Some(l) = limit {
+            results.truncate(l);
+        }
+        results
+    } else {
+        store.list_symbols(file_str.as_deref(), kind, name, limit)?
+    };
+
+    // Sort by name for consistent output
+    if fuzzy {
+        symbols.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+
     output_symbols(&symbols, format, source_opts)
 }
 
@@ -1253,18 +1290,38 @@ struct ReferenceOutput {
     end: Position,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn show_symbol(
     db: &Path,
     name: &str,
     file: Option<&PathBuf>,
     kind: Option<&str>,
+    fuzzy: bool,
     limit: Option<usize>,
     format: OutputFormat,
     source_opts: SourceDisplayOptions,
 ) -> Result<()> {
     let store = open_store_for_query(db)?;
     let file_str = file.map(|p| p.to_string_lossy().to_string());
-    let symbols = store.list_symbols(file_str.as_deref(), kind, Some(name), limit)?;
+
+    let symbols = if fuzzy {
+        // Use FTS5 search for fuzzy matching
+        let mut results = store.search_symbols_fts(name)?;
+
+        // Apply additional filters
+        if let Some(f) = &file_str {
+            results.retain(|s| s.file == *f);
+        }
+        if let Some(k) = kind {
+            results.retain(|s| s.kind == k);
+        }
+        if let Some(l) = limit {
+            results.truncate(l);
+        }
+        results
+    } else {
+        store.list_symbols(file_str.as_deref(), kind, Some(name), limit)?
+    };
 
     if symbols.is_empty() {
         match format {

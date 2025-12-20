@@ -201,6 +201,9 @@ pub struct SymbolQuery<'a> {
     pub name_pattern: Option<&'a str>,
     /// Filter by substring match (case-sensitive by default)
     pub name_contains: Option<&'a str>,
+    /// Fuzzy/prefix search using FTS5 trigram matching
+    /// Supports prefix patterns (e.g., "getUser*") and fuzzy substrings
+    pub name_fts: Option<&'a str>,
     /// Make name matching case-insensitive (applies to name, name_pattern, name_contains)
     pub case_insensitive: bool,
     /// Maximum number of results to return
@@ -1238,9 +1241,60 @@ impl IndexStore {
     }
 
     /// Query symbols with flexible filtering options.
-    /// Supports exact name, pattern matching (glob-style with `*`), and substring search.
+    /// Supports exact name, pattern matching (glob-style with `*`), substring search, and FTS5 fuzzy search.
     /// File filtering supports exact paths, directory prefixes, and glob patterns.
     pub fn list_symbols_filtered(&self, query: &SymbolQuery) -> Result<Vec<SymbolRecord>> {
+        // If FTS5 search is requested, use the FTS5 table directly and apply other filters in Rust
+        if let Some(fts_query) = query.name_fts {
+            let mut results = self.search_symbols_fts(fts_query)?;
+
+            // Apply additional filters
+            if let Some(file_path) = query.file {
+                let file_normalized = normalize_path(Path::new(file_path));
+                if file_path.contains('*') {
+                    // Simple glob matching: split by * and check contains
+                    results.retain(|s| glob_match(file_path, &s.file));
+                } else if file_path.ends_with('/') {
+                    results.retain(|s| s.file.starts_with(&file_normalized));
+                } else {
+                    results.retain(|s| {
+                        s.file == file_normalized
+                            || s.file.starts_with(&format!("{}/", file_normalized))
+                    });
+                }
+            }
+
+            if let Some(k) = query.kind {
+                results.retain(|s| s.kind == k);
+            }
+
+            if let Some(ns) = query.namespace {
+                if ns.contains('*') {
+                    results.retain(|s| {
+                        s.qualifier
+                            .as_ref()
+                            .is_some_and(|q| glob_match(ns, q))
+                    });
+                } else {
+                    results.retain(|s| {
+                        s.qualifier
+                            .as_ref()
+                            .is_some_and(|q| q == ns || q.starts_with(&format!("{}::", ns)))
+                    });
+                }
+            }
+
+            if let Some(scope) = query.scope {
+                results.retain(|s| s.container.as_ref().is_some_and(|c| c == scope));
+            }
+
+            if let Some(lim) = query.limit {
+                results.truncate(lim);
+            }
+
+            return Ok(results);
+        }
+
         let mut sql = String::from(
             "SELECT id, file, kind, name, start, end, qualifier, visibility, container, content_hash FROM symbols",
         );
@@ -1739,6 +1793,48 @@ impl IndexStore {
 
 pub fn normalize_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+/// Simple glob pattern matching with * and ** wildcards.
+/// Does not support ? or character classes, but handles common cases efficiently.
+fn glob_match(pattern: &str, text: &str) -> bool {
+    // Replace ** with a temporary marker, then * with .*, then restore **
+    // This is a simple implementation that handles most common glob patterns
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.is_empty() {
+        return pattern == text;
+    }
+
+    let mut pos = 0;
+    let first = parts[0];
+    let last = parts[parts.len() - 1];
+
+    // Check prefix if pattern doesn't start with *
+    if !pattern.starts_with('*') && !text.starts_with(first) {
+        return false;
+    }
+    if !first.is_empty() {
+        pos = first.len();
+    }
+
+    // Check suffix if pattern doesn't end with *
+    if !pattern.ends_with('*') && !text.ends_with(last) {
+        return false;
+    }
+
+    // Check middle parts
+    for part in parts.iter().skip(1).take(parts.len() - 2) {
+        if part.is_empty() {
+            continue;
+        }
+        if let Some(found) = text[pos..].find(part) {
+            pos += found + part.len();
+        } else {
+            return false;
+        }
+    }
+
+    true
 }
 
 pub fn now_unix() -> i64 {

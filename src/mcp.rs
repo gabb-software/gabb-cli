@@ -307,6 +307,10 @@ impl McpServer {
                             "type": "string",
                             "description": "Filter by substring (e.g., 'User' matches 'getUser', 'UserService', 'createUser')."
                         },
+                        "name_fts": {
+                            "type": "string",
+                            "description": "Fuzzy/prefix search using FTS5 trigram matching. Supports prefix patterns (e.g., 'getUser*') and fuzzy substrings (e.g., 'usrsvc' matches 'UserService'). More flexible than exact name matching."
+                        },
                         "case_insensitive": {
                             "type": "boolean",
                             "description": "Make name matching case-insensitive. Applies to name, name_pattern, and name_contains."
@@ -718,6 +722,7 @@ impl McpServer {
         let name = args.get("name").and_then(|v| v.as_str());
         let name_pattern = args.get("name_pattern").and_then(|v| v.as_str());
         let name_contains = args.get("name_contains").and_then(|v| v.as_str());
+        let name_fts = args.get("name_fts").and_then(|v| v.as_str());
         let case_insensitive = args
             .get("case_insensitive")
             .and_then(|v| v.as_bool())
@@ -748,6 +753,7 @@ impl McpServer {
             name,
             name_pattern,
             name_contains,
+            name_fts,
             case_insensitive,
             limit: Some(limit),
             namespace,

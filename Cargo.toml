@@ -40,3 +40,16 @@ indicatif = "0.17"
 [dev-dependencies]
 tempfile = "3.10"
 serde_yaml = "0.9"
+
+# cargo-binstall support for pre-built binaries
+# Usage: cargo binstall gabb-cli
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/gabb-{ target }{ archive-suffix }"
+bin-dir = "gabb{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-fmt = "zip"

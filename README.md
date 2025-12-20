@@ -35,7 +35,7 @@ Query commands (symbols, usages, etc.) will auto-start the daemon if it's not ru
 
 ## Installation
 
-### Homebrew (Recommended)
+### Homebrew (macOS/Linux)
 
 ```bash
 brew tap gabb-software/homebrew-tap
@@ -43,6 +43,18 @@ brew install gabb
 ```
 
 This installs pre-built binaries for macOS (Intel and Apple Silicon) and Linux.
+
+### Cargo (Rust)
+
+```bash
+# Install from source
+cargo install gabb-cli
+
+# Or with pre-built binaries (faster)
+cargo binstall gabb-cli
+```
+
+Requires Rust 1.70+. The `cargo binstall` option downloads pre-built binaries instead of compiling from source.
 
 ## Usage
 ```bash

@@ -633,3 +633,69 @@ export function processData(data: string[]): string[] {
         assert!(first_group.get("count").is_some());
     }
 }
+
+#[test]
+fn implementation_command_handles_import_aliases() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    // Create interface file
+    let interface_path = root.join("interface.ts");
+    fs::write(
+        &interface_path,
+        "export interface Service {\n  doWork(): void;\n}\n",
+    )
+    .unwrap();
+
+    // Create implementation file that imports with an alias
+    let impl_path = root.join("impl.ts");
+    fs::write(
+        &impl_path,
+        r#"import { Service as Svc } from './interface';
+
+export class MyService implements Svc {
+  doWork(): void {
+    console.log('working');
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let db_path = root.join(".gabb/index.db");
+    let store = IndexStore::open(&db_path).unwrap();
+    indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_gabb");
+
+    // Find implementations of 'Service' interface (at line 1, col 18 where 'Service' starts)
+    let impl_out = Command::new(bin)
+        .args([
+            "implementation",
+            "-f",
+            "json",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--file",
+            &format!("{}:1:18", interface_path.to_str().unwrap()),
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    assert!(
+        impl_out.status.success(),
+        "implementation exited {:?}, stderr: {}",
+        impl_out.status,
+        String::from_utf8_lossy(&impl_out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&impl_out.stdout);
+
+    // Should find MyService even though it imports Service as Svc
+    assert!(
+        stdout.contains("MyService"),
+        "expected to find MyService implementation, got: {}",
+        stdout
+    );
+}

@@ -186,9 +186,10 @@ where
 
     prune_deleted(store, &seen)?;
 
-    // Phase 2: Build global symbol table and resolve references
+    // Phase 2: Build global symbol table and resolve references + edges
     let symbol_table = build_global_symbol_table(store)?;
     resolve_and_store_references(store, &first_pass_data, &symbol_table)?;
+    resolve_edge_destinations(store, &symbol_table)?;
 
     // Report finalizing phase
     if let Some(ref cb) = progress_callback {
@@ -313,6 +314,105 @@ fn resolve_and_store_references(
         store.save_references(&data.file_path, &resolved_refs)?;
     }
     Ok(())
+}
+
+/// Resolve edge destinations that use placeholder format ({qualifier}::{name})
+/// to actual symbol IDs ({file}#{start}-{end}).
+fn resolve_edge_destinations(
+    store: &IndexStore,
+    symbol_table: &HashMap<(String, String), String>,
+) -> Result<()> {
+    let unresolved_edges = store.get_unresolved_edges()?;
+    let mut resolved_count = 0;
+
+    for edge in unresolved_edges {
+        // Edge dst format is "{qualifier}::{name}" e.g., "/path/to/interface::Service"
+        if let Some(double_colon_pos) = edge.dst.rfind("::") {
+            let qualifier = &edge.dst[..double_colon_pos];
+            let name = &edge.dst[double_colon_pos + 2..];
+
+            // Try to resolve using the symbol table
+            // First try exact qualifier match
+            if let Some(resolved_id) = symbol_table.get(&(qualifier.to_string(), name.to_string()))
+            {
+                store.update_edge_destination(&edge.src, &edge.dst, resolved_id)?;
+                resolved_count += 1;
+                continue;
+            }
+
+            // Try with .ts extension (common for TypeScript imports)
+            let qualifier_with_ts = format!("{}.ts", qualifier);
+            if let Some(resolved_id) =
+                symbol_table.get(&(qualifier_with_ts.clone(), name.to_string()))
+            {
+                store.update_edge_destination(&edge.src, &edge.dst, resolved_id)?;
+                resolved_count += 1;
+                continue;
+            }
+
+            // Try with .tsx extension
+            let qualifier_with_tsx = format!("{}.tsx", qualifier);
+            if let Some(resolved_id) = symbol_table.get(&(qualifier_with_tsx, name.to_string())) {
+                store.update_edge_destination(&edge.src, &edge.dst, resolved_id)?;
+                resolved_count += 1;
+                continue;
+            }
+
+            // Try normalizing the qualifier path (remove ./ and ../)
+            let normalized_qualifier = normalize_import_path(qualifier);
+            if normalized_qualifier != qualifier {
+                if let Some(resolved_id) =
+                    symbol_table.get(&(normalized_qualifier.clone(), name.to_string()))
+                {
+                    store.update_edge_destination(&edge.src, &edge.dst, resolved_id)?;
+                    resolved_count += 1;
+                    continue;
+                }
+
+                // Try normalized with extensions
+                let norm_with_ts = format!("{}.ts", normalized_qualifier);
+                if let Some(resolved_id) = symbol_table.get(&(norm_with_ts, name.to_string())) {
+                    store.update_edge_destination(&edge.src, &edge.dst, resolved_id)?;
+                    resolved_count += 1;
+                    continue;
+                }
+
+                let norm_with_tsx = format!("{}.tsx", normalized_qualifier);
+                if let Some(resolved_id) = symbol_table.get(&(norm_with_tsx, name.to_string())) {
+                    store.update_edge_destination(&edge.src, &edge.dst, resolved_id)?;
+                    resolved_count += 1;
+                }
+            }
+        }
+    }
+
+    if resolved_count > 0 {
+        debug!("Resolved {} edge destinations", resolved_count);
+    }
+
+    Ok(())
+}
+
+/// Normalize an import path by resolving . and .. components
+fn normalize_import_path(path: &str) -> String {
+    let parts: Vec<&str> = path.split('/').collect();
+    let mut result: Vec<&str> = Vec::new();
+
+    for part in parts {
+        match part {
+            "." | "" => continue,
+            ".." => {
+                result.pop();
+            }
+            _ => result.push(part),
+        }
+    }
+
+    if path.starts_with('/') {
+        format!("/{}", result.join("/"))
+    } else {
+        result.join("/")
+    }
 }
 
 /// First pass of indexing: parse file, store symbols/edges/deps, return references for later resolution

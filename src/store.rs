@@ -1401,6 +1401,41 @@ impl IndexStore {
         Ok(edges)
     }
 
+    /// Get all edges with placeholder destinations (used for two-phase resolution).
+    /// Returns edges where dst contains "::" but not "#" (indicating unresolved import reference).
+    pub fn get_unresolved_edges(&self) -> Result<Vec<EdgeRecord>> {
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare_cached(
+            "SELECT src, dst, kind FROM edges WHERE dst LIKE '%::%' AND dst NOT LIKE '%#%'",
+        )?;
+        let edges = stmt
+            .query_map([], |row| {
+                Ok(EdgeRecord {
+                    src: row.get(0)?,
+                    dst: row.get(1)?,
+                    kind: row.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(edges)
+    }
+
+    /// Update an edge destination (used for two-phase resolution).
+    /// Updates the edge where src and old_dst match.
+    pub fn update_edge_destination(
+        &self,
+        src: &str,
+        old_dst: &str,
+        new_dst: &str,
+    ) -> Result<usize> {
+        let conn = self.conn.borrow();
+        let updated = conn.execute(
+            "UPDATE edges SET dst = ?3 WHERE src = ?1 AND dst = ?2",
+            params![src, old_dst, new_dst],
+        )?;
+        Ok(updated)
+    }
+
     pub fn symbols_by_ids(&self, ids: &[String]) -> Result<Vec<SymbolRecord>> {
         if ids.is_empty() {
             return Ok(Vec::new());

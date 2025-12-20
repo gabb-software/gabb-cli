@@ -327,6 +327,14 @@ impl McpServer {
                             "type": "integer",
                             "description": "Maximum number of results (default: 50). Increase for comprehensive searches."
                         },
+                        "offset": {
+                            "type": "integer",
+                            "description": "Number of results to skip (for offset-based pagination). Use with limit for paging through results."
+                        },
+                        "after": {
+                            "type": "string",
+                            "description": "Cursor for keyset pagination (symbol ID to start after). More efficient than offset for large result sets. Get from last result's ID."
+                        },
                         "include_source": {
                             "type": "boolean",
                             "description": "Include the symbol's source code in the output. Useful for seeing implementation details."
@@ -747,6 +755,10 @@ impl McpServer {
         let workspace = self.workspace_for_file(file);
         let store = self.get_store_for_workspace(&workspace)?;
 
+        // Extract pagination parameters
+        let offset = args.get("offset").and_then(|v| v.as_u64()).map(|v| v as usize);
+        let after = args.get("after").and_then(|v| v.as_str());
+
         let query = SymbolQuery {
             file,
             kind,
@@ -756,6 +768,8 @@ impl McpServer {
             name_fts,
             case_insensitive,
             limit: Some(limit),
+            offset,
+            after,
             namespace,
             scope,
         };

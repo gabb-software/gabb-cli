@@ -790,3 +790,110 @@ export function processOrder(order: any) { return order; }
         stdout2
     );
 }
+
+#[test]
+fn symbols_command_pagination_works() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    // Create a file with many functions to test pagination
+    let funcs_path = root.join("functions.ts");
+    let mut content = String::new();
+    for i in 0..20 {
+        content.push_str(&format!("export function func{:02}() {{ return {}; }}\n", i, i));
+    }
+    fs::write(&funcs_path, &content).unwrap();
+
+    let db_path = root.join(".gabb/index.db");
+    let store = IndexStore::open(&db_path).unwrap();
+    indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_gabb");
+
+    // Test --limit only (should return first 5)
+    let output1 = Command::new(bin)
+        .args([
+            "symbols",
+            "--limit",
+            "5",
+            "--db",
+            db_path.to_str().unwrap(),
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    assert!(
+        output1.status.success(),
+        "symbols --limit exited {:?}, stderr: {}",
+        output1.status,
+        String::from_utf8_lossy(&output1.stderr)
+    );
+
+    let stdout1 = String::from_utf8_lossy(&output1.stdout);
+    let lines1: Vec<_> = stdout1.lines().filter(|l| l.contains("func")).collect();
+    assert_eq!(
+        lines1.len(),
+        5,
+        "expected 5 results with --limit 5, got {} lines: {:?}",
+        lines1.len(),
+        lines1
+    );
+
+    // Test --limit with --offset (should skip first 5 and return next 5)
+    let output2 = Command::new(bin)
+        .args([
+            "symbols",
+            "--limit",
+            "5",
+            "--offset",
+            "5",
+            "--db",
+            db_path.to_str().unwrap(),
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    assert!(
+        output2.status.success(),
+        "symbols --limit --offset exited {:?}, stderr: {}",
+        output2.status,
+        String::from_utf8_lossy(&output2.stderr)
+    );
+
+    let stdout2 = String::from_utf8_lossy(&output2.stdout);
+    let lines2: Vec<_> = stdout2.lines().filter(|l| l.contains("func")).collect();
+    assert_eq!(
+        lines2.len(),
+        5,
+        "expected 5 results with --limit 5 --offset 5, got {} lines: {:?}",
+        lines2.len(),
+        lines2
+    );
+
+    // Extract function names from each page
+    let extract_func_names = |lines: &[&str]| -> Vec<String> {
+        lines
+            .iter()
+            .filter_map(|l| {
+                // Lines look like: "function   func03   /path/to/file.ts:4:8"
+                l.split_whitespace()
+                    .nth(1)
+                    .map(|s| s.to_string())
+            })
+            .collect()
+    };
+
+    let page1_funcs = extract_func_names(&lines1);
+    let page2_funcs = extract_func_names(&lines2);
+
+    // Verify pages don't overlap - no function should appear on both pages
+    for func in &page1_funcs {
+        assert!(
+            !page2_funcs.contains(func),
+            "function {} appears on both pages - pagination is broken",
+            func
+        );
+    }
+}

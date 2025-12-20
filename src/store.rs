@@ -208,6 +208,11 @@ pub struct SymbolQuery<'a> {
     pub case_insensitive: bool,
     /// Maximum number of results to return
     pub limit: Option<usize>,
+    /// Number of results to skip (for offset-based pagination)
+    pub offset: Option<usize>,
+    /// Cursor for keyset pagination (symbol ID to start after)
+    /// More efficient than offset for large result sets
+    pub after: Option<&'a str>,
     /// Filter by namespace/qualifier prefix. Supports:
     /// - Exact prefix: `std::collections` matches `std::collections::HashMap`
     /// - Glob pattern: `std::*` matches any symbol in std namespace
@@ -1392,14 +1397,28 @@ impl IndexStore {
             values.push(Value::from(scope.to_string()));
         }
 
+        // Handle cursor-based pagination (more efficient for large result sets)
+        if let Some(cursor) = query.after {
+            clauses.push("id > ?".to_string());
+            values.push(Value::from(cursor.to_string()));
+        }
+
         if !clauses.is_empty() {
             sql.push_str(" WHERE ");
             sql.push_str(&clauses.join(" AND "));
         }
 
+        // Order by id for consistent cursor-based pagination
+        sql.push_str(" ORDER BY id");
+
         if let Some(lim) = query.limit {
             sql.push_str(" LIMIT ?");
             values.push(Value::from(lim as i64));
+        }
+
+        if let Some(off) = query.offset {
+            sql.push_str(" OFFSET ?");
+            values.push(Value::from(off as i64));
         }
 
         let conn = self.conn.borrow();

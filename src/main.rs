@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use gabb_cli::daemon;
 use gabb_cli::mcp;
 use gabb_cli::store;
-use gabb_cli::store::{normalize_path, DbOpenResult, IndexStore, SymbolRecord};
+use gabb_cli::store::{normalize_path, DbOpenResult, IndexStore, SymbolQuery, SymbolRecord};
 use gabb_cli::OutputFormat;
 
 /// Open index store for query commands with version checking.
@@ -460,6 +460,9 @@ enum Commands {
         /// Limit the number of results
         #[arg(long)]
         limit: Option<usize>,
+        /// Number of results to skip (for pagination)
+        #[arg(long)]
+        offset: Option<usize>,
         /// Include source code in output
         #[arg(long)]
         source: bool,
@@ -764,6 +767,7 @@ fn main() -> Result<()> {
             name,
             fuzzy,
             limit,
+            offset,
             source,
             context,
         } => {
@@ -779,6 +783,7 @@ fn main() -> Result<()> {
                 name.as_deref(),
                 fuzzy,
                 limit,
+                offset,
                 format,
                 source_opts,
             )
@@ -941,6 +946,7 @@ fn list_symbols(
     name: Option<&str>,
     fuzzy: bool,
     limit: Option<usize>,
+    offset: Option<usize>,
     format: OutputFormat,
     source_opts: SourceDisplayOptions,
 ) -> Result<()> {
@@ -959,12 +965,28 @@ fn list_symbols(
         if let Some(k) = kind {
             results.retain(|s| s.kind == k);
         }
+        // Apply offset
+        if let Some(off) = offset {
+            if off < results.len() {
+                results = results.into_iter().skip(off).collect();
+            } else {
+                results.clear();
+            }
+        }
         if let Some(l) = limit {
             results.truncate(l);
         }
         results
     } else {
-        store.list_symbols(file_str.as_deref(), kind, name, limit)?
+        let query = SymbolQuery {
+            file: file_str.as_deref(),
+            kind,
+            name,
+            limit,
+            offset,
+            ..Default::default()
+        };
+        store.list_symbols_filtered(&query)?
     };
 
     // Sort by name for consistent output

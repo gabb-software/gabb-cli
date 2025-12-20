@@ -13,6 +13,8 @@ pub struct ImportBindingInfo {
     pub source_file: String,
     /// The original name exported from the source file (before aliasing)
     pub original_name: String,
+    /// The full import statement text (e.g., "import { foo } from './bar'")
+    pub import_text: String,
 }
 
 /// Minimum symbol size in bytes to compute content hash.

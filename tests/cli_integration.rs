@@ -897,3 +897,117 @@ fn symbols_command_pagination_works() {
         );
     }
 }
+
+#[test]
+fn usages_command_shows_import_chain() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    // Create a file that exports a function
+    let utils_path = root.join("utils.ts");
+    fs::write(
+        &utils_path,
+        "export function helper() { return 42; }\n",
+    )
+    .unwrap();
+
+    // Create a file that imports and uses the function
+    let main_path = root.join("main.ts");
+    fs::write(
+        &main_path,
+        "import { helper } from './utils';\nconst result = helper();\n",
+    )
+    .unwrap();
+
+    let db_path = root.join(".gabb/index.db");
+    let store = IndexStore::open(&db_path).unwrap();
+    indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_gabb");
+
+    // Find usages of helper - should show the import statement
+    let output = Command::new(bin)
+        .args([
+            "usages",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--file",
+            &format!("{}:1:17", utils_path.display()), // Position of 'helper' in utils.ts
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "usages command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should show the import statement in the output
+    assert!(
+        stdout.contains("import { helper } from './utils'"),
+        "expected import chain in output, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn usages_json_includes_import_via() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    // Create a file that exports a function
+    let utils_path = root.join("utils.ts");
+    fs::write(
+        &utils_path,
+        "export function helper() { return 42; }\n",
+    )
+    .unwrap();
+
+    // Create a file that imports and uses the function
+    let main_path = root.join("main.ts");
+    fs::write(
+        &main_path,
+        "import { helper } from './utils';\nconst result = helper();\n",
+    )
+    .unwrap();
+
+    let db_path = root.join(".gabb/index.db");
+    let store = IndexStore::open(&db_path).unwrap();
+    indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_gabb");
+
+    // Find usages of helper with JSON output
+    let output = Command::new(bin)
+        .args([
+            "-f",
+            "json",
+            "usages",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--file",
+            &format!("{}:1:17", utils_path.display()),
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "usages command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // JSON output should include import_via field
+    assert!(
+        stdout.contains("import_via"),
+        "expected import_via in JSON output, got: {}",
+        stdout
+    );
+}

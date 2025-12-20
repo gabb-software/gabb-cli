@@ -534,6 +534,9 @@ fn collect_import_bindings(
 
     while let Some(node) = stack.pop() {
         if node.kind() == "import_statement" {
+            // Capture the full import statement text
+            let import_text = slice(source, &node);
+
             let raw_source = node
                 .child_by_field_name("source")
                 .map(|s| slice(source, &s));
@@ -583,6 +586,7 @@ fn collect_import_bindings(
                                 local_name,
                                 source_file: source_file.clone(),
                                 original_name: imported_name,
+                                import_text: import_text.clone(),
                             });
                         }
                         continue;
@@ -602,6 +606,7 @@ fn collect_import_bindings(
                         if let Some(ref source_file) = resolved_source {
                             import_binding_infos.push(ImportBindingInfo {
                                 local_name: name.clone(),
+                                import_text: import_text.clone(),
                                 source_file: source_file.clone(),
                                 original_name: name,
                             });

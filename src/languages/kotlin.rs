@@ -696,11 +696,13 @@ fn collect_imports(
                 // without knowing the project structure
                 let last_segment = import_path.rsplit('.').next().unwrap_or(&import_path);
                 let local_name = alias.unwrap_or_else(|| last_segment.to_string());
+                let import_text = slice(source, &node);
 
                 import_bindings.push(ImportBindingInfo {
                     local_name,
                     source_file: from_file.clone(), // Will need proper resolution
                     original_name: last_segment.to_string(),
+                    import_text,
                 });
 
                 // Create a dependency record (path-based resolution would need project context)

@@ -152,6 +152,22 @@ pub struct ReferenceRecord {
     pub symbol_id: String,
 }
 
+/// Stored import binding for displaying import chains.
+/// Maps how a symbol is imported in a file.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportBindingRecord {
+    /// The file containing the import statement
+    pub file: String,
+    /// The local name used in the importing file (may be aliased)
+    pub local_name: String,
+    /// The original name exported from the source
+    pub original_name: String,
+    /// The resolved source file path
+    pub source_file: String,
+    /// The full import statement text (e.g., "import { foo } from './bar'")
+    pub import_text: String,
+}
+
 /// Pre-computed file statistics for O(1) aggregate queries.
 /// Used by CLI stats commands and daemon status reporting.
 #[allow(dead_code)]
@@ -541,6 +557,18 @@ impl IndexStore {
             -- Index for reverse dependency lookups (find all files that depend on X)
             CREATE INDEX IF NOT EXISTS idx_deps_to_file ON file_dependencies(to_file, from_file);
 
+            -- Import bindings for displaying import chains in usages
+            CREATE TABLE IF NOT EXISTS import_bindings (
+                file TEXT NOT NULL,
+                local_name TEXT NOT NULL,
+                original_name TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                import_text TEXT NOT NULL,
+                PRIMARY KEY (file, local_name)
+            );
+            -- Index for looking up imports by source file
+            CREATE INDEX IF NOT EXISTS idx_imports_source ON import_bindings(source_file, original_name);
+
             -- Schema metadata for version tracking and migrations
             CREATE TABLE IF NOT EXISTS schema_meta (
                 key TEXT PRIMARY KEY,
@@ -665,6 +693,10 @@ impl IndexStore {
         )?;
         self.conn.borrow().execute(
             "DELETE FROM file_dependencies WHERE from_file = ?1 OR to_file = ?1",
+            params![path_str.clone()],
+        )?;
+        self.conn.borrow().execute(
+            "DELETE FROM import_bindings WHERE file = ?1",
             params![path_str],
         )?;
         Ok(())
@@ -1020,6 +1052,93 @@ impl IndexStore {
                     from_file: row.get(0)?,
                     to_file: row.get(1)?,
                     kind: row.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Save import bindings for a file, replacing any existing bindings.
+    pub fn save_import_bindings(
+        &self,
+        file: &str,
+        bindings: &[ImportBindingRecord],
+    ) -> Result<()> {
+        let file_norm = normalize_path(Path::new(file));
+        let conn = &mut *self.conn.borrow_mut();
+        let tx = conn.transaction()?;
+
+        // Remove existing bindings for this file
+        tx.execute(
+            "DELETE FROM import_bindings WHERE file = ?1",
+            params![file_norm],
+        )?;
+
+        // Insert new bindings
+        for binding in bindings {
+            tx.execute(
+                "INSERT OR REPLACE INTO import_bindings(file, local_name, original_name, source_file, import_text) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    file_norm,
+                    binding.local_name,
+                    binding.original_name,
+                    normalize_path(Path::new(&binding.source_file)),
+                    binding.import_text
+                ],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Get import binding for a symbol in a file.
+    /// Looks up how a symbol from source_file was imported into file.
+    pub fn get_import_binding(
+        &self,
+        file: &str,
+        source_file: &str,
+        original_name: &str,
+    ) -> Result<Option<ImportBindingRecord>> {
+        let file_norm = normalize_path(Path::new(file));
+        let source_norm = normalize_path(Path::new(source_file));
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare_cached(
+            "SELECT file, local_name, original_name, source_file, import_text
+             FROM import_bindings
+             WHERE file = ?1 AND source_file = ?2 AND original_name = ?3",
+        )?;
+        let mut rows = stmt.query(params![file_norm, source_norm, original_name])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(ImportBindingRecord {
+                file: row.get(0)?,
+                local_name: row.get(1)?,
+                original_name: row.get(2)?,
+                source_file: row.get(3)?,
+                import_text: row.get(4)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Get all import bindings for a file.
+    #[allow(dead_code)]
+    pub fn get_import_bindings_for_file(&self, file: &str) -> Result<Vec<ImportBindingRecord>> {
+        let file_norm = normalize_path(Path::new(file));
+        let conn = self.conn.borrow();
+        let mut stmt = conn.prepare_cached(
+            "SELECT file, local_name, original_name, source_file, import_text
+             FROM import_bindings WHERE file = ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![file_norm], |row| {
+                Ok(ImportBindingRecord {
+                    file: row.get(0)?,
+                    local_name: row.get(1)?,
+                    original_name: row.get(2)?,
+                    source_file: row.get(3)?,
+                    import_text: row.get(4)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;

@@ -152,7 +152,8 @@ fn collect_dependencies(
                         });
                     }
                     // Extract import bindings for two-phase resolution
-                    let bindings = extract_use_bindings(source, &node, &resolved);
+                    let import_text = slice(source, &node);
+                    let bindings = extract_use_bindings(source, &node, &resolved, &import_text);
                     import_bindings.extend(bindings);
                 }
             }
@@ -168,7 +169,12 @@ fn collect_dependencies(
 }
 
 /// Extract import bindings from a use declaration
-fn extract_use_bindings(source: &str, node: &Node, source_file: &str) -> Vec<ImportBindingInfo> {
+fn extract_use_bindings(
+    source: &str,
+    node: &Node,
+    source_file: &str,
+    import_text: &str,
+) -> Vec<ImportBindingInfo> {
     let mut bindings = Vec::new();
     let mut stack = vec![*node];
 
@@ -185,6 +191,7 @@ fn extract_use_bindings(source: &str, node: &Node, source_file: &str) -> Vec<Imp
                                 local_name,
                                 source_file: source_file.to_string(),
                                 original_name,
+                                import_text: import_text.to_string(),
                             });
                         }
                     }
@@ -198,6 +205,7 @@ fn extract_use_bindings(source: &str, node: &Node, source_file: &str) -> Vec<Imp
                         local_name: name.clone(),
                         source_file: source_file.to_string(),
                         original_name: name,
+                        import_text: import_text.to_string(),
                     });
                 }
             }

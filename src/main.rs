@@ -1086,7 +1086,7 @@ fn find_usages(
         refs.truncate(lim);
     }
 
-    output_usages(&target, &refs, format, source_opts)
+    output_usages(&target, &refs, &store, format, source_opts)
 }
 
 /// Output for usages with file grouping
@@ -1111,6 +1111,9 @@ struct UsageLocation {
     end: Position,
     #[serde(skip_serializing_if = "Option::is_none")]
     source: Option<String>,
+    /// Import statement that brought the symbol into scope (if from different file)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    import_via: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -1125,6 +1128,7 @@ struct UsagesSummary {
 fn output_usages(
     target: &SymbolRecord,
     refs: &[store::ReferenceRecord],
+    store: &IndexStore,
     format: OutputFormat,
     source_opts: SourceDisplayOptions,
 ) -> Result<()> {
@@ -1145,6 +1149,18 @@ fn output_usages(
         .iter()
         .map(|(file, file_refs)| {
             let is_test = is_test_file(file);
+
+            // Look up import binding if this file is different from the target file
+            let import_via = if file != &target.file {
+                store
+                    .get_import_binding(file, &target.file, &target.name)
+                    .ok()
+                    .flatten()
+                    .map(|b| b.import_text)
+            } else {
+                None
+            };
+
             let usages: Vec<UsageLocation> = file_refs
                 .iter()
                 .filter_map(|r| {
@@ -1167,6 +1183,7 @@ fn output_usages(
                             character: end_col,
                         },
                         source,
+                        import_via: import_via.clone(),
                     })
                 })
                 .collect();
@@ -1267,6 +1284,12 @@ fn output_usages(
                         "[prod]"
                     };
                     println!("\n{} {} ({} usages)", context, fu.file, fu.count);
+                    // Show import statement if present (only once per file)
+                    if let Some(first_usage) = fu.usages.first() {
+                        if let Some(import_via) = &first_usage.import_via {
+                            println!("  via: {}", import_via.trim());
+                        }
+                    }
                     for u in &fu.usages {
                         println!(
                             "  {}:{}-{}:{}",

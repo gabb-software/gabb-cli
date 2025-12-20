@@ -1,5 +1,7 @@
 use crate::languages::{cpp, kotlin, rust, typescript, ImportBindingInfo};
-use crate::store::{normalize_path, now_unix, FileRecord, IndexStore, ReferenceRecord};
+use crate::store::{
+    normalize_path, now_unix, FileRecord, ImportBindingRecord, IndexStore, ReferenceRecord,
+};
 use anyhow::{bail, Context, Result};
 use blake3::Hasher;
 use log::{debug, info, warn};
@@ -442,6 +444,19 @@ fn index_first_pass(
     store.save_file_index_without_refs(&record, &symbols, &edges)?;
     store.save_file_dependencies(&record.path, &dependencies)?;
 
+    // Store import bindings for displaying import chains in usages
+    let binding_records: Vec<ImportBindingRecord> = import_bindings
+        .iter()
+        .map(|b| ImportBindingRecord {
+            file: record.path.clone(),
+            local_name: b.local_name.clone(),
+            original_name: b.original_name.clone(),
+            source_file: b.source_file.clone(),
+            import_text: b.import_text.clone(),
+        })
+        .collect();
+    store.save_import_bindings(&record.path, &binding_records)?;
+
     debug!(
         "First pass indexed {} symbols={} edges={} refs={} deps={} imports={}",
         record.path,
@@ -463,7 +478,7 @@ pub fn index_one(path: &Path, store: &IndexStore) -> Result<String> {
     let contents = fs::read(path)?;
     let source = String::from_utf8_lossy(&contents).to_string();
     let record = to_record(path, &contents)?;
-    let (symbols, edges, references, dependencies, _import_bindings) = if is_ts_file(path) {
+    let (symbols, edges, references, dependencies, import_bindings) = if is_ts_file(path) {
         typescript::index_file(path, &source)?
     } else if is_rust_file(path) {
         rust::index_file(path, &source)?
@@ -476,6 +491,20 @@ pub fn index_one(path: &Path, store: &IndexStore) -> Result<String> {
     };
     store.save_file_index(&record, &symbols, &edges, &references)?;
     store.save_file_dependencies(&record.path, &dependencies)?;
+
+    // Store import bindings for displaying import chains in usages
+    let binding_records: Vec<ImportBindingRecord> = import_bindings
+        .iter()
+        .map(|b| ImportBindingRecord {
+            file: record.path.clone(),
+            local_name: b.local_name.clone(),
+            original_name: b.original_name.clone(),
+            source_file: b.source_file.clone(),
+            import_text: b.import_text.clone(),
+        })
+        .collect();
+    store.save_import_bindings(&record.path, &binding_records)?;
+
     debug!(
         "Indexed {} symbols={} edges={} refs={} deps={}",
         record.path,

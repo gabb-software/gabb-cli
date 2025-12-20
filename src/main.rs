@@ -607,6 +607,34 @@ enum Commands {
         #[arg(long)]
         skill: bool,
     },
+    /// Find all files that #include this header (reverse dependency lookup)
+    Includers {
+        /// Path to the SQLite index database
+        #[arg(long, default_value = ".gabb/index.db")]
+        db: PathBuf,
+        /// Header file to find includers for
+        file: PathBuf,
+        /// Follow transitive includers (files that include files that include this)
+        #[arg(long)]
+        transitive: bool,
+        /// Maximum number of results
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Find all headers included by this file (forward dependency lookup)
+    Includes {
+        /// Path to the SQLite index database
+        #[arg(long, default_value = ".gabb/index.db")]
+        db: PathBuf,
+        /// Source file to find includes for
+        file: PathBuf,
+        /// Follow transitive includes
+        #[arg(long)]
+        transitive: bool,
+        /// Maximum number of results
+        #[arg(long)]
+        limit: Option<usize>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -863,6 +891,24 @@ fn main() -> Result<()> {
             gitignore,
             skill,
         } => init_project(&root, mcp, gitignore, skill),
+        Commands::Includers {
+            db,
+            file,
+            transitive,
+            limit,
+        } => {
+            ensure_index_available(&db, &daemon_opts)?;
+            find_includers(&db, &file, transitive, limit, format)
+        }
+        Commands::Includes {
+            db,
+            file,
+            transitive,
+            limit,
+        } => {
+            ensure_index_available(&db, &daemon_opts)?;
+            find_includes(&db, &file, transitive, limit, format)
+        }
     }
 }
 
@@ -1673,6 +1719,136 @@ fn output_empty_duplicates(format: OutputFormat) -> Result<()> {
             println!("No changed files found.");
         }
     }
+    Ok(())
+}
+
+/// Find all files that include/import the given file (reverse dependency lookup).
+fn find_includers(
+    db: &Path,
+    file: &Path,
+    transitive: bool,
+    limit: Option<usize>,
+    format: OutputFormat,
+) -> Result<()> {
+    let store = open_store_for_query(db)?;
+    let file_str = normalize_path(file);
+
+    let mut files: Vec<String> = if transitive {
+        // Use get_invalidation_set which returns transitive reverse dependencies
+        store.get_invalidation_set(&file_str)?
+    } else {
+        // Just direct dependents
+        store.get_dependents(&file_str)?
+    };
+
+    // Remove the original file from transitive results
+    files.retain(|f| f != &file_str);
+
+    if let Some(lim) = limit {
+        files.truncate(lim);
+    }
+
+    output_file_list(&files, &file_str, "includers", transitive, format)
+}
+
+/// Find all files that the given file includes/imports (forward dependency lookup).
+fn find_includes(
+    db: &Path,
+    file: &Path,
+    transitive: bool,
+    limit: Option<usize>,
+    format: OutputFormat,
+) -> Result<()> {
+    let store = open_store_for_query(db)?;
+    let file_str = normalize_path(file);
+
+    let mut files: Vec<String> = if transitive {
+        store.get_transitive_dependencies(&file_str)?
+    } else {
+        store
+            .get_file_dependencies(&file_str)?
+            .into_iter()
+            .map(|d| d.to_file)
+            .collect()
+    };
+
+    if let Some(lim) = limit {
+        files.truncate(lim);
+    }
+
+    output_file_list(&files, &file_str, "includes", transitive, format)
+}
+
+/// Output a list of files in various formats.
+fn output_file_list(
+    files: &[String],
+    source_file: &str,
+    relation: &str,
+    transitive: bool,
+    format: OutputFormat,
+) -> Result<()> {
+    #[derive(serde::Serialize)]
+    struct FileListOutput {
+        source_file: String,
+        relation: String,
+        transitive: bool,
+        count: usize,
+        files: Vec<String>,
+    }
+
+    let output = FileListOutput {
+        source_file: source_file.to_string(),
+        relation: relation.to_string(),
+        transitive,
+        count: files.len(),
+        files: files.to_vec(),
+    };
+
+    match format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        OutputFormat::Jsonl => {
+            for file in files {
+                println!("{}", serde_json::to_string(&file)?);
+            }
+        }
+        OutputFormat::Csv => {
+            let mut wtr = csv::Writer::from_writer(std::io::stdout());
+            wtr.write_record(["file"])?;
+            for file in files {
+                wtr.write_record([file])?;
+            }
+            wtr.flush()?;
+        }
+        OutputFormat::Tsv => {
+            println!("file");
+            for file in files {
+                println!("{file}");
+            }
+        }
+        OutputFormat::Text => {
+            let transitive_str = if transitive { " (transitive)" } else { "" };
+            if files.is_empty() {
+                println!(
+                    "No {} found for {}{}",
+                    relation, source_file, transitive_str
+                );
+            } else {
+                println!(
+                    "Found {} {}{} for {}:\n",
+                    files.len(),
+                    relation,
+                    transitive_str,
+                    source_file
+                );
+                for file in files {
+                    println!("  {file}");
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -2691,6 +2867,8 @@ provide precise file:line:column locations and understand code structure.
   - `name_contains`: Substring search, e.g., `User` finds `getUser`, `UserService`
   - `case_insensitive`: Set to true for case-insensitive matching
   - `file`: Filter by exact path, directory (`src/`), or glob (`src/**/*.ts`)
+  - `namespace`: Filter by namespace/qualifier prefix (e.g., `std::collections`, `std::*`)
+  - `scope`: Filter by containing scope (e.g., `MyClass` to find methods within it)
   - `include_source`: Include the symbol's source code in output
   - `context_lines`: Lines before/after (like grep -C), use with `include_source`
 - **gabb_symbol**: Get details for a specific symbol by exact name.

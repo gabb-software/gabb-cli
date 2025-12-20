@@ -330,6 +330,14 @@ impl McpServer {
                         "context_lines": {
                             "type": "integer",
                             "description": "Number of lines to show before and after the symbol (like grep -C). Only applies when include_source is true."
+                        },
+                        "namespace": {
+                            "type": "string",
+                            "description": "Filter by namespace/qualifier prefix (e.g., 'std::collections', 'myapp::services'). Supports glob patterns (e.g., 'std::*' for all symbols in std namespace)."
+                        },
+                        "scope": {
+                            "type": "string",
+                            "description": "Filter by containing scope/container (e.g., 'MyClass' to find methods within MyClass)."
                         }
                     }
                 }),
@@ -485,6 +493,59 @@ impl McpServer {
                     }
                 }),
             },
+            Tool {
+                name: "gabb_includers".to_string(),
+                description: concat!(
+                    "Find all files that #include this header. ",
+                    "USE THIS before modifying a header to understand impact, ",
+                    "or to find all compilation units affected by a change. ",
+                    "Works with C/C++ headers and other languages with import/include statements."
+                ).to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "file": {
+                            "type": "string",
+                            "description": "Header file path"
+                        },
+                        "transitive": {
+                            "type": "boolean",
+                            "description": "Include transitive includers (files that include files that include this)"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum results to return (default: 50)"
+                        }
+                    },
+                    "required": ["file"]
+                }),
+            },
+            Tool {
+                name: "gabb_includes".to_string(),
+                description: concat!(
+                    "Find all headers included by this file. ",
+                    "USE THIS to understand file dependencies, ",
+                    "analyze compilation complexity, or trace include chains."
+                ).to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "file": {
+                            "type": "string",
+                            "description": "Source file path"
+                        },
+                        "transitive": {
+                            "type": "boolean",
+                            "description": "Include transitive includes (follow the include chain)"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum results to return (default: 50)"
+                        }
+                    },
+                    "required": ["file"]
+                }),
+            },
         ];
 
         Ok(json!({ "tools": tools }))
@@ -506,6 +567,8 @@ impl McpServer {
             "gabb_implementations" => self.tool_implementations(&arguments),
             "gabb_daemon_status" => self.tool_daemon_status(),
             "gabb_duplicates" => self.tool_duplicates(&arguments),
+            "gabb_includers" => self.tool_includers(&arguments),
+            "gabb_includes" => self.tool_includes(&arguments),
             _ => Ok(ToolResult::error(format!("Unknown tool: {}", name))),
         }?;
 
@@ -662,6 +725,8 @@ impl McpServer {
         let kind = args.get("kind").and_then(|v| v.as_str());
         let file = args.get("file").and_then(|v| v.as_str());
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+        let namespace = args.get("namespace").and_then(|v| v.as_str());
+        let scope = args.get("scope").and_then(|v| v.as_str());
 
         // Format options
         let include_source = args
@@ -685,6 +750,8 @@ impl McpServer {
             name_contains,
             case_insensitive,
             limit: Some(limit),
+            namespace,
+            scope,
         };
 
         let symbols = store.list_symbols_filtered(&query)?;
@@ -965,6 +1032,95 @@ impl McpServer {
         Ok(ToolResult::text(output))
     }
 
+    fn tool_includers(&mut self, args: &Value) -> Result<ToolResult> {
+        let file = args
+            .get("file")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'file' argument"))?;
+        let transitive = args
+            .get("transitive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+
+        // Infer workspace from file path
+        let file_path = PathBuf::from(file);
+        let workspace = self
+            .infer_workspace(&file_path)
+            .unwrap_or_else(|| self.default_workspace.clone());
+        let full_path = self.resolve_path_for_workspace(file, &workspace);
+
+        let store = self.get_store_for_workspace(&workspace)?;
+        let file_str = crate::store::normalize_path(&full_path);
+
+        let mut files: Vec<String> = if transitive {
+            store.get_invalidation_set(&file_str)?
+        } else {
+            store.get_dependents(&file_str)?
+        };
+
+        // Remove the original file from results
+        files.retain(|f| f != &file_str);
+
+        let files: Vec<_> = files.into_iter().take(limit).collect();
+
+        if files.is_empty() {
+            let transitive_str = if transitive { " (transitive)" } else { "" };
+            return Ok(ToolResult::text(format!(
+                "No files found that include {}{}",
+                file, transitive_str
+            )));
+        }
+
+        let output = format_file_list(&files, &workspace, file, "includers", transitive);
+        Ok(ToolResult::text(output))
+    }
+
+    fn tool_includes(&mut self, args: &Value) -> Result<ToolResult> {
+        let file = args
+            .get("file")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'file' argument"))?;
+        let transitive = args
+            .get("transitive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+
+        // Infer workspace from file path
+        let file_path = PathBuf::from(file);
+        let workspace = self
+            .infer_workspace(&file_path)
+            .unwrap_or_else(|| self.default_workspace.clone());
+        let full_path = self.resolve_path_for_workspace(file, &workspace);
+
+        let store = self.get_store_for_workspace(&workspace)?;
+        let file_str = crate::store::normalize_path(&full_path);
+
+        let files: Vec<String> = if transitive {
+            store.get_transitive_dependencies(&file_str)?
+        } else {
+            store
+                .get_file_dependencies(&file_str)?
+                .into_iter()
+                .map(|d| d.to_file)
+                .collect()
+        };
+
+        let files: Vec<_> = files.into_iter().take(limit).collect();
+
+        if files.is_empty() {
+            let transitive_str = if transitive { " (transitive)" } else { "" };
+            return Ok(ToolResult::text(format!(
+                "No includes found for {}{}",
+                file, transitive_str
+            )));
+        }
+
+        let output = format_file_list(&files, &workspace, file, "includes", transitive);
+        Ok(ToolResult::text(output))
+    }
+
     // ==================== Helper Methods ====================
 
     fn resolve_path_for_workspace(&self, path: &str, workspace: &Path) -> PathBuf {
@@ -1180,6 +1336,33 @@ fn format_duplicate_groups(groups: &[DuplicateGroup], workspace_root: &Path) -> 
             ));
         }
         output.push('\n');
+    }
+
+    output
+}
+
+fn format_file_list(
+    files: &[String],
+    workspace_root: &Path,
+    source_file: &str,
+    relation: &str,
+    transitive: bool,
+) -> String {
+    let transitive_str = if transitive { " (transitive)" } else { "" };
+    let mut output = format!(
+        "Found {} {}{} for {}:\n\n",
+        files.len(),
+        relation,
+        transitive_str,
+        source_file
+    );
+
+    for file in files {
+        let rel_path = PathBuf::from(file)
+            .strip_prefix(workspace_root)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| file.clone());
+        output.push_str(&format!("  {}\n", rel_path));
     }
 
     output

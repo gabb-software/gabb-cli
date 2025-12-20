@@ -29,6 +29,8 @@ provide precise file:line:column locations and understand code structure.
   - `name_contains`: Substring search, e.g., `User` finds `getUser`, `UserService`
   - `case_insensitive`: Set to true for case-insensitive matching
   - `file`: Filter by exact path, directory (`src/`), or glob (`src/**/*.ts`)
+  - `namespace`: Filter by namespace/qualifier prefix (e.g., `std::collections`, `std::*`)
+  - `scope`: Filter by containing scope (e.g., `MyClass` to find methods within it)
   - `include_source`: Include the symbol's source code in output
   - `context_lines`: Lines before/after (like grep -C), use with `include_source`
 - **gabb_symbol**: Get details for a specific symbol by exact name.

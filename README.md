@@ -4,7 +4,7 @@ Gabb is a Rust CLI that builds a local code index so editors and AI coding assis
 
 ## Status
 - Indexes TypeScript/TSX, Rust, Kotlin, and C++, storing results in a local SQLite database
-- Commands: `gabb daemon start/stop/restart/status`, `gabb symbols`, `gabb symbol`, `gabb implementation`, `gabb usages`, `gabb definition`, `gabb duplicates`, `gabb mcp-server`
+- Commands: `gabb daemon start/stop/restart/status`, `gabb symbols`, `gabb symbol`, `gabb implementation`, `gabb usages`, `gabb definition`, `gabb duplicates`, `gabb includers`, `gabb includes`, `gabb mcp-server`
 - Outputs: symbol definitions, relationships (implements/extends), and references
 - MCP server for AI assistant integration (Claude Desktop, Claude Code)
 
@@ -97,6 +97,8 @@ Gabb includes an MCP (Model Context Protocol) server that exposes code indexing 
 | `gabb_usages` | Find all usages/references of a symbol |
 | `gabb_implementations` | Find implementations of an interface, trait, or abstract class |
 | `gabb_duplicates` | Find duplicate symbol definitions |
+| `gabb_includers` | Find all files that #include a header (reverse dependency lookup) |
+| `gabb_includes` | Find all headers included by a file (forward dependency lookup) |
 | `gabb_daemon_status` | Check the status of the gabb indexing daemon |
 
 #### `gabb_symbols` Parameters
@@ -109,6 +111,8 @@ Gabb includes an MCP (Model Context Protocol) server that exposes code indexing 
 | `case_insensitive` | Make name matching case-insensitive (default: false) |
 | `kind` | Filter by symbol kind: `function`, `class`, `interface`, `type`, `struct`, `enum`, `trait`, `method`, `const`, `variable` |
 | `file` | Filter by path: exact file (`src/main.ts`), directory (`src/` or `src/components`), or glob (`src/**/*.ts`) |
+| `namespace` | Filter by namespace/qualifier prefix (e.g., `std::collections`, `myapp::services`). Supports glob patterns (e.g., `std::*`) |
+| `scope` | Filter by containing scope/container (e.g., `MyClass` to find methods within MyClass) |
 | `limit` | Maximum results (default: 50) |
 | `include_source` | Include the symbol's source code in output |
 | `context_lines` | Lines before/after the symbol (like `grep -C`), requires `include_source` |

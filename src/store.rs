@@ -205,6 +205,13 @@ pub struct SymbolQuery<'a> {
     pub case_insensitive: bool,
     /// Maximum number of results to return
     pub limit: Option<usize>,
+    /// Filter by namespace/qualifier prefix. Supports:
+    /// - Exact prefix: `std::collections` matches `std::collections::HashMap`
+    /// - Glob pattern: `std::*` matches any symbol in std namespace
+    pub namespace: Option<&'a str>,
+    /// Filter by container/scope (class, module, etc. that contains the symbol)
+    /// Useful for finding methods within a specific class
+    pub scope: Option<&'a str>,
 }
 
 use std::collections::HashMap;
@@ -1116,6 +1123,35 @@ impl IndexStore {
         self.topological_sort(&result)
     }
 
+    /// Get all files that a given file transitively depends on (forward dependency traversal).
+    /// This is the opposite of get_invalidation_set - it walks forward through imports/includes.
+    pub fn get_transitive_dependencies(&self, file: &str) -> Result<Vec<String>> {
+        let file_norm = normalize_path(Path::new(file));
+        let mut visited = HashSet::new();
+        let mut to_visit = vec![file_norm.clone()];
+        let mut result = Vec::new();
+
+        while let Some(current) = to_visit.pop() {
+            if visited.contains(&current) {
+                continue;
+            }
+            visited.insert(current.clone());
+            result.push(current.clone());
+
+            // Get all files that this file depends on
+            let deps = self.get_file_dependencies(&current)?;
+            for dep in deps {
+                if !visited.contains(&dep.to_file) {
+                    to_visit.push(dep.to_file);
+                }
+            }
+        }
+
+        // Remove the starting file from the result (we want dependencies, not the file itself)
+        result.retain(|f| f != &file_norm);
+        Ok(result)
+    }
+
     /// Get files that need invalidation for multiple changed files.
     /// Returns the union of invalidation sets, topologically sorted.
     #[allow(dead_code)]
@@ -1278,6 +1314,28 @@ impl IndexStore {
                 clauses.push("name LIKE ?".to_string());
             }
             values.push(Value::from(like_pattern));
+        }
+
+        // Handle namespace filtering on qualifier column
+        if let Some(ns) = query.namespace {
+            if ns.contains('*') {
+                // Glob pattern: convert * to SQL LIKE % wildcard
+                let like_pattern = ns.replace('*', "%");
+                clauses.push("qualifier LIKE ?".to_string());
+                values.push(Value::from(like_pattern));
+            } else {
+                // Prefix match: namespace should match the start of qualifier
+                // e.g., "std::collections" matches "std::collections::HashMap"
+                clauses.push("(qualifier = ? OR qualifier LIKE ?)".to_string());
+                values.push(Value::from(ns.to_string()));
+                values.push(Value::from(format!("{}::%", ns)));
+            }
+        }
+
+        // Handle scope filtering on container column
+        if let Some(scope) = query.scope {
+            clauses.push("container = ?".to_string());
+            values.push(Value::from(scope.to_string()));
         }
 
         if !clauses.is_empty() {

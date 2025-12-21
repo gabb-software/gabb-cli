@@ -20,6 +20,8 @@ provide precise file:line:column locations and understand code structure.
 | Find interface implementations | `gabb_implementations` | Follows type relationships |
 | Explore codebase structure | `gabb_symbols` | Filter by kind (function, class, etc.) |
 | Find duplicate code | `gabb_duplicates` | Content-aware, not text search |
+| View file structure | `gabb_structure` | Hierarchical symbol tree with positions |
+| Find C++ header dependencies | `gabb_includers`, `gabb_includes` | Tracks #include relationships |
 
 ## Available MCP Tools
 
@@ -38,6 +40,9 @@ provide precise file:line:column locations and understand code structure.
 - **gabb_usages**: Find all references to a symbol before refactoring.
 - **gabb_implementations**: Find classes/structs implementing an interface/trait.
 - **gabb_duplicates**: Find copy-paste code for refactoring opportunities.
+- **gabb_structure**: Get hierarchical file structure showing all symbols with positions.
+- **gabb_includers**: Find all files that #include a header (C++ reverse dependency).
+- **gabb_includes**: Find all headers included by a file (C++ forward dependency).
 - **gabb_daemon_status**: Check if the indexing daemon is running.
 
 ## Tips

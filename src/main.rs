@@ -2957,10 +2957,15 @@ Use the gabb MCP tools to help with this code navigation request.
 
 Available tools:
 - gabb_symbols: List/search symbols (functions, classes, types)
-- gabb_usages: Find all references to a symbol
+- gabb_symbol: Get detailed information about a symbol by name
 - gabb_definition: Go to where a symbol is defined
+- gabb_usages: Find all references to a symbol
 - gabb_implementations: Find implementations of interfaces/traits
 - gabb_duplicates: Find duplicate code in the codebase
+- gabb_structure: Get hierarchical file structure showing symbols with positions
+- gabb_includers: Find all files that #include a header (C++ reverse dependency)
+- gabb_includes: Find all headers included by a file (C++ forward dependency)
+- gabb_daemon_status: Check if the indexing daemon is running
 
 If the index doesn't exist, gabb will auto-start the daemon to build it.
 "#;
@@ -3185,6 +3190,8 @@ provide precise file:line:column locations and understand code structure.
 | Find interface implementations | `gabb_implementations` | Follows type relationships |
 | Explore codebase structure | `gabb_symbols` | Filter by kind (function, class, etc.) |
 | Find duplicate code | `gabb_duplicates` | Content-aware, not text search |
+| View file structure | `gabb_structure` | Hierarchical symbol tree with positions |
+| Find C++ header dependencies | `gabb_includers`, `gabb_includes` | Tracks #include relationships |
 
 ## Available MCP Tools
 
@@ -3203,6 +3210,9 @@ provide precise file:line:column locations and understand code structure.
 - **gabb_usages**: Find all references to a symbol before refactoring.
 - **gabb_implementations**: Find classes/structs implementing an interface/trait.
 - **gabb_duplicates**: Find copy-paste code for refactoring opportunities.
+- **gabb_structure**: Get hierarchical file structure showing all symbols with positions.
+- **gabb_includers**: Find all files that #include a header (C++ reverse dependency).
+- **gabb_includes**: Find all headers included by a file (C++ forward dependency).
 - **gabb_daemon_status**: Check if the indexing daemon is running.
 
 ## Tips

@@ -90,6 +90,14 @@ pub fn index_file(
         &symbol_by_name,
     );
 
+    // Collect call edges (caller -> callee relationships)
+    edges.extend(collect_call_edges(
+        path,
+        source,
+        &tree.root_node(),
+        &symbol_by_name,
+    ));
+
     // Extract file dependencies and import bindings from mod and use declarations
     let (dependencies, import_bindings) = collect_dependencies(path, source, &tree.root_node());
 
@@ -554,6 +562,182 @@ fn collect_references(
     }
 
     refs
+}
+
+/// Collect call edges: edges from caller (function/method) to callee (function being called)
+fn collect_call_edges(
+    path: &Path,
+    source: &str,
+    root: &Node,
+    symbol_by_name: &HashMap<String, SymbolBinding>,
+) -> Vec<EdgeRecord> {
+    let mut edges = Vec::new();
+    let mut stack = vec![*root];
+
+    while let Some(node) = stack.pop() {
+        // Look for call expressions and method call expressions
+        if node.kind() == "call_expression" || node.kind() == "method_call_expression" {
+            // Find the enclosing function (the caller)
+            if let Some(caller_id) = find_enclosing_function_id(path, source, &node) {
+                // Get the function being called (the callee)
+                if let Some(callee_id) = resolve_call_target(path, source, &node, symbol_by_name) {
+                    edges.push(EdgeRecord {
+                        src: caller_id,
+                        dst: callee_id,
+                        kind: "calls".to_string(),
+                    });
+                }
+            }
+        }
+
+        // Continue traversing
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+
+    edges
+}
+
+/// Find the enclosing function/method and return its symbol ID
+fn find_enclosing_function_id(path: &Path, source: &str, node: &Node) -> Option<String> {
+    let mut current = node.parent();
+
+    while let Some(n) = current {
+        match n.kind() {
+            "function_item" => {
+                if let Some(name_node) = n.child_by_field_name("name") {
+                    let name = slice(source, &name_node);
+                    return Some(format!("{}#{}", normalize_path(path), name));
+                }
+            }
+            "function_signature_item" => {
+                if let Some(name_node) = n.child_by_field_name("name") {
+                    let name = slice(source, &name_node);
+                    return Some(format!("{}#{}", normalize_path(path), name));
+                }
+            }
+            "impl_item" => {
+                // Method in an impl block - try to get both impl type and method name
+                if let Some(fn_node) = find_containing_function(&n, node) {
+                    if let Some(fn_name) = fn_node.child_by_field_name("name") {
+                        let method_name = slice(source, &fn_name);
+                        if let Some(type_node) = n.child_by_field_name("type") {
+                            let type_name = slice(source, &type_node);
+                            return Some(format!(
+                                "{}#{}::{}",
+                                normalize_path(path),
+                                type_name,
+                                method_name
+                            ));
+                        }
+                        return Some(format!("{}#{}", normalize_path(path), method_name));
+                    }
+                }
+            }
+            "closure_expression" => {
+                // Anonymous closure - use position-based ID
+                return Some(format!(
+                    "{}#closure@{}",
+                    normalize_path(path),
+                    n.start_byte()
+                ));
+            }
+            _ => {}
+        }
+        current = n.parent();
+    }
+
+    None
+}
+
+/// Find the function_item that contains the given node within an impl block
+fn find_containing_function<'a>(impl_node: &'a Node<'a>, target: &Node) -> Option<Node<'a>> {
+    let mut cursor = impl_node.walk();
+    let mut stack = vec![*impl_node];
+
+    while let Some(node) = stack.pop() {
+        if node.kind() == "function_item" {
+            // Check if this function contains our target node
+            if node.start_byte() <= target.start_byte() && node.end_byte() >= target.end_byte() {
+                return Some(node);
+            }
+        }
+        for child in node.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+    None
+}
+
+/// Resolve the target of a call expression to a symbol ID
+fn resolve_call_target(
+    path: &Path,
+    source: &str,
+    call_node: &Node,
+    symbol_by_name: &HashMap<String, SymbolBinding>,
+) -> Option<String> {
+    match call_node.kind() {
+        "call_expression" => {
+            // Function call: foo() or path::foo()
+            let function_node = call_node.child_by_field_name("function")?;
+            resolve_function_path(path, source, &function_node, symbol_by_name)
+        }
+        "method_call_expression" => {
+            // Method call: obj.method()
+            if let Some(name_node) = call_node.child_by_field_name("name") {
+                let method_name = slice(source, &name_node);
+                // Try to get the receiver type for better resolution
+                if let Some(receiver) = call_node.child_by_field_name("value") {
+                    let receiver_text = slice(source, &receiver);
+                    // Check if receiver is a known type
+                    if let Some(sym) = symbol_by_name.get(&receiver_text) {
+                        if let Some(q) = &sym.qualifier {
+                            return Some(format!("{}::{}", q, method_name));
+                        }
+                        return Some(format!("{}::{}", sym.id, method_name));
+                    }
+                }
+                // Unresolved method - use placeholder
+                Some(format!("{}::{}", normalize_path(path), method_name))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Resolve a function path (identifier or scoped_identifier) to a symbol ID
+fn resolve_function_path(
+    path: &Path,
+    source: &str,
+    node: &Node,
+    symbol_by_name: &HashMap<String, SymbolBinding>,
+) -> Option<String> {
+    match node.kind() {
+        "identifier" => {
+            let name = slice(source, node);
+            // Try to resolve to a known symbol
+            if let Some(sym) = symbol_by_name.get(&name) {
+                return Some(sym.id.clone());
+            }
+            // Unresolved - use placeholder
+            Some(format!("{}::{}", normalize_path(path), name))
+        }
+        "scoped_identifier" | "field_expression" => {
+            // Path like std::io::write or module::function
+            let full_path = slice(source, node);
+            // Check if the full path matches a known symbol
+            if let Some(sym) = symbol_by_name.get(&full_path) {
+                return Some(sym.id.clone());
+            }
+            // Use the path as-is
+            Some(full_path)
+        }
+        _ => None,
+    }
 }
 
 fn record_impl_edges(

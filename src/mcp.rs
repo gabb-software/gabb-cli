@@ -401,7 +401,8 @@ impl McpServer {
                     "Find ALL places where a symbol is used/referenced across the codebase. ",
                     "USE THIS BEFORE REFACTORING to understand impact, when investigating how a function is called, ",
                     "or to find all consumers of an API. More accurate than text search - understands code structure ",
-                    "and won't match comments or strings. Point to a symbol definition to find all its usages."
+                    "and won't match comments or strings. Point to a symbol definition to find all its usages. ",
+                    "Use format='refactor' for rename operations to get edit-ready output."
                 ).to_string(),
                 input_schema: json!({
                     "type": "object",
@@ -421,6 +422,15 @@ impl McpServer {
                         "limit": {
                             "type": "integer",
                             "description": "Maximum usages to return (default: 50). Increase for thorough analysis."
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["default", "refactor"],
+                            "description": "Output format. Use 'refactor' for rename operations - returns JSON with exact text spans and old_text for each usage, ready for Edit tool."
+                        },
+                        "include_definition": {
+                            "type": "boolean",
+                            "description": "Include the symbol's definition location in refactor output (default: true)"
                         }
                     },
                     "required": ["file", "line", "character"]
@@ -576,6 +586,197 @@ impl McpServer {
                     "required": ["file"]
                 }),
             },
+            Tool {
+                name: "gabb_supertypes".to_string(),
+                description: concat!(
+                    "Find parent types (superclasses, implemented interfaces/traits) of a type. ",
+                    "USE THIS when you need to understand what a class inherits from or what interfaces it implements. ",
+                    "Essential for understanding class hierarchies and polymorphism. ",
+                    "Point to a class/struct definition to see its inheritance chain."
+                ).to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "file": {
+                            "type": "string",
+                            "description": "Path to the file containing the type definition"
+                        },
+                        "line": {
+                            "type": "integer",
+                            "description": "1-based line number of the type"
+                        },
+                        "character": {
+                            "type": "integer",
+                            "description": "1-based column number within the line"
+                        },
+                        "transitive": {
+                            "type": "boolean",
+                            "description": "Include full hierarchy chain, not just direct parents (default: false)"
+                        },
+                        "include_source": {
+                            "type": "boolean",
+                            "description": "Include source code of parent types in the output"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum results to return (default: 50)"
+                        }
+                    },
+                    "required": ["file", "line", "character"]
+                }),
+            },
+            Tool {
+                name: "gabb_subtypes".to_string(),
+                description: concat!(
+                    "Find child types (subclasses, implementors) of a type/interface/trait. ",
+                    "USE THIS when you need to understand what inherits from or implements a type. ",
+                    "Essential for impact analysis when modifying base classes or interfaces. ",
+                    "Point to an interface/trait/class definition to find all derived types."
+                ).to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "file": {
+                            "type": "string",
+                            "description": "Path to the file containing the type/interface/trait definition"
+                        },
+                        "line": {
+                            "type": "integer",
+                            "description": "1-based line number of the type"
+                        },
+                        "character": {
+                            "type": "integer",
+                            "description": "1-based column number within the line"
+                        },
+                        "transitive": {
+                            "type": "boolean",
+                            "description": "Include full hierarchy chain, not just direct children (default: false)"
+                        },
+                        "include_source": {
+                            "type": "boolean",
+                            "description": "Include source code of child types in the output"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum results to return (default: 50)"
+                        }
+                    },
+                    "required": ["file", "line", "character"]
+                }),
+            },
+            Tool {
+                name: "gabb_rename".to_string(),
+                description: concat!(
+                    "Get all locations that need to be updated when renaming a symbol. ",
+                    "USE THIS for safe, automated rename refactoring. Returns edit-ready JSON output with ",
+                    "exact text spans, old_text, and new_text for each location. ",
+                    "Includes both the definition and all usages. Output is structured for direct use with Edit tool."
+                ).to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "file": {
+                            "type": "string",
+                            "description": "Path to the file containing the symbol to rename"
+                        },
+                        "line": {
+                            "type": "integer",
+                            "description": "1-based line number of the symbol"
+                        },
+                        "character": {
+                            "type": "integer",
+                            "description": "1-based column number within the line"
+                        },
+                        "new_name": {
+                            "type": "string",
+                            "description": "The new name for the symbol"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum locations to return (default: 100)"
+                        }
+                    },
+                    "required": ["file", "line", "character", "new_name"]
+                }),
+            },
+            Tool {
+                name: "gabb_callers".to_string(),
+                description: concat!(
+                    "Find all functions/methods that call a given function/method. ",
+                    "USE THIS when you want to understand who calls a function, trace execution flow backwards, ",
+                    "or assess impact before modifying a function. Point to a function definition to see all its callers. ",
+                    "Use transitive=true to get the full call chain (callers of callers)."
+                ).to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "file": {
+                            "type": "string",
+                            "description": "Path to the file containing the function definition"
+                        },
+                        "line": {
+                            "type": "integer",
+                            "description": "1-based line number of the function"
+                        },
+                        "character": {
+                            "type": "integer",
+                            "description": "1-based column number within the line"
+                        },
+                        "transitive": {
+                            "type": "boolean",
+                            "description": "Include full call chain, not just direct callers (default: false)"
+                        },
+                        "include_source": {
+                            "type": "boolean",
+                            "description": "Include source code of caller functions in the output"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum results to return (default: 50)"
+                        }
+                    },
+                    "required": ["file", "line", "character"]
+                }),
+            },
+            Tool {
+                name: "gabb_callees".to_string(),
+                description: concat!(
+                    "Find all functions/methods called by a given function/method. ",
+                    "USE THIS when you want to understand what a function does, trace execution flow forwards, ",
+                    "or explore function dependencies. Point to a function definition to see all functions it calls. ",
+                    "Use transitive=true to get the full call chain (callees of callees)."
+                ).to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "file": {
+                            "type": "string",
+                            "description": "Path to the file containing the function definition"
+                        },
+                        "line": {
+                            "type": "integer",
+                            "description": "1-based line number of the function"
+                        },
+                        "character": {
+                            "type": "integer",
+                            "description": "1-based column number within the line"
+                        },
+                        "transitive": {
+                            "type": "boolean",
+                            "description": "Include full call chain, not just direct callees (default: false)"
+                        },
+                        "include_source": {
+                            "type": "boolean",
+                            "description": "Include source code of callee functions in the output"
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum results to return (default: 50)"
+                        }
+                    },
+                    "required": ["file", "line", "character"]
+                }),
+            },
         ];
 
         Ok(json!({ "tools": tools }))
@@ -600,6 +801,11 @@ impl McpServer {
             "gabb_includers" => self.tool_includers(&arguments),
             "gabb_includes" => self.tool_includes(&arguments),
             "gabb_structure" => self.tool_structure(&arguments),
+            "gabb_supertypes" => self.tool_supertypes(&arguments),
+            "gabb_subtypes" => self.tool_subtypes(&arguments),
+            "gabb_rename" => self.tool_rename(&arguments),
+            "gabb_callers" => self.tool_callers(&arguments),
+            "gabb_callees" => self.tool_callees(&arguments),
             _ => Ok(ToolResult::error(format!("Unknown tool: {}", name))),
         }?;
 
@@ -908,6 +1114,14 @@ impl McpServer {
             .ok_or_else(|| anyhow::anyhow!("Missing 'character' argument"))?
             as usize;
         let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+        let format = args
+            .get("format")
+            .and_then(|v| v.as_str())
+            .unwrap_or("default");
+        let include_definition = args
+            .get("include_definition")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
 
         // Infer workspace from file path
         let workspace = self.workspace_for_file(Some(file));
@@ -929,7 +1143,7 @@ impl McpServer {
         let store = self.get_store_for_workspace(&workspace)?;
         let refs = store.references_for_symbol(&symbol.id)?;
 
-        if refs.is_empty() {
+        if refs.is_empty() && format != "refactor" {
             return Ok(ToolResult::text(format!(
                 "No usages found for '{}'",
                 symbol.name
@@ -937,6 +1151,13 @@ impl McpServer {
         }
 
         let refs: Vec<_> = refs.into_iter().take(limit).collect();
+
+        // Refactor format - returns JSON structured for Edit tool
+        if format == "refactor" {
+            return self.format_usages_for_refactor(&symbol, &refs, &workspace, include_definition);
+        }
+
+        // Default format
         let mut output = format!("Usages of '{}' ({} found):\n\n", symbol.name, refs.len());
         for r in &refs {
             let rel_path = relative_path_for_workspace(&r.file, &workspace);
@@ -947,6 +1168,98 @@ impl McpServer {
         }
 
         Ok(ToolResult::text(output))
+    }
+
+    /// Format usages for refactoring (rename operations)
+    fn format_usages_for_refactor(
+        &self,
+        symbol: &SymbolRecord,
+        refs: &[crate::store::ReferenceRecord],
+        workspace: &Path,
+        include_definition: bool,
+    ) -> Result<ToolResult> {
+        let mut edits: Vec<Value> = Vec::new();
+
+        // Include the definition location first if requested
+        if include_definition {
+            if let Ok((def_line, def_col)) = offset_to_line_col(&symbol.file, symbol.start as usize)
+            {
+                if let Ok((def_end_line, def_end_col)) =
+                    offset_to_line_col(&symbol.file, symbol.end as usize)
+                {
+                    let rel_path = relative_path_for_workspace(&symbol.file, workspace);
+                    let context =
+                        get_line_at_offset(&symbol.file, symbol.start as usize).unwrap_or_default();
+
+                    edits.push(json!({
+                        "file": rel_path,
+                        "line": def_line,
+                        "column": def_col,
+                        "end_line": def_end_line,
+                        "end_column": def_end_col,
+                        "old_text": &symbol.name,
+                        "context": context,
+                        "is_definition": true
+                    }));
+                }
+            }
+        }
+
+        // Add all usages
+        for r in refs {
+            let rel_path = relative_path_for_workspace(&r.file, workspace);
+
+            // Get start position
+            let (ref_line, ref_col) = match offset_to_line_col(&r.file, r.start as usize) {
+                Ok(pos) => pos,
+                Err(_) => continue,
+            };
+
+            // Get end position
+            let (end_line, end_col) = match offset_to_line_col(&r.file, r.end as usize) {
+                Ok(pos) => pos,
+                Err(_) => continue,
+            };
+
+            // Extract the actual text at this location
+            let old_text = extract_text_at_offset(&r.file, r.start as usize, r.end as usize)
+                .unwrap_or_else(|| symbol.name.clone());
+
+            // Get context line
+            let context = get_line_at_offset(&r.file, r.start as usize).unwrap_or_default();
+
+            edits.push(json!({
+                "file": rel_path,
+                "line": ref_line,
+                "column": ref_col,
+                "end_line": end_line,
+                "end_column": end_col,
+                "old_text": old_text,
+                "context": context,
+                "is_definition": false
+            }));
+        }
+
+        // Get definition location for symbol info
+        let (def_line, def_col) =
+            offset_to_line_col(&symbol.file, symbol.start as usize).unwrap_or((0, 0));
+        let def_rel_path = relative_path_for_workspace(&symbol.file, workspace);
+
+        let output = json!({
+            "symbol": {
+                "name": symbol.name,
+                "kind": symbol.kind,
+                "definition_file": def_rel_path,
+                "definition_line": def_line,
+                "definition_column": def_col
+            },
+            "edits": edits,
+            "total_count": edits.len()
+        });
+
+        Ok(ToolResult::text(
+            serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string()),
+        ))
     }
 
     fn tool_implementations(&mut self, args: &Value) -> Result<ToolResult> {
@@ -1254,6 +1567,423 @@ impl McpServer {
         ))
     }
 
+    fn tool_supertypes(&mut self, args: &Value) -> Result<ToolResult> {
+        let file = args
+            .get("file")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'file' argument"))?;
+        let line = args
+            .get("line")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'line' argument"))? as usize;
+        let character = args
+            .get("character")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'character' argument"))?
+            as usize;
+        let transitive = args
+            .get("transitive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let include_source = args
+            .get("include_source")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+
+        // Infer workspace from file path
+        let workspace = self.workspace_for_file(Some(file));
+        let file_path = self.resolve_path_for_workspace(file, &workspace);
+
+        // Find symbol at position
+        let symbol =
+            match self.find_symbol_at_in_workspace(&file_path, line, character, &workspace)? {
+                Some(s) => s,
+                None => {
+                    return Ok(ToolResult::text(format!(
+                        "No symbol found at {}:{}:{}",
+                        file, line, character
+                    )));
+                }
+            };
+
+        // Find supertypes
+        let store = self.get_store_for_workspace(&workspace)?;
+        let mut supertypes = store.supertypes(&symbol.id, transitive)?;
+
+        if supertypes.is_empty() {
+            return Ok(ToolResult::text(format!(
+                "No supertypes found for '{}'",
+                symbol.name
+            )));
+        }
+
+        supertypes.truncate(limit);
+
+        let format_opts = FormatOptions {
+            include_source,
+            context_lines: None,
+        };
+        let output = format_symbols(&supertypes, &workspace, &format_opts);
+
+        let label = if transitive {
+            "Supertypes (transitive)"
+        } else {
+            "Supertypes"
+        };
+        Ok(ToolResult::text(format!(
+            "{} of '{}' ({} found):\n\n{}",
+            label,
+            symbol.name,
+            supertypes.len(),
+            output
+        )))
+    }
+
+    fn tool_subtypes(&mut self, args: &Value) -> Result<ToolResult> {
+        let file = args
+            .get("file")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'file' argument"))?;
+        let line = args
+            .get("line")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'line' argument"))? as usize;
+        let character = args
+            .get("character")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'character' argument"))?
+            as usize;
+        let transitive = args
+            .get("transitive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let include_source = args
+            .get("include_source")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+
+        // Infer workspace from file path
+        let workspace = self.workspace_for_file(Some(file));
+        let file_path = self.resolve_path_for_workspace(file, &workspace);
+
+        // Find symbol at position
+        let symbol =
+            match self.find_symbol_at_in_workspace(&file_path, line, character, &workspace)? {
+                Some(s) => s,
+                None => {
+                    return Ok(ToolResult::text(format!(
+                        "No symbol found at {}:{}:{}",
+                        file, line, character
+                    )));
+                }
+            };
+
+        // Find subtypes
+        let store = self.get_store_for_workspace(&workspace)?;
+        let mut subtypes = store.subtypes(&symbol.id, transitive)?;
+
+        if subtypes.is_empty() {
+            return Ok(ToolResult::text(format!(
+                "No subtypes found for '{}'",
+                symbol.name
+            )));
+        }
+
+        subtypes.truncate(limit);
+
+        let format_opts = FormatOptions {
+            include_source,
+            context_lines: None,
+        };
+        let output = format_symbols(&subtypes, &workspace, &format_opts);
+
+        let label = if transitive {
+            "Subtypes (transitive)"
+        } else {
+            "Subtypes"
+        };
+        Ok(ToolResult::text(format!(
+            "{} of '{}' ({} found):\n\n{}",
+            label,
+            symbol.name,
+            subtypes.len(),
+            output
+        )))
+    }
+
+    fn tool_rename(&mut self, args: &Value) -> Result<ToolResult> {
+        let file = args
+            .get("file")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'file' argument"))?;
+        let line = args
+            .get("line")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'line' argument"))? as usize;
+        let character = args
+            .get("character")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'character' argument"))?
+            as usize;
+        let new_name = args
+            .get("new_name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'new_name' argument"))?;
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize;
+
+        // Infer workspace from file path
+        let workspace = self.workspace_for_file(Some(file));
+        let file_path = self.resolve_path_for_workspace(file, &workspace);
+
+        // Find symbol at position
+        let symbol =
+            match self.find_symbol_at_in_workspace(&file_path, line, character, &workspace)? {
+                Some(s) => s,
+                None => {
+                    return Ok(ToolResult::text(format!(
+                        "No symbol found at {}:{}:{}",
+                        file, line, character
+                    )));
+                }
+            };
+
+        // Find references
+        let store = self.get_store_for_workspace(&workspace)?;
+        let refs = store.references_for_symbol(&symbol.id)?;
+        let refs: Vec<_> = refs.into_iter().take(limit.saturating_sub(1)).collect();
+
+        let mut edits: Vec<Value> = Vec::new();
+
+        // Include the definition location first
+        if let Ok((def_line, def_col)) = offset_to_line_col(&symbol.file, symbol.start as usize) {
+            if let Ok((def_end_line, def_end_col)) =
+                offset_to_line_col(&symbol.file, symbol.end as usize)
+            {
+                let rel_path = relative_path_for_workspace(&symbol.file, &workspace);
+                let context =
+                    get_line_at_offset(&symbol.file, symbol.start as usize).unwrap_or_default();
+
+                edits.push(json!({
+                    "file": rel_path,
+                    "line": def_line,
+                    "column": def_col,
+                    "end_line": def_end_line,
+                    "end_column": def_end_col,
+                    "old_text": &symbol.name,
+                    "new_text": new_name,
+                    "context": context,
+                    "is_definition": true
+                }));
+            }
+        }
+
+        // Add all usages
+        for r in &refs {
+            let rel_path = relative_path_for_workspace(&r.file, &workspace);
+
+            let (ref_line, ref_col) = match offset_to_line_col(&r.file, r.start as usize) {
+                Ok(pos) => pos,
+                Err(_) => continue,
+            };
+
+            let (end_line, end_col) = match offset_to_line_col(&r.file, r.end as usize) {
+                Ok(pos) => pos,
+                Err(_) => continue,
+            };
+
+            let old_text = extract_text_at_offset(&r.file, r.start as usize, r.end as usize)
+                .unwrap_or_else(|| symbol.name.clone());
+
+            let context = get_line_at_offset(&r.file, r.start as usize).unwrap_or_default();
+
+            edits.push(json!({
+                "file": rel_path,
+                "line": ref_line,
+                "column": ref_col,
+                "end_line": end_line,
+                "end_column": end_col,
+                "old_text": old_text,
+                "new_text": new_name,
+                "context": context,
+                "is_definition": false
+            }));
+        }
+
+        // Get definition location for symbol info
+        let (def_line, def_col) =
+            offset_to_line_col(&symbol.file, symbol.start as usize).unwrap_or((0, 0));
+        let def_rel_path = relative_path_for_workspace(&symbol.file, &workspace);
+
+        let output = json!({
+            "rename": {
+                "from": symbol.name,
+                "to": new_name
+            },
+            "symbol": {
+                "name": symbol.name,
+                "kind": symbol.kind,
+                "definition_file": def_rel_path,
+                "definition_line": def_line,
+                "definition_column": def_col
+            },
+            "edits": edits,
+            "total_count": edits.len(),
+            "definition_included": true
+        });
+
+        Ok(ToolResult::text(
+            serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string()),
+        ))
+    }
+
+    fn tool_callers(&mut self, args: &Value) -> Result<ToolResult> {
+        let file = args
+            .get("file")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'file' argument"))?;
+        let line = args
+            .get("line")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'line' argument"))? as usize;
+        let character = args
+            .get("character")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'character' argument"))?
+            as usize;
+        let transitive = args
+            .get("transitive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let include_source = args
+            .get("include_source")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+
+        // Infer workspace from file path
+        let workspace = self.workspace_for_file(Some(file));
+        let file_path = self.resolve_path_for_workspace(file, &workspace);
+
+        // Find symbol at position
+        let symbol =
+            match self.find_symbol_at_in_workspace(&file_path, line, character, &workspace)? {
+                Some(s) => s,
+                None => {
+                    return Ok(ToolResult::text(format!(
+                        "No symbol found at {}:{}:{}",
+                        file, line, character
+                    )));
+                }
+            };
+
+        // Find callers
+        let store = self.get_store_for_workspace(&workspace)?;
+        let mut callers = store.callers(&symbol.id, transitive)?;
+
+        if callers.is_empty() {
+            return Ok(ToolResult::text(format!(
+                "No callers found for '{}'",
+                symbol.name
+            )));
+        }
+
+        callers.truncate(limit);
+
+        let format_opts = FormatOptions {
+            include_source,
+            context_lines: None,
+        };
+        let output = format_symbols(&callers, &workspace, &format_opts);
+
+        let label = if transitive {
+            "Callers (transitive)"
+        } else {
+            "Callers"
+        };
+        Ok(ToolResult::text(format!(
+            "{} of '{}' ({} found):\n\n{}",
+            label,
+            symbol.name,
+            callers.len(),
+            output
+        )))
+    }
+
+    fn tool_callees(&mut self, args: &Value) -> Result<ToolResult> {
+        let file = args
+            .get("file")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'file' argument"))?;
+        let line = args
+            .get("line")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'line' argument"))? as usize;
+        let character = args
+            .get("character")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'character' argument"))?
+            as usize;
+        let transitive = args
+            .get("transitive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let include_source = args
+            .get("include_source")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+
+        // Infer workspace from file path
+        let workspace = self.workspace_for_file(Some(file));
+        let file_path = self.resolve_path_for_workspace(file, &workspace);
+
+        // Find symbol at position
+        let symbol =
+            match self.find_symbol_at_in_workspace(&file_path, line, character, &workspace)? {
+                Some(s) => s,
+                None => {
+                    return Ok(ToolResult::text(format!(
+                        "No symbol found at {}:{}:{}",
+                        file, line, character
+                    )));
+                }
+            };
+
+        // Find callees
+        let store = self.get_store_for_workspace(&workspace)?;
+        let mut callees = store.callees(&symbol.id, transitive)?;
+
+        if callees.is_empty() {
+            return Ok(ToolResult::text(format!(
+                "No callees found for '{}'",
+                symbol.name
+            )));
+        }
+
+        callees.truncate(limit);
+
+        let format_opts = FormatOptions {
+            include_source,
+            context_lines: None,
+        };
+        let output = format_symbols(&callees, &workspace, &format_opts);
+
+        let label = if transitive {
+            "Callees (transitive)"
+        } else {
+            "Callees"
+        };
+        Ok(ToolResult::text(format!(
+            "{} of '{}' ({} found):\n\n{}",
+            label,
+            symbol.name,
+            callees.len(),
+            output
+        )))
+    }
+
     // ==================== Helper Methods ====================
 
     fn resolve_path_for_workspace(&self, path: &str, workspace: &Path) -> PathBuf {
@@ -1557,6 +2287,39 @@ fn line_col_to_offset(buf: &[u8], line: usize, character: usize) -> Option<usize
     let line_len = line_end - idx;
     let col = character.saturating_sub(1).min(line_len);
     Some(idx + col)
+}
+
+/// Extract text at a given byte range from a file
+fn extract_text_at_offset(file_path: &str, start: usize, end: usize) -> Option<String> {
+    let content = std::fs::read(file_path).ok()?;
+    if start >= content.len() || end > content.len() || start >= end {
+        return None;
+    }
+    String::from_utf8(content[start..end].to_vec()).ok()
+}
+
+/// Get the full line containing a given byte offset
+fn get_line_at_offset(file_path: &str, offset: usize) -> Option<String> {
+    let content = std::fs::read(file_path).ok()?;
+    if offset >= content.len() {
+        return None;
+    }
+
+    // Find line start (search backwards for newline or start of file)
+    let line_start = content[..offset]
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map(|p| p + 1)
+        .unwrap_or(0);
+
+    // Find line end (search forwards for newline or end of file)
+    let line_end = content[offset..]
+        .iter()
+        .position(|&b| b == b'\n')
+        .map(|p| offset + p)
+        .unwrap_or(content.len());
+
+    String::from_utf8(content[line_start..line_end].to_vec()).ok()
 }
 
 /// Check if a file path indicates a test file

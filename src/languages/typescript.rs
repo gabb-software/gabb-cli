@@ -121,6 +121,15 @@ pub fn index_file(
         &imports,
     ));
 
+    // Collect call edges (caller -> callee relationships)
+    edges.extend(collect_call_edges(
+        path,
+        source,
+        &tree.root_node(),
+        &symbol_by_name,
+        &imports,
+    ));
+
     Ok((symbols, edges, references, dependencies, import_bindings))
 }
 
@@ -801,6 +810,161 @@ fn collect_export_edges(
     }
 
     edges
+}
+
+/// Collect call edges: edges from caller (function/method) to callee (function being called)
+fn collect_call_edges(
+    path: &Path,
+    source: &str,
+    root: &Node,
+    symbol_by_name: &HashMap<String, SymbolBinding>,
+    imports: &HashMap<String, ImportBinding>,
+) -> Vec<EdgeRecord> {
+    let mut edges = Vec::new();
+    let mut stack = vec![*root];
+
+    while let Some(node) = stack.pop() {
+        // Look for call expressions
+        if node.kind() == "call_expression" {
+            // Find the enclosing function (the caller)
+            if let Some(caller_id) = find_enclosing_function_id(path, source, &node) {
+                // Get the function being called (the callee)
+                if let Some(callee_id) =
+                    resolve_call_target(path, source, &node, symbol_by_name, imports)
+                {
+                    edges.push(EdgeRecord {
+                        src: caller_id,
+                        dst: callee_id,
+                        kind: "calls".to_string(),
+                    });
+                }
+            }
+        }
+
+        // Continue traversing
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+
+    edges
+}
+
+/// Find the enclosing function/method and return its symbol ID
+fn find_enclosing_function_id(path: &Path, source: &str, node: &Node) -> Option<String> {
+    let mut current = node.parent();
+
+    while let Some(n) = current {
+        match n.kind() {
+            "function_declaration" | "function" => {
+                if let Some(name_node) = n.child_by_field_name("name") {
+                    let name = slice(source, &name_node);
+                    return Some(make_symbol_id(path, &name));
+                }
+            }
+            "method_definition" => {
+                if let Some(name_node) = n.child_by_field_name("name") {
+                    let name = slice(source, &name_node);
+                    // For methods, we need to include the class name
+                    if let Some(class_node) = find_enclosing_class(n.parent()) {
+                        if let Some(class_name_node) = class_node.child_by_field_name("name") {
+                            let class_name = slice(source, &class_name_node);
+                            return Some(format!(
+                                "{}#{}::{}",
+                                normalize_path(path),
+                                class_name,
+                                name
+                            ));
+                        }
+                    }
+                    return Some(make_symbol_id(path, &name));
+                }
+            }
+            "arrow_function" | "function_expression" => {
+                // Anonymous functions - try to get from variable declaration
+                if let Some(parent) = n.parent() {
+                    if parent.kind() == "variable_declarator" {
+                        if let Some(name_node) = parent.child_by_field_name("name") {
+                            let name = slice(source, &name_node);
+                            return Some(make_symbol_id(path, &name));
+                        }
+                    }
+                }
+                // Fall back to position-based ID for truly anonymous functions
+                return Some(format!("{}#anon@{}", normalize_path(path), n.start_byte()));
+            }
+            _ => {}
+        }
+        current = n.parent();
+    }
+
+    None
+}
+
+/// Resolve the target of a call expression to a symbol ID
+fn resolve_call_target(
+    path: &Path,
+    source: &str,
+    call_node: &Node,
+    symbol_by_name: &HashMap<String, SymbolBinding>,
+    imports: &HashMap<String, ImportBinding>,
+) -> Option<String> {
+    // The "function" field contains what's being called
+    let function_node = call_node.child_by_field_name("function")?;
+
+    match function_node.kind() {
+        "identifier" => {
+            // Simple function call: foo()
+            let name = slice(source, &function_node);
+            // Try to resolve to a known symbol
+            if let Some(sym) = symbol_by_name.get(&name) {
+                return Some(sym.id.clone());
+            }
+            // Check imports
+            if let Some(import) = imports.get(&name) {
+                return Some(import.symbol_id(&name));
+            }
+            // Unresolved - use placeholder
+            Some(format!("{}::{}", normalize_path(path), name))
+        }
+        "member_expression" => {
+            // Method call: obj.method() or Class.staticMethod()
+            if let Some(property) = function_node.child_by_field_name("property") {
+                let method_name = slice(source, &property);
+                if let Some(object) = function_node.child_by_field_name("object") {
+                    let obj_name = slice(source, &object);
+                    // Check if object is a known class/module
+                    if let Some(sym) = symbol_by_name.get(&obj_name) {
+                        if let Some(q) = &sym.qualifier {
+                            return Some(format!("{}::{}", q, method_name));
+                        }
+                        return Some(format!("{}::{}", sym.id, method_name));
+                    }
+                    // Check imports
+                    if let Some(import) = imports.get(&obj_name) {
+                        return Some(format!("{}::{}", import.symbol_id(&obj_name), method_name));
+                    }
+                    // Unresolved member access
+                    return Some(format!(
+                        "{}::{}::{}",
+                        normalize_path(path),
+                        obj_name,
+                        method_name
+                    ));
+                }
+                // Just the method name if we can't resolve the object
+                return Some(format!("{}::{}", normalize_path(path), method_name));
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Create a symbol ID from path and name (used for caller identification)
+fn make_symbol_id(path: &Path, name: &str) -> String {
+    format!("{}#{}", normalize_path(path), name)
 }
 
 fn find_child_kind<'a>(node: &'a Node<'a>, kind: &str) -> Option<Node<'a>> {

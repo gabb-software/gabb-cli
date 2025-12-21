@@ -20,6 +20,11 @@ gabb understands code structure and provides precise file:line:column locations.
 | "Where is this function defined?" | `gabb_definition` | Follows imports, finds actual definition |
 | "What calls this function?" | `gabb_usages` | Semantic refs only, no false matches |
 | "What implements this interface?" | `gabb_implementations` | Understands type relationships |
+| "What does this class inherit from?" | `gabb_supertypes` | Navigates extends/implements edges |
+| "What inherits from this?" | `gabb_subtypes` | Finds all derived types |
+| "What calls this function?" | `gabb_callers` | Call graph: trace backwards through callers |
+| "What does this function call?" | `gabb_callees` | Call graph: trace forwards through callees |
+| "Rename this function safely" | `gabb_rename` | Returns edit-ready JSON for all locations |
 | "What symbols are in this file?" | `gabb_structure` | Hierarchical view with test/prod context |
 | "Find all Handler classes" | `gabb_symbols` | Filter by kind, pattern, namespace |
 | "Is there duplicate code?" | `gabb_duplicates` | Content-hash based, not text |
@@ -70,10 +75,15 @@ Parameters:
   line: integer (required)    - 1-based line number
   character: integer (required) - 1-based column number
   limit: integer              - Max results (default: 50)
+  format: string              - "default" or "refactor" (for rename operations)
+  include_definition: bool    - Include definition in refactor output (default: true)
 ```
 
 Example: Before renaming `UserService`, point to its definition and find
 everywhere it's used. Unlike grep, won't match "UserService" in comments.
+
+Use `format: "refactor"` for rename operations - returns JSON with exact spans
+and `old_text` for each location, ready for Edit tool.
 
 ### gabb_implementations
 **Find all types implementing an interface/trait.**
@@ -87,6 +97,89 @@ Parameters:
 ```
 
 Example: You see `trait Handler`. Find all structs that `impl Handler`.
+
+### gabb_supertypes
+**Find parent types (superclasses, implemented interfaces/traits).**
+
+```
+Parameters:
+  file: string (required)     - File containing the type
+  line: integer (required)    - 1-based line number
+  character: integer (required) - 1-based column number
+  transitive: bool            - Include full hierarchy chain (default: false)
+  include_source: bool        - Include parent source code
+  limit: integer              - Max results (default: 50)
+```
+
+Example: You see `class AdminUser`. Find what it extends and implements.
+Use `transitive: true` to see the full inheritance chain.
+
+### gabb_subtypes
+**Find child types (subclasses, implementors).**
+
+```
+Parameters:
+  file: string (required)     - File containing the type/interface/trait
+  line: integer (required)    - 1-based line number
+  character: integer (required) - 1-based column number
+  transitive: bool            - Include full hierarchy chain (default: false)
+  include_source: bool        - Include child source code
+  limit: integer              - Max results (default: 50)
+```
+
+Example: You see `class BaseService`. Find all classes that extend it.
+Essential for impact analysis when modifying base classes.
+
+### gabb_callers
+**Find all functions that call a given function.** Trace execution backwards.
+
+```
+Parameters:
+  file: string (required)     - File containing the function
+  line: integer (required)    - 1-based line number
+  character: integer (required) - 1-based column number
+  transitive: bool            - Include full call chain (default: false)
+  include_source: bool        - Include caller source code
+  limit: integer              - Max results (default: 50)
+```
+
+Example: You see `validate_token`. Find all functions that call it.
+Use `transitive: true` to see the full call chain (callers of callers).
+
+### gabb_callees
+**Find all functions called by a given function.** Trace execution forwards.
+
+```
+Parameters:
+  file: string (required)     - File containing the function
+  line: integer (required)    - 1-based line number
+  character: integer (required) - 1-based column number
+  transitive: bool            - Include full call chain (default: false)
+  include_source: bool        - Include callee source code
+  limit: integer              - Max results (default: 50)
+```
+
+Example: You see `process_request`. Find all functions it calls.
+Use `transitive: true` to see the full call chain (callees of callees).
+
+### gabb_rename
+**Get all locations to update when renaming a symbol.** The safest way to rename.
+
+```
+Parameters:
+  file: string (required)     - File containing the symbol to rename
+  line: integer (required)    - 1-based line number
+  character: integer (required) - 1-based column number
+  new_name: string (required) - The new name for the symbol
+  limit: integer              - Max locations (default: 100)
+```
+
+Returns JSON with `old_text`, `new_text`, and exact positions for each location.
+Includes both the definition and all usages. Output is structured for direct
+use with Edit tool - each entry has file, line, column, old_text, new_text.
+
+Example: Rename `getUserById` to `findUserById`. Point to the function definition
+and provide the new name. Get back all 15 locations that need updating.
 
 ### gabb_symbols
 **Search for symbols by name, pattern, or kind.** For exploration.
@@ -179,7 +272,18 @@ No parameters. Returns daemon PID, version, indexed file count.
 ### Safe refactoring
 1. `gabb_usages` - Find ALL references before changing
 2. `gabb_implementations` - Check implementing types
-3. Make changes with confidence
+3. `gabb_subtypes` - Check what inherits from the type (impact analysis)
+4. Make changes with confidence
+
+### Understanding type hierarchies
+1. `gabb_supertypes` - See what a class inherits from
+2. `gabb_subtypes` - See what inherits from a class/interface
+3. Use `transitive: true` to see the full hierarchy
+
+### Tracing execution flow
+1. `gabb_callers` - Find who calls a function (trace backwards)
+2. `gabb_callees` - Find what a function calls (trace forwards)
+3. Use `transitive: true` to see the full call chain
 
 ### Finding code patterns
 1. `gabb_symbols kind="function" name_pattern="*Handler"` - Find handlers

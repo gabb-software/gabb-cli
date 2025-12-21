@@ -132,6 +132,11 @@ Gabb includes an MCP (Model Context Protocol) server that exposes code indexing 
 | `gabb_definition` | Go to definition for a symbol at a source position |
 | `gabb_usages` | Find all usages/references of a symbol |
 | `gabb_implementations` | Find implementations of an interface, trait, or abstract class |
+| `gabb_supertypes` | Find parent types (superclasses, implemented interfaces/traits) of a type |
+| `gabb_subtypes` | Find child types (subclasses, implementors) of a type/interface/trait |
+| `gabb_callers` | Find all functions/methods that call a given function (call graph: who calls me?) |
+| `gabb_callees` | Find all functions/methods called by a given function (call graph: what do I call?) |
+| `gabb_rename` | Get all locations to update when renaming a symbol (edit-ready output) |
 | `gabb_duplicates` | Find duplicate symbol definitions |
 | `gabb_structure` | Get hierarchical file structure showing symbols with positions |
 | `gabb_includers` | Find all files that #include a header (reverse dependency lookup) |

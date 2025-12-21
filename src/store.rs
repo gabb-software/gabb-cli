@@ -1661,6 +1661,228 @@ impl IndexStore {
         Ok(rows)
     }
 
+    /// Find supertypes (parent classes, implemented interfaces/traits) of a symbol.
+    /// Returns symbols that the given symbol extends or implements.
+    ///
+    /// If `transitive` is true, follows the hierarchy chain recursively.
+    pub fn supertypes(&self, symbol_id: &str, transitive: bool) -> Result<Vec<SymbolRecord>> {
+        let inheritance_kinds = ["extends", "implements", "trait_impl"];
+
+        if transitive {
+            self.supertypes_transitive(symbol_id, &inheritance_kinds)
+        } else {
+            // Get direct supertypes: edges FROM this symbol TO its parents
+            let edges = self.edges_from(symbol_id)?;
+            let parent_ids: Vec<String> = edges
+                .into_iter()
+                .filter(|e| inheritance_kinds.contains(&e.kind.as_str()))
+                .map(|e| e.dst)
+                .collect();
+            self.symbols_by_ids(&parent_ids)
+        }
+    }
+
+    /// Find subtypes (subclasses, implementors) of a symbol.
+    /// Returns symbols that extend or implement the given symbol.
+    ///
+    /// If `transitive` is true, follows the hierarchy chain recursively.
+    pub fn subtypes(&self, symbol_id: &str, transitive: bool) -> Result<Vec<SymbolRecord>> {
+        let inheritance_kinds = ["extends", "implements", "trait_impl"];
+
+        if transitive {
+            self.subtypes_transitive(symbol_id, &inheritance_kinds)
+        } else {
+            // Get direct subtypes: edges TO this symbol FROM its children
+            let edges = self.edges_to(symbol_id)?;
+            let child_ids: Vec<String> = edges
+                .into_iter()
+                .filter(|e| inheritance_kinds.contains(&e.kind.as_str()))
+                .map(|e| e.src)
+                .collect();
+            self.symbols_by_ids(&child_ids)
+        }
+    }
+
+    /// Helper for transitive supertype lookup
+    fn supertypes_transitive(&self, symbol_id: &str, kinds: &[&str]) -> Result<Vec<SymbolRecord>> {
+        use std::collections::HashSet;
+
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut result: Vec<SymbolRecord> = Vec::new();
+        let mut queue: Vec<String> = vec![symbol_id.to_string()];
+
+        while let Some(current_id) = queue.pop() {
+            if visited.contains(&current_id) {
+                continue;
+            }
+            visited.insert(current_id.clone());
+
+            let edges = self.edges_from(&current_id)?;
+            let parent_ids: Vec<String> = edges
+                .into_iter()
+                .filter(|e| kinds.contains(&e.kind.as_str()))
+                .map(|e| e.dst)
+                .collect();
+
+            let parents = self.symbols_by_ids(&parent_ids)?;
+            for parent in parents {
+                if !visited.contains(&parent.id) {
+                    queue.push(parent.id.clone());
+                }
+                // Only add if not the original symbol
+                if parent.id != symbol_id {
+                    result.push(parent);
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Helper for transitive subtype lookup
+    fn subtypes_transitive(&self, symbol_id: &str, kinds: &[&str]) -> Result<Vec<SymbolRecord>> {
+        use std::collections::HashSet;
+
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut result: Vec<SymbolRecord> = Vec::new();
+        let mut queue: Vec<String> = vec![symbol_id.to_string()];
+
+        while let Some(current_id) = queue.pop() {
+            if visited.contains(&current_id) {
+                continue;
+            }
+            visited.insert(current_id.clone());
+
+            let edges = self.edges_to(&current_id)?;
+            let child_ids: Vec<String> = edges
+                .into_iter()
+                .filter(|e| kinds.contains(&e.kind.as_str()))
+                .map(|e| e.src)
+                .collect();
+
+            let children = self.symbols_by_ids(&child_ids)?;
+            for child in children {
+                if !visited.contains(&child.id) {
+                    queue.push(child.id.clone());
+                }
+                // Only add if not the original symbol
+                if child.id != symbol_id {
+                    result.push(child);
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Find callers of a function/method.
+    /// Returns symbols that call the given function.
+    ///
+    /// If `transitive` is true, follows the call chain recursively (who calls the callers, etc.).
+    pub fn callers(&self, symbol_id: &str, transitive: bool) -> Result<Vec<SymbolRecord>> {
+        if transitive {
+            self.callers_transitive(symbol_id)
+        } else {
+            // Get direct callers: edges TO this symbol with kind="calls"
+            let edges = self.edges_to(symbol_id)?;
+            let caller_ids: Vec<String> = edges
+                .into_iter()
+                .filter(|e| e.kind == "calls")
+                .map(|e| e.src)
+                .collect();
+            self.symbols_by_ids(&caller_ids)
+        }
+    }
+
+    /// Find callees of a function/method.
+    /// Returns symbols that are called by the given function.
+    ///
+    /// If `transitive` is true, follows the call chain recursively (what do callees call, etc.).
+    pub fn callees(&self, symbol_id: &str, transitive: bool) -> Result<Vec<SymbolRecord>> {
+        if transitive {
+            self.callees_transitive(symbol_id)
+        } else {
+            // Get direct callees: edges FROM this symbol with kind="calls"
+            let edges = self.edges_from(symbol_id)?;
+            let callee_ids: Vec<String> = edges
+                .into_iter()
+                .filter(|e| e.kind == "calls")
+                .map(|e| e.dst)
+                .collect();
+            self.symbols_by_ids(&callee_ids)
+        }
+    }
+
+    /// Helper for transitive callers lookup
+    fn callers_transitive(&self, symbol_id: &str) -> Result<Vec<SymbolRecord>> {
+        use std::collections::HashSet;
+
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut result: Vec<SymbolRecord> = Vec::new();
+        let mut queue: Vec<String> = vec![symbol_id.to_string()];
+
+        while let Some(current_id) = queue.pop() {
+            if visited.contains(&current_id) {
+                continue;
+            }
+            visited.insert(current_id.clone());
+
+            let edges = self.edges_to(&current_id)?;
+            let caller_ids: Vec<String> = edges
+                .into_iter()
+                .filter(|e| e.kind == "calls")
+                .map(|e| e.src)
+                .collect();
+
+            let callers = self.symbols_by_ids(&caller_ids)?;
+            for caller in callers {
+                if !visited.contains(&caller.id) {
+                    queue.push(caller.id.clone());
+                }
+                if caller.id != symbol_id {
+                    result.push(caller);
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Helper for transitive callees lookup
+    fn callees_transitive(&self, symbol_id: &str) -> Result<Vec<SymbolRecord>> {
+        use std::collections::HashSet;
+
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut result: Vec<SymbolRecord> = Vec::new();
+        let mut queue: Vec<String> = vec![symbol_id.to_string()];
+
+        while let Some(current_id) = queue.pop() {
+            if visited.contains(&current_id) {
+                continue;
+            }
+            visited.insert(current_id.clone());
+
+            let edges = self.edges_from(&current_id)?;
+            let callee_ids: Vec<String> = edges
+                .into_iter()
+                .filter(|e| e.kind == "calls")
+                .map(|e| e.dst)
+                .collect();
+
+            let callees = self.symbols_by_ids(&callee_ids)?;
+            for callee in callees {
+                if !visited.contains(&callee.id) {
+                    queue.push(callee.id.clone());
+                }
+                if callee.id != symbol_id {
+                    result.push(callee);
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
     /// Query references by symbol ID with cached prepared statement.
     pub fn references_for_symbol(&self, symbol_id: &str) -> Result<Vec<ReferenceRecord>> {
         let conn = self.conn.borrow();

@@ -208,10 +208,33 @@ struct SymbolOutput {
     source: Option<String>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone)]
 struct Position {
     line: usize,
     character: usize,
+}
+
+/// Output for file structure command showing hierarchical symbols
+#[derive(serde::Serialize)]
+struct FileStructure {
+    file: String,
+    context: String, // "test" or "prod"
+    symbols: Vec<SymbolNode>,
+}
+
+/// A symbol node in the file structure hierarchy
+#[derive(serde::Serialize, Clone)]
+struct SymbolNode {
+    name: String,
+    kind: String,
+    start: Position,
+    end: Position,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    visibility: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    children: Vec<SymbolNode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
 }
 
 impl SymbolOutput {
@@ -619,6 +642,17 @@ enum Commands {
         #[arg(long)]
         limit: Option<usize>,
     },
+    /// Show the structure of a file (symbols with hierarchy and positions)
+    Structure {
+        /// File to analyze
+        file: PathBuf,
+        /// Include source code snippets
+        #[arg(long)]
+        source: bool,
+        /// Number of context lines before/after (like grep -C)
+        #[arg(short = 'C', long)]
+        context: Option<usize>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -705,7 +739,14 @@ fn main() -> Result<()> {
                 background,
                 log_file,
                 quiet,
-            } => daemon::start(&workspace, &db, rebuild, background, log_file.as_deref(), quiet),
+            } => daemon::start(
+                &workspace,
+                &db,
+                rebuild,
+                background,
+                log_file.as_deref(),
+                quiet,
+            ),
             DaemonCommands::Stop { force } => daemon::stop(&workspace, force),
             DaemonCommands::Restart { rebuild } => daemon::restart(&workspace, &db, rebuild),
             DaemonCommands::Status => daemon::status(&workspace, format),
@@ -825,9 +866,7 @@ fn main() -> Result<()> {
             ensure_index_available(&db, &daemon_opts)?;
             find_duplicates(&db, uncommitted, staged, kind.as_deref(), min_count, format)
         }
-        Commands::McpServer => {
-            mcp::run_server(&workspace, &db)
-        }
+        Commands::McpServer => mcp::run_server(&workspace, &db),
         Commands::Mcp { command } => match command {
             McpCommands::Config => mcp_config(&workspace),
             McpCommands::Install {
@@ -861,6 +900,18 @@ fn main() -> Result<()> {
         } => {
             ensure_index_available(&db, &daemon_opts)?;
             find_includes(&db, &file, transitive, limit, format)
+        }
+        Commands::Structure {
+            file,
+            source,
+            context,
+        } => {
+            ensure_index_available(&db, &daemon_opts)?;
+            let source_opts = SourceDisplayOptions {
+                include_source: source,
+                context_lines: context,
+            };
+            file_structure(&db, &workspace, &file, format, source_opts)
         }
     }
 }
@@ -2275,6 +2326,242 @@ fn split_file_and_embedded_position(file: &Path) -> (PathBuf, Option<(usize, usi
         }
     }
     (file.to_path_buf(), None)
+}
+
+// ==================== File Structure Command ====================
+
+/// Build a hierarchical tree of symbols from flat records
+fn build_symbol_tree(
+    symbols: Vec<SymbolRecord>,
+    source_opts: SourceDisplayOptions,
+) -> Result<Vec<SymbolNode>> {
+    use std::collections::HashMap;
+
+    // Convert each symbol to a node with resolved positions
+    let mut nodes: Vec<(Option<String>, SymbolNode)> = Vec::new();
+
+    for sym in &symbols {
+        let (start_line, start_col) = offset_to_line_char_in_file(&sym.file, sym.start)?;
+        let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end)?;
+
+        let source = if source_opts.include_source {
+            mcp::extract_source(&sym.file, sym.start, sym.end, source_opts.context_lines)
+        } else {
+            None
+        };
+
+        let node = SymbolNode {
+            name: sym.name.clone(),
+            kind: sym.kind.clone(),
+            start: Position {
+                line: start_line,
+                character: start_col,
+            },
+            end: Position {
+                line: end_line,
+                character: end_col,
+            },
+            visibility: sym.visibility.clone(),
+            children: Vec::new(),
+            source,
+        };
+
+        nodes.push((sym.container.clone(), node));
+    }
+
+    // Group children by their container name
+    let mut children_by_container: HashMap<String, Vec<SymbolNode>> = HashMap::new();
+    let mut roots: Vec<SymbolNode> = Vec::new();
+
+    for (container, node) in nodes {
+        if let Some(container_name) = container {
+            children_by_container
+                .entry(container_name)
+                .or_default()
+                .push(node);
+        } else {
+            roots.push(node);
+        }
+    }
+
+    // Recursively attach children to their parents
+    fn attach_children(node: &mut SymbolNode, children_map: &mut HashMap<String, Vec<SymbolNode>>) {
+        if let Some(children) = children_map.remove(&node.name) {
+            node.children = children;
+            for child in &mut node.children {
+                attach_children(child, children_map);
+            }
+        }
+    }
+
+    for root in &mut roots {
+        attach_children(root, &mut children_by_container);
+    }
+
+    // Any remaining orphans (container exists but parent wasn't found) become roots
+    for (_, orphans) in children_by_container {
+        roots.extend(orphans);
+    }
+
+    // Sort by start position
+    roots.sort_by(|a, b| {
+        a.start
+            .line
+            .cmp(&b.start.line)
+            .then(a.start.character.cmp(&b.start.character))
+    });
+
+    Ok(roots)
+}
+
+/// Show the structure of a file (symbols with hierarchy and positions)
+fn file_structure(
+    db: &Path,
+    workspace: &Path,
+    file: &Path,
+    format: OutputFormat,
+    source_opts: SourceDisplayOptions,
+) -> Result<()> {
+    let store = open_store_for_query(db)?;
+
+    // Resolve the file path
+    let file_path = if file.is_absolute() {
+        file.to_path_buf()
+    } else {
+        workspace.join(file)
+    };
+    let file_path = file_path
+        .canonicalize()
+        .unwrap_or_else(|_| file_path.clone());
+    let file_str = normalize_path(&file_path);
+
+    // Check if file exists
+    if !file_path.exists() {
+        bail!("File not found: {}", file_path.display());
+    }
+
+    // Query symbols for this file
+    let query = SymbolQuery {
+        file: Some(&file_str),
+        ..Default::default()
+    };
+    let symbols: Vec<SymbolRecord> = store.list_symbols_filtered(&query)?;
+
+    if symbols.is_empty() {
+        bail!(
+            "No symbols found in {}. Is it indexed? Run `gabb daemon start` to index.",
+            file_str
+        );
+    }
+
+    // Build the hierarchical tree
+    let tree = build_symbol_tree(symbols, source_opts)?;
+
+    // Determine if this is a test file
+    let context = if is_test_file(&file_str) {
+        "test"
+    } else {
+        "prod"
+    };
+
+    let structure = FileStructure {
+        file: file_str.clone(),
+        context: context.to_string(),
+        symbols: tree,
+    };
+
+    match format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&structure)?);
+        }
+        OutputFormat::Jsonl => {
+            println!("{}", serde_json::to_string(&structure)?);
+        }
+        OutputFormat::Csv | OutputFormat::Tsv => {
+            // Flatten the tree for CSV/TSV output
+            fn flatten_nodes(nodes: &[SymbolNode], depth: usize, rows: &mut Vec<Vec<String>>) {
+                for node in nodes {
+                    let indent = "  ".repeat(depth);
+                    rows.push(vec![
+                        format!("{}{}", indent, node.name),
+                        node.kind.clone(),
+                        format!("{}:{}", node.start.line, node.start.character),
+                        format!("{}:{}", node.end.line, node.end.character),
+                        node.visibility.clone().unwrap_or_default(),
+                    ]);
+                    flatten_nodes(&node.children, depth + 1, rows);
+                }
+            }
+
+            let mut rows = Vec::new();
+            flatten_nodes(&structure.symbols, 0, &mut rows);
+
+            if matches!(format, OutputFormat::Csv) {
+                let mut wtr = csv::Writer::from_writer(std::io::stdout());
+                wtr.write_record(["name", "kind", "start", "end", "visibility"])?;
+                for row in rows {
+                    wtr.write_record(&row)?;
+                }
+                wtr.flush()?;
+            } else {
+                println!("name\tkind\tstart\tend\tvisibility");
+                for row in rows {
+                    println!("{}", row.join("\t"));
+                }
+            }
+        }
+        OutputFormat::Text => {
+            println!("{} ({})", structure.file, structure.context);
+            print_tree(&structure.symbols, "", true, source_opts.include_source);
+        }
+    }
+
+    Ok(())
+}
+
+/// Print symbol tree with ASCII art indentation
+fn print_tree(nodes: &[SymbolNode], prefix: &str, _is_last_group: bool, show_source: bool) {
+    for (i, node) in nodes.iter().enumerate() {
+        let is_last = i == nodes.len() - 1;
+        let connector = if is_last { "└─" } else { "├─" };
+        let position = format!(
+            "[{}:{} - {}:{}]",
+            node.start.line, node.start.character, node.end.line, node.end.character
+        );
+        let visibility = node
+            .visibility
+            .as_ref()
+            .map(|v| format!(" ({})", v))
+            .unwrap_or_default();
+
+        println!(
+            "{}{} {} {}{}  {}",
+            prefix, connector, node.kind, node.name, visibility, position
+        );
+
+        if show_source {
+            if let Some(src) = &node.source {
+                let child_prefix = if is_last {
+                    format!("{}   ", prefix)
+                } else {
+                    format!("{}│  ", prefix)
+                };
+                for line in src.lines() {
+                    println!("{}    {}", child_prefix, line);
+                }
+                println!("{}    ", child_prefix);
+            }
+        }
+
+        if !node.children.is_empty() {
+            let child_prefix = if is_last {
+                format!("{}   ", prefix)
+            } else {
+                format!("{}│  ", prefix)
+            };
+            print_tree(&node.children, &child_prefix, is_last, show_source);
+        }
+    }
 }
 
 // ==================== MCP Configuration Commands ====================

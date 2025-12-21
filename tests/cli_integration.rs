@@ -800,7 +800,10 @@ fn symbols_command_pagination_works() {
     let funcs_path = root.join("functions.ts");
     let mut content = String::new();
     for i in 0..20 {
-        content.push_str(&format!("export function func{:02}() {{ return {}; }}\n", i, i));
+        content.push_str(&format!(
+            "export function func{:02}() {{ return {}; }}\n",
+            i, i
+        ));
     }
     fs::write(&funcs_path, &content).unwrap();
 
@@ -812,13 +815,7 @@ fn symbols_command_pagination_works() {
 
     // Test --limit only (should return first 5)
     let output1 = Command::new(bin)
-        .args([
-            "symbols",
-            "--limit",
-            "5",
-            "--db",
-            db_path.to_str().unwrap(),
-        ])
+        .args(["symbols", "--limit", "5", "--db", db_path.to_str().unwrap()])
         .current_dir(root)
         .output()
         .unwrap();
@@ -878,9 +875,7 @@ fn symbols_command_pagination_works() {
             .iter()
             .filter_map(|l| {
                 // Lines look like: "function   func03   /path/to/file.ts:4:8"
-                l.split_whitespace()
-                    .nth(1)
-                    .map(|s| s.to_string())
+                l.split_whitespace().nth(1).map(|s| s.to_string())
             })
             .collect()
     };
@@ -905,11 +900,7 @@ fn usages_command_shows_import_chain() {
 
     // Create a file that exports a function
     let utils_path = root.join("utils.ts");
-    fs::write(
-        &utils_path,
-        "export function helper() { return 42; }\n",
-    )
-    .unwrap();
+    fs::write(&utils_path, "export function helper() { return 42; }\n").unwrap();
 
     // Create a file that imports and uses the function
     let main_path = root.join("main.ts");
@@ -961,11 +952,7 @@ fn usages_json_includes_import_via() {
 
     // Create a file that exports a function
     let utils_path = root.join("utils.ts");
-    fs::write(
-        &utils_path,
-        "export function helper() { return 42; }\n",
-    )
-    .unwrap();
+    fs::write(&utils_path, "export function helper() { return 42; }\n").unwrap();
 
     // Create a file that imports and uses the function
     let main_path = root.join("main.ts");

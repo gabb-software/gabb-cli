@@ -1059,11 +1059,7 @@ impl IndexStore {
     }
 
     /// Save import bindings for a file, replacing any existing bindings.
-    pub fn save_import_bindings(
-        &self,
-        file: &str,
-        bindings: &[ImportBindingRecord],
-    ) -> Result<()> {
+    pub fn save_import_bindings(&self, file: &str, bindings: &[ImportBindingRecord]) -> Result<()> {
         let file_norm = normalize_path(Path::new(file));
         let conn = &mut *self.conn.borrow_mut();
         let tx = conn.transaction()?;
@@ -1394,11 +1390,7 @@ impl IndexStore {
 
             if let Some(ns) = query.namespace {
                 if ns.contains('*') {
-                    results.retain(|s| {
-                        s.qualifier
-                            .as_ref()
-                            .is_some_and(|q| glob_match(ns, q))
-                    });
+                    results.retain(|s| s.qualifier.as_ref().is_some_and(|q| glob_match(ns, q)));
                 } else {
                     results.retain(|s| {
                         s.qualifier

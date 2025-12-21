@@ -541,6 +541,33 @@ impl McpServer {
                     "required": ["file"]
                 }),
             },
+            Tool {
+                name: "gabb_structure".to_string(),
+                description: concat!(
+                    "Get the structure of a file showing all symbols with hierarchy and positions. ",
+                    "USE THIS to understand a file's organization before reading it in full. ",
+                    "Returns symbols grouped hierarchically (e.g., methods inside classes) with ",
+                    "start/end positions. Also indicates if file is test or production code."
+                ).to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "file": {
+                            "type": "string",
+                            "description": "Path to the file to analyze"
+                        },
+                        "include_source": {
+                            "type": "boolean",
+                            "description": "Include source code snippets in the output"
+                        },
+                        "context_lines": {
+                            "type": "integer",
+                            "description": "Lines of context around each symbol (requires include_source)"
+                        }
+                    },
+                    "required": ["file"]
+                }),
+            },
         ];
 
         Ok(json!({ "tools": tools }))
@@ -564,6 +591,7 @@ impl McpServer {
             "gabb_duplicates" => self.tool_duplicates(&arguments),
             "gabb_includers" => self.tool_includers(&arguments),
             "gabb_includes" => self.tool_includes(&arguments),
+            "gabb_structure" => self.tool_structure(&arguments),
             _ => Ok(ToolResult::error(format!("Unknown tool: {}", name))),
         }?;
 
@@ -720,7 +748,10 @@ impl McpServer {
         let store = self.get_store_for_workspace(&workspace)?;
 
         // Extract pagination parameters
-        let offset = args.get("offset").and_then(|v| v.as_u64()).map(|v| v as usize);
+        let offset = args
+            .get("offset")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
         let after = args.get("after").and_then(|v| v.as_str());
 
         let query = SymbolQuery {
@@ -1105,6 +1136,73 @@ impl McpServer {
         Ok(ToolResult::text(output))
     }
 
+    fn tool_structure(&mut self, args: &Value) -> Result<ToolResult> {
+        let file = args
+            .get("file")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'file' argument"))?;
+        let include_source = args
+            .get("include_source")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let context_lines = args
+            .get("context_lines")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+
+        // Infer workspace from file path
+        let file_path = PathBuf::from(file);
+        let workspace = self
+            .infer_workspace(&file_path)
+            .unwrap_or_else(|| self.default_workspace.clone());
+        let full_path = self.resolve_path_for_workspace(file, &workspace);
+
+        if !full_path.exists() {
+            return Ok(ToolResult::error(format!(
+                "File not found: {}",
+                full_path.display()
+            )));
+        }
+
+        let store = self.get_store_for_workspace(&workspace)?;
+        let file_str = crate::store::normalize_path(&full_path);
+
+        // Query symbols for this file
+        let query = SymbolQuery {
+            file: Some(&file_str),
+            ..Default::default()
+        };
+        let symbols = store.list_symbols_filtered(&query)?;
+
+        if symbols.is_empty() {
+            return Ok(ToolResult::error(format!(
+                "No symbols found in {}. Is it indexed?",
+                file_str
+            )));
+        }
+
+        // Build hierarchical structure
+        let tree = build_structure_tree(&symbols, include_source, context_lines)?;
+
+        // Determine if this is a test file
+        let context = if is_test_file(&file_str) {
+            "test"
+        } else {
+            "prod"
+        };
+
+        // Build JSON output
+        let output = json!({
+            "file": file_str,
+            "context": context,
+            "symbols": tree
+        });
+
+        Ok(ToolResult::text(
+            serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string()),
+        ))
+    }
+
     // ==================== Helper Methods ====================
 
     fn resolve_path_for_workspace(&self, path: &str, workspace: &Path) -> PathBuf {
@@ -1373,6 +1471,147 @@ fn offset_to_line_col(file_path: &str, offset: usize) -> Result<(usize, usize)> 
     } else {
         anyhow::bail!("offset out of bounds")
     }
+}
+
+/// Check if a file path indicates a test file
+fn is_test_file(path: &str) -> bool {
+    let path_lower = path.to_lowercase();
+
+    // Check directory patterns
+    if path_lower.contains("/tests/")
+        || path_lower.contains("/__tests__/")
+        || path_lower.contains("/test/")
+        || path_lower.contains("/spec/")
+    {
+        return true;
+    }
+
+    // Check file name patterns
+    if let Some(file_name) = path.rsplit('/').next() {
+        let name_lower = file_name.to_lowercase();
+        // Rust patterns
+        if name_lower.ends_with("_test.rs") || name_lower.ends_with("_spec.rs") {
+            return true;
+        }
+        // TypeScript/JavaScript patterns
+        if name_lower.ends_with(".test.ts")
+            || name_lower.ends_with(".spec.ts")
+            || name_lower.ends_with(".test.tsx")
+            || name_lower.ends_with(".spec.tsx")
+            || name_lower.ends_with(".test.js")
+            || name_lower.ends_with(".spec.js")
+            || name_lower.ends_with(".test.jsx")
+            || name_lower.ends_with(".spec.jsx")
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Build a hierarchical tree of symbols for the structure command
+fn build_structure_tree(
+    symbols: &[SymbolRecord],
+    include_source: bool,
+    context_lines: Option<usize>,
+) -> Result<Vec<Value>> {
+    use std::collections::HashMap;
+
+    // Convert each symbol to a JSON node with resolved positions
+    let mut nodes: Vec<(Option<String>, Value)> = Vec::new();
+
+    for sym in symbols {
+        let (start_line, start_col) = offset_to_line_col(&sym.file, sym.start as usize)?;
+        let (end_line, end_col) = offset_to_line_col(&sym.file, sym.end as usize)?;
+
+        let mut node = json!({
+            "name": sym.name,
+            "kind": sym.kind,
+            "start": { "line": start_line, "character": start_col },
+            "end": { "line": end_line, "character": end_col }
+        });
+
+        if let Some(vis) = &sym.visibility {
+            node["visibility"] = json!(vis);
+        }
+
+        if include_source {
+            if let Some(src) = extract_source(&sym.file, sym.start, sym.end, context_lines) {
+                node["source"] = json!(src);
+            }
+        }
+
+        nodes.push((sym.container.clone(), node));
+    }
+
+    // Group children by their container name
+    let mut children_by_container: HashMap<String, Vec<Value>> = HashMap::new();
+    let mut roots: Vec<Value> = Vec::new();
+
+    for (container, node) in nodes {
+        if let Some(container_name) = container {
+            children_by_container
+                .entry(container_name)
+                .or_default()
+                .push(node);
+        } else {
+            roots.push(node);
+        }
+    }
+
+    // Recursively attach children to their parents
+    fn attach_children(node: &mut Value, children_map: &mut HashMap<String, Vec<Value>>) {
+        if let Some(name) = node.get("name").and_then(|n| n.as_str()) {
+            if let Some(children) = children_map.remove(name) {
+                let mut children_array: Vec<Value> = children;
+                for child in &mut children_array {
+                    attach_children(child, children_map);
+                }
+                // Sort children by start position
+                children_array.sort_by(|a, b| {
+                    let a_line = a
+                        .get("start")
+                        .and_then(|s| s.get("line"))
+                        .and_then(|l| l.as_u64())
+                        .unwrap_or(0);
+                    let b_line = b
+                        .get("start")
+                        .and_then(|s| s.get("line"))
+                        .and_then(|l| l.as_u64())
+                        .unwrap_or(0);
+                    a_line.cmp(&b_line)
+                });
+                node["children"] = json!(children_array);
+            }
+        }
+    }
+
+    for root in &mut roots {
+        attach_children(root, &mut children_by_container);
+    }
+
+    // Any remaining orphans become roots
+    for (_, orphans) in children_by_container {
+        roots.extend(orphans);
+    }
+
+    // Sort roots by start position
+    roots.sort_by(|a, b| {
+        let a_line = a
+            .get("start")
+            .and_then(|s| s.get("line"))
+            .and_then(|l| l.as_u64())
+            .unwrap_or(0);
+        let b_line = b
+            .get("start")
+            .and_then(|s| s.get("line"))
+            .and_then(|l| l.as_u64())
+            .unwrap_or(0);
+        a_line.cmp(&b_line)
+    });
+
+    Ok(roots)
 }
 
 /// Run the MCP server with the given workspace and database paths.

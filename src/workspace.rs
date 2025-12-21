@@ -29,15 +29,15 @@ pub const ENV_DB: &str = "GABB_DB";
 /// Workspace markers in priority order.
 /// Files that indicate a project root.
 pub const WORKSPACE_MARKERS: &[&str] = &[
-    ".gabb",           // Highest priority - explicit gabb workspace
-    ".git",            // Git repository root
-    "Cargo.toml",      // Rust
-    "package.json",    // Node.js
-    "pyproject.toml",  // Python
-    "go.mod",          // Go
-    "build.gradle",    // Gradle
+    ".gabb",          // Highest priority - explicit gabb workspace
+    ".git",           // Git repository root
+    "Cargo.toml",     // Rust
+    "package.json",   // Node.js
+    "pyproject.toml", // Python
+    "go.mod",         // Go
+    "build.gradle",   // Gradle
     "build.gradle.kts",
-    "pom.xml",         // Maven
+    "pom.xml", // Maven
     "settings.gradle",
     "settings.gradle.kts",
 ];
@@ -62,9 +62,7 @@ pub fn find_workspace_root_from(start: &Path) -> Option<PathBuf> {
     let start = if start.is_absolute() {
         start.to_path_buf()
     } else {
-        env::current_dir()
-            .ok()?
-            .join(start)
+        env::current_dir().ok()?.join(start)
     };
 
     // Get home directory to stop searching there

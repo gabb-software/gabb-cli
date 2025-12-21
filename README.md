@@ -4,7 +4,7 @@ Gabb is a Rust CLI that builds a local code index so editors and AI coding assis
 
 ## Status
 - Indexes TypeScript/TSX, Rust, Kotlin, and C++, storing results in a local SQLite database
-- Commands: `gabb daemon start/stop/restart/status`, `gabb symbols`, `gabb symbol`, `gabb implementation`, `gabb usages`, `gabb definition`, `gabb duplicates`, `gabb includers`, `gabb includes`, `gabb mcp-server`
+- Commands: `gabb daemon start/stop/restart/status`, `gabb symbols`, `gabb symbol`, `gabb implementation`, `gabb usages`, `gabb definition`, `gabb duplicates`, `gabb structure`, `gabb includers`, `gabb includes`, `gabb mcp-server`
 - Outputs: symbol definitions, relationships (implements/extends), and references
 - MCP server for AI assistant integration (Claude Desktop, Claude Code)
 
@@ -66,6 +66,7 @@ gabb symbols [--file <path>] [--kind <kind>] [--limit <n>]
 gabb symbol --name <name> [--file <path>] [--kind <kind>] [--limit <n>]
 gabb implementation --file <path[:line:char]> [--line <line>] [--character <char>] [--limit <n>] [--kind <kind>]
 gabb usages --file <path[:line:char]> [--line <line>] [--character <char>] [--limit <n>]
+gabb structure <file> [--source] [-C <n>]
 gabb mcp-server
 ```
 
@@ -105,6 +106,14 @@ Symbol command:
 - Look up symbols by exact name (optional file/kind filters)
 - Shows definition location (line/col), qualifier, visibility, container, incoming/outgoing edges, and recorded references for each match
 
+Structure command:
+- Show hierarchical structure of all symbols in a file
+- Displays symbols nested by containment (e.g., methods inside classes)
+- Shows start/end positions for each symbol
+- Indicates whether file is test or production code
+- Use `--source` to include source code snippets
+- Use `-C <n>` for context lines around symbols
+
 What gets indexed:
 - Files: `*.ts`, `*.tsx`, `*.rs`, `*.kt`, `*.kts`
 - Data stored: symbols (functions, classes, interfaces, methods, etc.), relationships (implements/extends), references
@@ -124,6 +133,7 @@ Gabb includes an MCP (Model Context Protocol) server that exposes code indexing 
 | `gabb_usages` | Find all usages/references of a symbol |
 | `gabb_implementations` | Find implementations of an interface, trait, or abstract class |
 | `gabb_duplicates` | Find duplicate symbol definitions |
+| `gabb_structure` | Get hierarchical file structure showing symbols with positions |
 | `gabb_includers` | Find all files that #include a header (reverse dependency lookup) |
 | `gabb_includes` | Find all headers included by a file (forward dependency lookup) |
 | `gabb_daemon_status` | Check the status of the gabb indexing daemon |

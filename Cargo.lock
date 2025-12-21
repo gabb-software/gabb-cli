@@ -390,7 +390,7 @@ dependencies = [
 
 [[package]]
 name = "gabb-cli"
-version = "0.8.13"
+version = "0.8.14"
 dependencies = [
  "anyhow",
  "blake3",

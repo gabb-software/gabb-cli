@@ -854,6 +854,7 @@ fn make_symbol(
         visibility,
         container,
         content_hash,
+        is_test: false, // Kotlin test detection not yet implemented
     }
 }
 
@@ -887,6 +888,7 @@ fn make_symbol_with_qualifier(
         visibility,
         container,
         content_hash,
+        is_test: false, // Kotlin test detection not yet implemented
     }
 }
 

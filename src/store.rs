@@ -135,6 +135,8 @@ pub struct SymbolRecord {
     pub container: Option<String>,
     /// Blake3 hash of normalized symbol body for duplicate detection
     pub content_hash: Option<String>,
+    /// Whether this symbol is inside test code (#[cfg(test)] or has #[test] attribute)
+    pub is_test: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -497,7 +499,8 @@ impl IndexStore {
                 qualifier TEXT,
                 visibility TEXT,
                 container TEXT,
-                content_hash TEXT
+                content_hash TEXT,
+                is_test INTEGER NOT NULL DEFAULT 0
             );
             -- B-tree indices for O(log n) lookups
             CREATE INDEX IF NOT EXISTS symbols_file_idx ON symbols(file);
@@ -595,6 +598,7 @@ impl IndexStore {
         self.ensure_column("symbols", "qualifier", "TEXT")?;
         self.ensure_column("symbols", "visibility", "TEXT")?;
         self.ensure_column("symbols", "content_hash", "TEXT")?;
+        self.ensure_column("symbols", "is_test", "INTEGER NOT NULL DEFAULT 0")?;
         self.ensure_index(
             "idx_symbols_content_hash",
             "CREATE INDEX IF NOT EXISTS idx_symbols_content_hash ON symbols(content_hash)",
@@ -735,7 +739,7 @@ impl IndexStore {
 
         for sym in symbols {
             tx.execute(
-                "INSERT INTO symbols(id, file, kind, name, start, end, qualifier, visibility, container, content_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO symbols(id, file, kind, name, start, end, qualifier, visibility, container, content_hash, is_test) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     sym.id,
                     sym.file,
@@ -746,7 +750,8 @@ impl IndexStore {
                     sym.qualifier,
                     sym.visibility,
                     sym.container,
-                    sym.content_hash
+                    sym.content_hash,
+                    sym.is_test
                 ],
             )?;
         }
@@ -837,7 +842,7 @@ impl IndexStore {
 
         for sym in symbols {
             tx.execute(
-                "INSERT INTO symbols(id, file, kind, name, start, end, qualifier, visibility, container, content_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO symbols(id, file, kind, name, start, end, qualifier, visibility, container, content_hash, is_test) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     sym.id,
                     sym.file,
@@ -848,7 +853,8 @@ impl IndexStore {
                     sym.qualifier,
                     sym.visibility,
                     sym.container,
-                    sym.content_hash
+                    sym.content_hash,
+                    sym.is_test
                 ],
             )?;
         }
@@ -1309,7 +1315,7 @@ impl IndexStore {
     ) -> Result<Vec<SymbolRecord>> {
         let file_norm = file.map(|f| normalize_path(Path::new(f)));
         let mut sql = String::from(
-            "SELECT id, file, kind, name, start, end, qualifier, visibility, container, content_hash FROM symbols",
+            "SELECT id, file, kind, name, start, end, qualifier, visibility, container, content_hash, is_test FROM symbols",
         );
         let mut values: Vec<Value> = Vec::new();
         let mut clauses: Vec<&str> = Vec::new();
@@ -1354,6 +1360,7 @@ impl IndexStore {
                     visibility: row.get(7)?,
                     container: row.get(8)?,
                     content_hash: row.get(9)?,
+                    is_test: row.get::<_, i64>(10)? != 0,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1412,7 +1419,7 @@ impl IndexStore {
         }
 
         let mut sql = String::from(
-            "SELECT id, file, kind, name, start, end, qualifier, visibility, container, content_hash FROM symbols",
+            "SELECT id, file, kind, name, start, end, qualifier, visibility, container, content_hash, is_test FROM symbols",
         );
         let mut values: Vec<Value> = Vec::new();
         let mut clauses: Vec<String> = Vec::new();
@@ -1547,6 +1554,7 @@ impl IndexStore {
                     visibility: row.get(7)?,
                     container: row.get(8)?,
                     content_hash: row.get(9)?,
+                    is_test: row.get::<_, i64>(10)? != 0,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1628,7 +1636,7 @@ impl IndexStore {
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
-            "SELECT id, file, kind, name, start, end, qualifier, visibility, container, content_hash FROM symbols WHERE id IN ({})",
+            "SELECT id, file, kind, name, start, end, qualifier, visibility, container, content_hash, is_test FROM symbols WHERE id IN ({})",
             placeholders
         );
         let conn = self.conn.borrow();
@@ -1646,6 +1654,7 @@ impl IndexStore {
                     visibility: row.get(7)?,
                     container: row.get(8)?,
                     content_hash: row.get(9)?,
+                    is_test: row.get::<_, i64>(10)? != 0,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1761,7 +1770,7 @@ impl IndexStore {
     pub fn symbols_by_content_hash(&self, hash: &str) -> Result<Vec<SymbolRecord>> {
         let conn = self.conn.borrow();
         let mut stmt = conn.prepare_cached(
-            "SELECT id, file, kind, name, start, end, qualifier, visibility, container, content_hash
+            "SELECT id, file, kind, name, start, end, qualifier, visibility, container, content_hash, is_test
              FROM symbols WHERE content_hash = ?1"
         )?;
         let rows = stmt
@@ -1777,6 +1786,7 @@ impl IndexStore {
                     visibility: row.get(7)?,
                     container: row.get(8)?,
                     content_hash: row.get(9)?,
+                    is_test: row.get::<_, i64>(10)? != 0,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1813,7 +1823,7 @@ impl IndexStore {
         let conn = self.conn.borrow();
         let mut stmt = conn.prepare_cached(
             r#"
-            SELECT s.id, s.file, s.kind, s.name, s.start, s.end, s.qualifier, s.visibility, s.container, s.content_hash
+            SELECT s.id, s.file, s.kind, s.name, s.start, s.end, s.qualifier, s.visibility, s.container, s.content_hash, s.is_test
             FROM symbols s
             JOIN symbols_fts fts ON s.rowid = fts.rowid
             WHERE symbols_fts MATCH ?1
@@ -1833,6 +1843,7 @@ impl IndexStore {
                     visibility: row.get(7)?,
                     container: row.get(8)?,
                     content_hash: row.get(9)?,
+                    is_test: row.get::<_, i64>(10)? != 0,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1852,7 +1863,7 @@ impl IndexStore {
     ) -> Result<(Vec<SymbolRecord>, Option<String>)> {
         let file_norm = file.map(|f| normalize_path(Path::new(f)));
         let mut sql = String::from(
-            "SELECT id, file, kind, name, start, end, qualifier, visibility, container, content_hash FROM symbols",
+            "SELECT id, file, kind, name, start, end, qualifier, visibility, container, content_hash, is_test FROM symbols",
         );
         let mut values: Vec<Value> = Vec::new();
         let mut clauses: Vec<&str> = Vec::new();
@@ -1905,6 +1916,7 @@ impl IndexStore {
                     visibility: row.get(7)?,
                     container: row.get(8)?,
                     content_hash: row.get(9)?,
+                    is_test: row.get::<_, i64>(10)? != 0,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2000,6 +2012,7 @@ mod tests {
             visibility: None,
             container: None,
             content_hash: None,
+            is_test: false,
         }
     }
 
@@ -2192,6 +2205,7 @@ mod tests {
                 visibility: None,
                 container: None,
                 content_hash: None,
+                is_test: false,
             })
             .collect();
 
@@ -2452,6 +2466,7 @@ mod tests {
                 visibility: None,
                 container: None,
                 content_hash: None,
+                is_test: false,
             },
             SymbolRecord {
                 id: "sym_2".into(),
@@ -2464,6 +2479,7 @@ mod tests {
                 visibility: None,
                 container: None,
                 content_hash: None,
+                is_test: false,
             },
             SymbolRecord {
                 id: "sym_3".into(),
@@ -2476,6 +2492,7 @@ mod tests {
                 visibility: None,
                 container: None,
                 content_hash: None,
+                is_test: false,
             },
         ];
 
@@ -2574,6 +2591,7 @@ mod tests {
                 visibility: None,
                 container: None,
                 content_hash: None,
+                is_test: false,
             },
             SymbolRecord {
                 id: "sym_2".into(),
@@ -2586,6 +2604,7 @@ mod tests {
                 visibility: None,
                 container: None,
                 content_hash: None,
+                is_test: false,
             },
         ];
 
@@ -2652,6 +2671,7 @@ mod tests {
                 visibility: Some("public".into()),
                 container: None,
                 content_hash: None,
+                is_test: false,
             },
             SymbolRecord {
                 id: "sym_2".into(),
@@ -2664,6 +2684,7 @@ mod tests {
                 visibility: Some("public".into()),
                 container: None,
                 content_hash: None,
+                is_test: false,
             },
             SymbolRecord {
                 id: "sym_3".into(),
@@ -2676,6 +2697,7 @@ mod tests {
                 visibility: Some("private".into()),
                 container: None,
                 content_hash: None,
+                is_test: false,
             },
         ];
 
@@ -2715,6 +2737,7 @@ mod tests {
                 visibility: None,
                 container: None,
                 content_hash: None,
+                is_test: false,
             })
             .collect();
 
@@ -2791,6 +2814,7 @@ mod tests {
                     visibility: Some(if i % 2 == 0 { "public" } else { "private" }.into()),
                     container: None,
                     content_hash: None,
+                    is_test: false,
                 })
                 .collect();
 
@@ -2838,6 +2862,7 @@ mod tests {
                 visibility: None,
                 container: None,
                 content_hash: None,
+                is_test: false,
             },
             SymbolRecord {
                 id: "sym_2".into(),
@@ -2850,6 +2875,7 @@ mod tests {
                 visibility: None,
                 container: None,
                 content_hash: None,
+                is_test: false,
             },
             SymbolRecord {
                 id: "sym_3".into(),
@@ -2862,6 +2888,7 @@ mod tests {
                 visibility: None,
                 container: None,
                 content_hash: None,
+                is_test: false,
             },
             SymbolRecord {
                 id: "sym_4".into(),
@@ -2874,6 +2901,7 @@ mod tests {
                 visibility: None,
                 container: None,
                 content_hash: None,
+                is_test: false,
             },
         ];
 
@@ -2914,6 +2942,7 @@ mod tests {
                 visibility: None,
                 container: None,
                 content_hash: None,
+                is_test: false,
             })
             .collect();
         store.save_file_index(&rec1, &syms1, &[], &[]).unwrap();
@@ -2933,6 +2962,7 @@ mod tests {
                 visibility: None,
                 container: None,
                 content_hash: None,
+                is_test: false,
             })
             .collect();
         store.save_file_index(&rec2, &syms2, &[], &[]).unwrap();
@@ -3466,6 +3496,7 @@ mod tests {
                 visibility: None,
                 container: None,
                 content_hash: None,
+                is_test: false,
             })
             .collect();
 

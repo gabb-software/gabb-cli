@@ -195,6 +195,7 @@ struct SymbolOutput {
     id: String,
     name: String,
     kind: String,
+    context: String, // "test" or "prod"
     file: String,
     start: Position,
     end: Position,
@@ -227,6 +228,7 @@ struct FileStructure {
 struct SymbolNode {
     name: String,
     kind: String,
+    context: String, // "test" or "prod"
     start: Position,
     end: Position,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -252,10 +254,18 @@ impl SymbolOutput {
             None
         };
 
+        // Determine context from file path OR inline test markers (#[cfg(test)], #[test])
+        let context = if sym.is_test || is_test_file(&sym.file) {
+            "test"
+        } else {
+            "prod"
+        };
+
         Some(Self {
             id: sym.id.clone(),
             name: sym.name.clone(),
             kind: sym.kind.clone(),
+            context: context.to_string(),
             file: sym.file.clone(),
             start: Position {
                 line,
@@ -282,6 +292,7 @@ impl SymbolOutput {
         vec![
             self.name.clone(),
             self.kind.clone(),
+            self.context.clone(),
             self.location(),
             self.visibility.clone().unwrap_or_default(),
             self.container.clone().unwrap_or_default(),
@@ -311,14 +322,21 @@ fn output_symbols(
         }
         OutputFormat::Csv => {
             let mut wtr = csv::Writer::from_writer(std::io::stdout());
-            wtr.write_record(["name", "kind", "location", "visibility", "container"])?;
+            wtr.write_record([
+                "name",
+                "kind",
+                "context",
+                "location",
+                "visibility",
+                "container",
+            ])?;
             for sym in &outputs {
                 wtr.write_record(sym.to_row())?;
             }
             wtr.flush()?;
         }
         OutputFormat::Tsv => {
-            println!("name\tkind\tlocation\tvisibility\tcontainer");
+            println!("name\tkind\tcontext\tlocation\tvisibility\tcontainer");
             for sym in &outputs {
                 let row = sym.to_row();
                 println!("{}", row.join("\t"));
@@ -332,9 +350,10 @@ fn output_symbols(
                     .map(|c| format!(" in {c}"))
                     .unwrap_or_default();
                 println!(
-                    "{:<10} {:<30} {}{}",
+                    "{:<10} {:<30} [{}] {}{}",
                     sym.kind,
                     sym.name,
+                    sym.context,
                     sym.location(),
                     container
                 );
@@ -2334,6 +2353,7 @@ fn split_file_and_embedded_position(file: &Path) -> (PathBuf, Option<(usize, usi
 fn build_symbol_tree(
     symbols: Vec<SymbolRecord>,
     source_opts: SourceDisplayOptions,
+    file_path: &str,
 ) -> Result<Vec<SymbolNode>> {
     use std::collections::HashMap;
 
@@ -2350,9 +2370,17 @@ fn build_symbol_tree(
             None
         };
 
+        // Determine context from file path OR inline test markers (#[cfg(test)], #[test])
+        let context = if sym.is_test || is_test_file(file_path) {
+            "test"
+        } else {
+            "prod"
+        };
+
         let node = SymbolNode {
             name: sym.name.clone(),
             kind: sym.kind.clone(),
+            context: context.to_string(),
             start: Position {
                 line: start_line,
                 character: start_col,
@@ -2454,15 +2482,15 @@ fn file_structure(
         );
     }
 
-    // Build the hierarchical tree
-    let tree = build_symbol_tree(symbols, source_opts)?;
-
     // Determine if this is a test file
     let context = if is_test_file(&file_str) {
         "test"
     } else {
         "prod"
     };
+
+    // Build the hierarchical tree
+    let tree = build_symbol_tree(symbols, source_opts, &file_str)?;
 
     let structure = FileStructure {
         file: file_str.clone(),
@@ -2485,6 +2513,7 @@ fn file_structure(
                     rows.push(vec![
                         format!("{}{}", indent, node.name),
                         node.kind.clone(),
+                        node.context.clone(),
                         format!("{}:{}", node.start.line, node.start.character),
                         format!("{}:{}", node.end.line, node.end.character),
                         node.visibility.clone().unwrap_or_default(),
@@ -2498,13 +2527,13 @@ fn file_structure(
 
             if matches!(format, OutputFormat::Csv) {
                 let mut wtr = csv::Writer::from_writer(std::io::stdout());
-                wtr.write_record(["name", "kind", "start", "end", "visibility"])?;
+                wtr.write_record(["name", "kind", "context", "start", "end", "visibility"])?;
                 for row in rows {
                     wtr.write_record(&row)?;
                 }
                 wtr.flush()?;
             } else {
-                println!("name\tkind\tstart\tend\tvisibility");
+                println!("name\tkind\tcontext\tstart\tend\tvisibility");
                 for row in rows {
                     println!("{}", row.join("\t"));
                 }
@@ -2533,10 +2562,11 @@ fn print_tree(nodes: &[SymbolNode], prefix: &str, _is_last_group: bool, show_sou
             .as_ref()
             .map(|v| format!(" ({})", v))
             .unwrap_or_default();
+        let context_indicator = format!(" [{}]", node.context);
 
         println!(
-            "{}{} {} {}{}  {}",
-            prefix, connector, node.kind, node.name, visibility, position
+            "{}{} {} {}{}{}  {}",
+            prefix, connector, node.kind, node.name, visibility, context_indicator, position
         );
 
         if show_source {

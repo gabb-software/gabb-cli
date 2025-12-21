@@ -889,6 +889,7 @@ fn make_symbol(
         visibility: None,
         container,
         content_hash,
+        is_test: false, // TypeScript test detection not yet implemented
     }
 }
 

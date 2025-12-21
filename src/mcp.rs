@@ -1181,15 +1181,15 @@ impl McpServer {
             )));
         }
 
-        // Build hierarchical structure
-        let tree = build_structure_tree(&symbols, include_source, context_lines)?;
-
         // Determine if this is a test file
         let context = if is_test_file(&file_str) {
             "test"
         } else {
             "prod"
         };
+
+        // Build hierarchical structure
+        let tree = build_structure_tree(&symbols, include_source, context_lines, &file_str)?;
 
         // Build JSON output
         let output = json!({
@@ -1282,6 +1282,13 @@ fn format_symbol(sym: &SymbolRecord, workspace_root: &Path, opts: &FormatOptions
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| sym.file.clone());
 
+    // Determine context from file path OR inline test markers (#[cfg(test)], #[test])
+    let context = if sym.is_test || is_test_file(&sym.file) {
+        "test"
+    } else {
+        "prod"
+    };
+
     // Convert byte offset to line:col
     let location = if let Ok((line, col)) = offset_to_line_col(&sym.file, sym.start as usize) {
         format!("{}:{}:{}", rel_path, line, col)
@@ -1289,7 +1296,10 @@ fn format_symbol(sym: &SymbolRecord, workspace_root: &Path, opts: &FormatOptions
         format!("{}:offset:{}", rel_path, sym.start)
     };
 
-    let mut parts = vec![format!("{:<10} {:<30} {}", sym.kind, sym.name, location)];
+    let mut parts = vec![format!(
+        "{:<10} {:<30} [{}] {}",
+        sym.kind, sym.name, context, location
+    )];
 
     if let Some(ref vis) = sym.visibility {
         parts.push(format!("  visibility: {}", vis));
@@ -1515,6 +1525,7 @@ fn build_structure_tree(
     symbols: &[SymbolRecord],
     include_source: bool,
     context_lines: Option<usize>,
+    file_path: &str,
 ) -> Result<Vec<Value>> {
     use std::collections::HashMap;
 
@@ -1525,9 +1536,17 @@ fn build_structure_tree(
         let (start_line, start_col) = offset_to_line_col(&sym.file, sym.start as usize)?;
         let (end_line, end_col) = offset_to_line_col(&sym.file, sym.end as usize)?;
 
+        // Determine context from file path OR inline test markers (#[cfg(test)], #[test])
+        let context = if sym.is_test || is_test_file(file_path) {
+            "test"
+        } else {
+            "prod"
+        };
+
         let mut node = json!({
             "name": sym.name,
             "kind": sym.kind,
+            "context": context,
             "start": { "line": start_line, "character": start_col },
             "end": { "line": end_line, "character": end_col }
         });

@@ -607,6 +607,7 @@ fn make_symbol(
         visibility,
         container,
         content_hash,
+        is_test: false, // C++ test detection not yet implemented
     }
 }
 

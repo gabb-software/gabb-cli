@@ -74,6 +74,7 @@ pub fn index_file(
             None,
             &[],
             None,
+            false, // is_test_context starts as false
             &mut symbols,
             &mut edges,
             &mut declared_spans,
@@ -347,6 +348,7 @@ fn walk_symbols(
     container: Option<String>,
     module_path: &[String],
     impl_trait: Option<ResolvedTarget>,
+    is_test_context: bool,
     symbols: &mut Vec<SymbolRecord>,
     edges: &mut Vec<EdgeRecord>,
     declared_spans: &mut HashSet<(usize, usize)>,
@@ -358,6 +360,8 @@ fn walk_symbols(
             "function_item" => {
                 if let Some(name_node) = node.child_by_field_name("name") {
                     let name = slice(source, &name_node);
+                    // Function is test if in test context or has #[test] attribute
+                    let is_test = is_test_context || has_test_attr(source, &node);
                     let sym = make_symbol(
                         path,
                         module_path,
@@ -366,6 +370,7 @@ fn walk_symbols(
                         "function",
                         container.clone(),
                         source.as_bytes(),
+                        is_test,
                     );
                     declared_spans.insert((sym.start as usize, sym.end as usize));
                     symbol_by_name
@@ -401,6 +406,7 @@ fn walk_symbols(
                         "struct",
                         container.clone(),
                         source.as_bytes(),
+                        is_test_context,
                     );
                     declared_spans.insert((sym.start as usize, sym.end as usize));
                     symbol_by_name
@@ -420,6 +426,7 @@ fn walk_symbols(
                         "enum",
                         container.clone(),
                         source.as_bytes(),
+                        is_test_context,
                     );
                     declared_spans.insert((sym.start as usize, sym.end as usize));
                     symbol_by_name
@@ -439,6 +446,7 @@ fn walk_symbols(
                         "trait",
                         container.clone(),
                         source.as_bytes(),
+                        is_test_context,
                     );
                     declared_spans.insert((sym.start as usize, sym.end as usize));
                     symbol_by_name
@@ -452,6 +460,8 @@ fn walk_symbols(
                     let name = slice(source, &name_node);
                     let mut mod_path = module_path.to_vec();
                     mod_path.push(name);
+                    // Check if this module has #[cfg(test)] attribute
+                    let mod_is_test = is_test_context || has_cfg_test_attr(source, &node);
                     if cursor.goto_first_child() {
                         walk_symbols(
                             path,
@@ -460,6 +470,7 @@ fn walk_symbols(
                             container.clone(),
                             &mod_path,
                             None,
+                            mod_is_test,
                             symbols,
                             edges,
                             declared_spans,
@@ -494,6 +505,7 @@ fn walk_symbols(
                 child_container,
                 &child_modules,
                 child_trait,
+                is_test_context,
                 symbols,
                 edges,
                 declared_spans,
@@ -625,6 +637,7 @@ fn module_prefix(path: &Path, module_path: &[String]) -> String {
     base
 }
 
+#[allow(clippy::too_many_arguments)]
 fn make_symbol(
     path: &Path,
     module_path: &[String],
@@ -633,6 +646,7 @@ fn make_symbol(
     kind: &str,
     container: Option<String>,
     source: &[u8],
+    is_test: bool,
 ) -> SymbolRecord {
     let qualifier = Some(module_qualifier(path, module_path, &container));
     let visibility = visibility(node, path);
@@ -653,7 +667,73 @@ fn make_symbol(
         visibility,
         container,
         content_hash,
+        is_test,
     }
+}
+
+/// Check if a node has `#[cfg(test)]` attribute.
+/// Looks at both children (for inner attributes) and previous siblings (for outer attributes).
+fn has_cfg_test_attr(source: &str, node: &Node) -> bool {
+    // Check children (inner attributes)
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "attribute_item" {
+            let attr_text = slice(source, &child);
+            // Match #[cfg(test)] and variations like #[cfg(all(test, ...))]
+            if attr_text.contains("cfg") && attr_text.contains("test") {
+                return true;
+            }
+        }
+    }
+
+    // Check previous siblings (outer attributes)
+    let mut prev = node.prev_sibling();
+    while let Some(sibling) = prev {
+        if sibling.kind() == "attribute_item" {
+            let attr_text = slice(source, &sibling);
+            if attr_text.contains("cfg") && attr_text.contains("test") {
+                return true;
+            }
+            prev = sibling.prev_sibling();
+        } else {
+            // Stop when we hit a non-attribute sibling
+            break;
+        }
+    }
+
+    false
+}
+
+/// Check if a node has `#[test]` attribute (including `#[tokio::test]`, `#[rstest]`, etc.).
+/// Looks at both children (for inner attributes) and previous siblings (for outer attributes).
+fn has_test_attr(source: &str, node: &Node) -> bool {
+    // Check children (inner attributes)
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "attribute_item" {
+            let attr_text = slice(source, &child);
+            // Match #[test], #[tokio::test], #[rstest], #[async_std::test], etc.
+            if attr_text.contains("test") {
+                return true;
+            }
+        }
+    }
+
+    // Check previous siblings (outer attributes)
+    let mut prev = node.prev_sibling();
+    while let Some(sibling) = prev {
+        if sibling.kind() == "attribute_item" {
+            let attr_text = slice(source, &sibling);
+            if attr_text.contains("test") {
+                return true;
+            }
+            prev = sibling.prev_sibling();
+        } else {
+            // Stop when we hit a non-attribute sibling
+            break;
+        }
+    }
+    false
 }
 
 fn module_qualifier(path: &Path, module_path: &[String], container: &Option<String>) -> String {
@@ -767,5 +847,112 @@ mod tests {
             edges.iter().any(|e| e.kind == "overrides"),
             "expected method overrides edges for trait methods"
         );
+    }
+
+    #[test]
+    fn detects_cfg_test_module() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("lib.rs");
+        let source = r#"
+            fn production_code() {}
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+
+                fn test_helper() {}
+
+                #[test]
+                fn test_something() {}
+            }
+        "#;
+        fs::write(&path, source).unwrap();
+
+        let (symbols, _edges, _refs, _deps, _imports) = index_file(&path, source).unwrap();
+
+        // Production function should not be marked as test
+        let prod = symbols.iter().find(|s| s.name == "production_code").unwrap();
+        assert!(!prod.is_test, "production_code should not be marked as test");
+
+        // Helper function inside #[cfg(test)] module should be marked as test
+        let helper = symbols.iter().find(|s| s.name == "test_helper").unwrap();
+        assert!(helper.is_test, "test_helper should be marked as test (inside #[cfg(test)] module)");
+
+        // Test function should be marked as test
+        let test_fn = symbols.iter().find(|s| s.name == "test_something").unwrap();
+        assert!(test_fn.is_test, "test_something should be marked as test");
+    }
+
+    #[test]
+    fn detects_test_attribute_on_function() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("lib.rs");
+        let source = r#"
+            fn production_code() {}
+
+            #[test]
+            fn test_standalone() {}
+
+            #[tokio::test]
+            async fn test_async() {}
+
+            #[rstest]
+            fn test_rstest() {}
+        "#;
+        fs::write(&path, source).unwrap();
+
+        let (symbols, _edges, _refs, _deps, _imports) = index_file(&path, source).unwrap();
+
+        // Production function should not be marked as test
+        let prod = symbols.iter().find(|s| s.name == "production_code").unwrap();
+        assert!(!prod.is_test, "production_code should not be marked as test");
+
+        // #[test] function should be marked as test
+        let test_fn = symbols.iter().find(|s| s.name == "test_standalone").unwrap();
+        assert!(test_fn.is_test, "test_standalone should be marked as test");
+
+        // #[tokio::test] function should be marked as test
+        let async_test = symbols.iter().find(|s| s.name == "test_async").unwrap();
+        assert!(async_test.is_test, "test_async should be marked as test");
+
+        // #[rstest] function should be marked as test
+        let rstest_fn = symbols.iter().find(|s| s.name == "test_rstest").unwrap();
+        assert!(rstest_fn.is_test, "test_rstest should be marked as test");
+    }
+
+    #[test]
+    fn structs_in_test_module_marked_as_test() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("lib.rs");
+        let source = r#"
+            struct ProdStruct;
+
+            #[cfg(test)]
+            mod tests {
+                struct TestFixture {
+                    value: i32,
+                }
+
+                enum TestEnum {
+                    A,
+                    B,
+                }
+            }
+        "#;
+        fs::write(&path, source).unwrap();
+
+        let (symbols, _edges, _refs, _deps, _imports) = index_file(&path, source).unwrap();
+
+        // Production struct should not be marked as test
+        let prod = symbols.iter().find(|s| s.name == "ProdStruct").unwrap();
+        assert!(!prod.is_test, "ProdStruct should not be marked as test");
+
+        // Struct inside #[cfg(test)] module should be marked as test
+        let fixture = symbols.iter().find(|s| s.name == "TestFixture").unwrap();
+        assert!(fixture.is_test, "TestFixture should be marked as test");
+
+        // Enum inside #[cfg(test)] module should be marked as test
+        let test_enum = symbols.iter().find(|s| s.name == "TestEnum").unwrap();
+        assert!(test_enum.is_test, "TestEnum should be marked as test");
     }
 }

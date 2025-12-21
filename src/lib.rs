@@ -3,6 +3,7 @@ pub mod indexer;
 pub mod languages;
 pub mod mcp;
 pub mod store;
+pub mod workspace;
 
 use clap::ValueEnum;
 

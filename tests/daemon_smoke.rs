@@ -21,14 +21,15 @@ fn daemon_creates_db_and_handles_updates() {
     fs::write(&file_path, "function foo() {}\n").unwrap();
 
     // Start the daemon.
+    // Use global --workspace and --db flags (before the subcommand)
     let mut child = Command::new(bin)
         .args([
-            "daemon",
-            "start",
-            "--root",
+            "--workspace",
             root.to_str().unwrap(),
             "--db",
             db_path.to_str().unwrap(),
+            "daemon",
+            "start",
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())

@@ -58,21 +58,36 @@ Requires Rust 1.70+. The `cargo binstall` option downloads pre-built binaries in
 
 ## Usage
 ```bash
-gabb daemon start --root <workspace> --db <path/to/index.db> [--rebuild] [--background] [-v|-vv]
-gabb daemon stop [--root <workspace>] [--force]
-gabb daemon status [--root <workspace>]
-gabb symbols --db <path/to/index.db> [--file <path>] [--kind <kind>] [--limit <n>]
-gabb symbol --db <path/to/index.db> --name <name> [--file <path>] [--kind <kind>] [--limit <n>]
-gabb implementation --db <path/to/index.db> --file <path[:line:char]> [--line <line>] [--character <char>] [--limit <n>] [--kind <kind>]
-gabb usages --db <path/to/index.db> --file <path[:line:char]> [--line <line>] [--character <char>] [--limit <n>]
-gabb mcp-server --root <workspace> --db <path/to/index.db>
+# Workspace is auto-detected from .gabb/, .git/, Cargo.toml, package.json, etc.
+gabb daemon start [--rebuild] [--background] [-v|-vv]
+gabb daemon stop [--force]
+gabb daemon status
+gabb symbols [--file <path>] [--kind <kind>] [--limit <n>]
+gabb symbol --name <name> [--file <path>] [--kind <kind>] [--limit <n>]
+gabb implementation --file <path[:line:char]> [--line <line>] [--character <char>] [--limit <n>] [--kind <kind>]
+gabb usages --file <path[:line:char]> [--line <line>] [--character <char>] [--limit <n>]
+gabb mcp-server
 ```
 
-Flags:
-- `--root`: workspace to index (defaults to current directory)
-- `--db`: SQLite database path (defaults to `.gabb/index.db`)
-- `--rebuild`: delete any existing DB at `--db` and perform a full reindex before watching
-- `-v`, `-vv`: increase log verbosity
+### Workspace Auto-Discovery
+
+Gabb automatically detects your workspace root by walking up from the current directory and looking for these markers (in priority order):
+1. `.gabb/` - Explicit gabb workspace
+2. `.git/` - Git repository root
+3. Build files: `Cargo.toml`, `package.json`, `pyproject.toml`, `go.mod`, `build.gradle`, `pom.xml`, etc.
+
+### Global Flags
+- `--workspace`, `-w`: Explicit workspace root (overrides auto-detection)
+- `--db`: SQLite database path (default: `<workspace>/.gabb/index.db`)
+- `-v`, `-vv`: Increase log verbosity
+
+### Environment Variables
+- `GABB_WORKSPACE`: Set workspace root (lower priority than `--workspace` flag)
+- `GABB_DB`: Set database path (lower priority than `--db` flag)
+
+### Daemon Flags
+- `--rebuild`: Delete existing DB and perform a full reindex
+- `--background`, `-b`: Run daemon in background
 Symbols command filters:
 - `--file`: only show symbols from a given file path
 - `--kind`: filter by kind (`function`, `class`, `interface`, `method`, `struct`, `enum`, `trait`)
@@ -142,13 +157,13 @@ Claude Code supports three configuration scopes:
 
 ```bash
 # Add for current project only (local scope)
-claude mcp add gabb -- gabb mcp-server --root .
+claude mcp add gabb -- gabb mcp-server
 
 # Add globally for all projects (user scope)
-claude mcp add gabb --scope user -- gabb mcp-server --root .
+claude mcp add gabb --scope user -- gabb mcp-server
 
 # Add as shared team config (project scope)
-claude mcp add gabb --scope project -- gabb mcp-server --root .
+claude mcp add gabb --scope project -- gabb mcp-server
 ```
 
 #### Option 2: Edit Configuration File
@@ -161,13 +176,13 @@ claude mcp add gabb --scope project -- gabb mcp-server --root .
   "mcpServers": {
     "gabb": {
       "command": "gabb",
-      "args": ["mcp-server", "--root", "."]
+      "args": ["mcp-server"]
     }
   }
 }
 ```
 
-Using `--root .` means gabb will use the current working directory as the workspace root.
+The MCP server auto-detects the workspace root from the current directory.
 
 #### Verify Installation
 
@@ -191,13 +206,13 @@ Add the following to your Claude Desktop configuration file:
   "mcpServers": {
     "gabb": {
       "command": "gabb",
-      "args": ["mcp-server", "--root", "/path/to/your/project"]
+      "args": ["mcp-server", "--workspace", "/path/to/your/project"]
     }
   }
 }
 ```
 
-Replace `/path/to/your/project` with the absolute path to your workspace. The MCP server will auto-start the daemon if needed.
+Replace `/path/to/your/project` with the absolute path to your workspace. You can also use the `GABB_WORKSPACE` environment variable. The MCP server will auto-start the daemon if needed.
 
 ---
 
@@ -208,7 +223,7 @@ Codex stores MCP configuration in `~/.codex/config.toml`.
 #### Option 1: CLI Command (Recommended)
 
 ```bash
-codex mcp add gabb -- gabb mcp-server --root /path/to/your/project
+codex mcp add gabb -- gabb mcp-server --workspace /path/to/your/project
 ```
 
 #### Option 2: Edit config.toml
@@ -218,10 +233,10 @@ Add to `~/.codex/config.toml`:
 ```toml
 [mcp_servers.gabb]
 command = "gabb"
-args = ["mcp-server", "--root", "/path/to/your/project"]
+args = ["mcp-server", "--workspace", "/path/to/your/project"]
 ```
 
-Replace `/path/to/your/project` with your workspace path.
+Replace `/path/to/your/project` with your workspace path. You can also use the `GABB_WORKSPACE` environment variable.
 
 #### Verify Installation
 

@@ -9,6 +9,7 @@ use gabb_cli::daemon;
 use gabb_cli::mcp;
 use gabb_cli::store;
 use gabb_cli::store::{normalize_path, DbOpenResult, IndexStore, SymbolQuery, SymbolRecord};
+use gabb_cli::workspace;
 use gabb_cli::OutputFormat;
 
 /// Open index store for query commands with version checking.
@@ -413,6 +414,14 @@ struct Cli {
     #[arg(long, short = 'f', global = true, value_enum, default_value = "text")]
     format: OutputFormat,
 
+    /// Workspace root (auto-detected from .gabb/, .git/, Cargo.toml, etc. if not specified)
+    #[arg(long, short = 'w', global = true, env = "GABB_WORKSPACE")]
+    workspace: Option<PathBuf>,
+
+    /// Path to the SQLite index database (default: <workspace>/.gabb/index.db)
+    #[arg(long, global = true, env = "GABB_DB")]
+    db: Option<PathBuf>,
+
     /// Don't auto-start daemon if index doesn't exist
     #[arg(long, global = true)]
     no_start_daemon: bool,
@@ -442,9 +451,6 @@ enum Commands {
     },
     /// List symbols from an existing index
     Symbols {
-        /// Path to the SQLite index database
-        #[arg(long, default_value = ".gabb/index.db")]
-        db: PathBuf,
         /// Only show symbols from this file
         #[arg(long)]
         file: Option<PathBuf>,
@@ -472,9 +478,6 @@ enum Commands {
     },
     /// Find implementations for symbol at a source position
     Implementation {
-        /// Path to the SQLite index database
-        #[arg(long, default_value = ".gabb/index.db")]
-        db: PathBuf,
         /// Source file containing the reference. You can optionally append :line:character (1-based), e.g. ./src/daemon.rs:18:5
         #[arg(long)]
         file: PathBuf,
@@ -499,9 +502,6 @@ enum Commands {
     },
     /// Find usages of the symbol at a source position
     Usages {
-        /// Path to the SQLite index database
-        #[arg(long, default_value = ".gabb/index.db")]
-        db: PathBuf,
         /// Source file containing the reference. You can optionally append :line:character (1-based), e.g. ./src/daemon.rs:18:5
         #[arg(long)]
         file: PathBuf,
@@ -523,9 +523,6 @@ enum Commands {
     },
     /// Show details for symbols with a given name
     Symbol {
-        /// Path to the SQLite index database
-        #[arg(long, default_value = ".gabb/index.db")]
-        db: PathBuf,
         /// Symbol name to look up (or fuzzy pattern if --fuzzy is used)
         #[arg(long)]
         name: String,
@@ -550,9 +547,6 @@ enum Commands {
     },
     /// Go to definition: find where a symbol is declared
     Definition {
-        /// Path to the SQLite index database
-        #[arg(long, default_value = ".gabb/index.db")]
-        db: PathBuf,
         /// Source file containing the reference. You can optionally append :line:character (1-based), e.g. ./src/daemon.rs:18:5
         #[arg(long)]
         file: PathBuf,
@@ -571,9 +565,6 @@ enum Commands {
     },
     /// Find duplicate code in the codebase
     Duplicates {
-        /// Path to the SQLite index database
-        #[arg(long, default_value = ".gabb/index.db")]
-        db: PathBuf,
         /// Only analyze files with uncommitted changes (git working tree)
         #[arg(long)]
         uncommitted: bool,
@@ -588,14 +579,7 @@ enum Commands {
         min_count: usize,
     },
     /// Start MCP (Model Context Protocol) server for AI assistant integration
-    McpServer {
-        /// Workspace root to index (auto-detected if not specified)
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-        /// Path to the SQLite index database
-        #[arg(long, default_value = ".gabb/index.db")]
-        db: PathBuf,
-    },
+    McpServer,
     /// Manage MCP (Model Context Protocol) configuration for AI assistants
     Mcp {
         #[command(subcommand)]
@@ -603,9 +587,6 @@ enum Commands {
     },
     /// Initialize gabb in a project
     Init {
-        /// Workspace root to initialize
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
         /// Create .claude/mcp.json for Claude Code integration
         #[arg(long)]
         mcp: bool,
@@ -618,9 +599,6 @@ enum Commands {
     },
     /// Find all files that #include this header (reverse dependency lookup)
     Includers {
-        /// Path to the SQLite index database
-        #[arg(long, default_value = ".gabb/index.db")]
-        db: PathBuf,
         /// Header file to find includers for
         file: PathBuf,
         /// Follow transitive includers (files that include files that include this)
@@ -632,9 +610,6 @@ enum Commands {
     },
     /// Find all headers included by this file (forward dependency lookup)
     Includes {
-        /// Path to the SQLite index database
-        #[arg(long, default_value = ".gabb/index.db")]
-        db: PathBuf,
         /// Source file to find includes for
         file: PathBuf,
         /// Follow transitive includes
@@ -649,16 +624,9 @@ enum Commands {
 #[derive(Subcommand, Debug)]
 enum McpCommands {
     /// Print MCP configuration JSON for manual setup
-    Config {
-        /// Workspace root (used in config output)
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
+    Config,
     /// Install gabb MCP server into Claude Desktop/Code configuration
     Install {
-        /// Workspace root to configure
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
         /// Only install for Claude Desktop
         #[arg(long)]
         claude_desktop: bool,
@@ -678,23 +646,13 @@ enum McpCommands {
         claude_code: bool,
     },
     /// Generate a slash command for Claude Code
-    Command {
-        /// Workspace root where .claude/commands will be created
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
+    Command,
 }
 
 #[derive(Subcommand, Debug)]
 enum DaemonCommands {
     /// Start the indexing daemon
     Start {
-        /// Workspace root to index (auto-detected if not specified)
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-        /// Path to the SQLite index database
-        #[arg(long, default_value = ".gabb/index.db")]
-        db: PathBuf,
         /// Delete and recreate index on start
         #[arg(long)]
         rebuild: bool,
@@ -710,31 +668,18 @@ enum DaemonCommands {
     },
     /// Stop a running daemon
     Stop {
-        /// Workspace root (to locate PID file)
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
         /// Force immediate shutdown (SIGKILL)
         #[arg(long)]
         force: bool,
     },
     /// Restart the daemon
     Restart {
-        /// Workspace root
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-        /// Path to the SQLite index database
-        #[arg(long, default_value = ".gabb/index.db")]
-        db: PathBuf,
         /// Force full reindex on restart
         #[arg(long)]
         rebuild: bool,
     },
     /// Show daemon status
-    Status {
-        /// Workspace root (to locate PID file)
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-    },
+    Status,
 }
 
 fn main() -> Result<()> {
@@ -746,22 +691,26 @@ fn main() -> Result<()> {
         no_daemon: cli.no_daemon,
     };
 
+    // Resolve workspace and database paths
+    let workspace = workspace::resolve_workspace(cli.workspace.as_deref())?;
+    let db = workspace::resolve_db_path(cli.db.as_deref(), &workspace);
+
+    // Set environment variables for child processes
+    workspace::set_env_for_children(&workspace, &db);
+
     match cli.command {
         Commands::Daemon { command } => match command {
             DaemonCommands::Start {
-                root,
-                db,
                 rebuild,
                 background,
                 log_file,
                 quiet,
-            } => daemon::start(&root, &db, rebuild, background, log_file.as_deref(), quiet),
-            DaemonCommands::Stop { root, force } => daemon::stop(&root, force),
-            DaemonCommands::Restart { root, db, rebuild } => daemon::restart(&root, &db, rebuild),
-            DaemonCommands::Status { root } => daemon::status(&root, format),
+            } => daemon::start(&workspace, &db, rebuild, background, log_file.as_deref(), quiet),
+            DaemonCommands::Stop { force } => daemon::stop(&workspace, force),
+            DaemonCommands::Restart { rebuild } => daemon::restart(&workspace, &db, rebuild),
+            DaemonCommands::Status => daemon::status(&workspace, format),
         },
         Commands::Symbols {
-            db,
             file,
             kind,
             name,
@@ -789,7 +738,6 @@ fn main() -> Result<()> {
             )
         }
         Commands::Implementation {
-            db,
             file,
             line,
             character,
@@ -815,7 +763,6 @@ fn main() -> Result<()> {
             )
         }
         Commands::Usages {
-            db,
             file,
             line,
             character,
@@ -831,7 +778,6 @@ fn main() -> Result<()> {
             find_usages(&db, &file, line, character, limit, format, source_opts)
         }
         Commands::Symbol {
-            db,
             name,
             file,
             kind,
@@ -857,7 +803,6 @@ fn main() -> Result<()> {
             )
         }
         Commands::Definition {
-            db,
             file,
             line,
             character,
@@ -872,7 +817,6 @@ fn main() -> Result<()> {
             find_definition(&db, &file, line, character, format, source_opts)
         }
         Commands::Duplicates {
-            db,
             uncommitted,
             staged,
             kind,
@@ -881,33 +825,28 @@ fn main() -> Result<()> {
             ensure_index_available(&db, &daemon_opts)?;
             find_duplicates(&db, uncommitted, staged, kind.as_deref(), min_count, format)
         }
-        Commands::McpServer { root, db } => {
-            let root = root.canonicalize().unwrap_or(root);
-            let db = if db.is_absolute() { db } else { root.join(&db) };
-            mcp::run_server(&root, &db)
+        Commands::McpServer => {
+            mcp::run_server(&workspace, &db)
         }
         Commands::Mcp { command } => match command {
-            McpCommands::Config { root } => mcp_config(&root),
+            McpCommands::Config => mcp_config(&workspace),
             McpCommands::Install {
-                root,
                 claude_desktop,
                 claude_code,
-            } => mcp_install(&root, claude_desktop, claude_code),
+            } => mcp_install(&workspace, claude_desktop, claude_code),
             McpCommands::Status => mcp_status(),
             McpCommands::Uninstall {
                 claude_desktop,
                 claude_code,
             } => mcp_uninstall(claude_desktop, claude_code),
-            McpCommands::Command { root } => mcp_command(&root),
+            McpCommands::Command => mcp_command(&workspace),
         },
         Commands::Init {
-            root,
             mcp,
             gitignore,
             skill,
-        } => init_project(&root, mcp, gitignore, skill),
+        } => init_project(&workspace, mcp, gitignore, skill),
         Commands::Includers {
-            db,
             file,
             transitive,
             limit,
@@ -916,7 +855,6 @@ fn main() -> Result<()> {
             find_includers(&db, &file, transitive, limit, format)
         }
         Commands::Includes {
-            db,
             file,
             transitive,
             limit,

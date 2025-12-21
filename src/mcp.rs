@@ -8,6 +8,7 @@
 //! projects.
 
 use crate::store::{DuplicateGroup, IndexStore, SymbolQuery, SymbolRecord};
+use crate::workspace;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -24,24 +25,6 @@ pub struct FormatOptions {
     /// Number of context lines before/after the symbol (like grep -C)
     pub context_lines: Option<usize>,
 }
-
-/// Workspace markers - files/directories that indicate a project root
-const WORKSPACE_MARKERS: &[&str] = &[
-    ".git",
-    ".gabb",
-    "Cargo.toml",
-    "package.json",
-    "go.mod",
-    "settings.gradle",
-    "settings.gradle.kts",
-    "pyproject.toml",
-    "pom.xml",
-    "build.gradle",
-    "build.gradle.kts",
-];
-
-/// Directory markers - directories that indicate a project root
-const WORKSPACE_DIR_MARKERS: &[&str] = &["gradle", ".git"];
 
 /// Maximum number of workspaces to cache (LRU eviction)
 const MAX_CACHED_WORKSPACES: usize = 5;
@@ -597,27 +580,8 @@ impl McpServer {
             self.default_workspace.join(file_path)
         };
 
-        let mut current = file_path.parent()?;
-
-        loop {
-            // Check file markers
-            for marker in WORKSPACE_MARKERS {
-                if current.join(marker).exists() {
-                    return Some(current.to_path_buf());
-                }
-            }
-
-            // Check directory markers
-            for marker in WORKSPACE_DIR_MARKERS {
-                let marker_path = current.join(marker);
-                if marker_path.is_dir() {
-                    return Some(current.to_path_buf());
-                }
-            }
-
-            // Move up to parent directory
-            current = current.parent()?;
-        }
+        // Use the shared workspace discovery logic
+        workspace::find_workspace_root_from(&file_path)
     }
 
     /// Get or create workspace info for a given workspace root

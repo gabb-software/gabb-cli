@@ -871,12 +871,21 @@ mod tests {
         let (symbols, _edges, _refs, _deps, _imports) = index_file(&path, source).unwrap();
 
         // Production function should not be marked as test
-        let prod = symbols.iter().find(|s| s.name == "production_code").unwrap();
-        assert!(!prod.is_test, "production_code should not be marked as test");
+        let prod = symbols
+            .iter()
+            .find(|s| s.name == "production_code")
+            .unwrap();
+        assert!(
+            !prod.is_test,
+            "production_code should not be marked as test"
+        );
 
         // Helper function inside #[cfg(test)] module should be marked as test
         let helper = symbols.iter().find(|s| s.name == "test_helper").unwrap();
-        assert!(helper.is_test, "test_helper should be marked as test (inside #[cfg(test)] module)");
+        assert!(
+            helper.is_test,
+            "test_helper should be marked as test (inside #[cfg(test)] module)"
+        );
 
         // Test function should be marked as test
         let test_fn = symbols.iter().find(|s| s.name == "test_something").unwrap();
@@ -904,11 +913,20 @@ mod tests {
         let (symbols, _edges, _refs, _deps, _imports) = index_file(&path, source).unwrap();
 
         // Production function should not be marked as test
-        let prod = symbols.iter().find(|s| s.name == "production_code").unwrap();
-        assert!(!prod.is_test, "production_code should not be marked as test");
+        let prod = symbols
+            .iter()
+            .find(|s| s.name == "production_code")
+            .unwrap();
+        assert!(
+            !prod.is_test,
+            "production_code should not be marked as test"
+        );
 
         // #[test] function should be marked as test
-        let test_fn = symbols.iter().find(|s| s.name == "test_standalone").unwrap();
+        let test_fn = symbols
+            .iter()
+            .find(|s| s.name == "test_standalone")
+            .unwrap();
         assert!(test_fn.is_test, "test_standalone should be marked as test");
 
         // #[tokio::test] function should be marked as test
@@ -954,5 +972,34 @@ mod tests {
         // Enum inside #[cfg(test)] module should be marked as test
         let test_enum = symbols.iter().find(|s| s.name == "TestEnum").unwrap();
         assert!(test_enum.is_test, "TestEnum should be marked as test");
+    }
+}
+
+#[cfg(test)]
+mod inline_test {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn verify_main_rs_test_detection() {
+        let path = std::path::Path::new("src/main.rs");
+        let source = fs::read_to_string(path).unwrap();
+        let (symbols, _edges, _refs, _deps, _imports) = index_file(path, &source).unwrap();
+
+        // Find the detects_test_files_correctly function
+        let test_fn = symbols
+            .iter()
+            .find(|s| s.name == "detects_test_files_correctly");
+        assert!(
+            test_fn.is_some(),
+            "Should find detects_test_files_correctly function"
+        );
+        let test_fn = test_fn.unwrap();
+        assert!(
+            test_fn.is_test,
+            "detects_test_files_correctly should be marked as test, but is_test={}",
+            test_fn.is_test
+        );
     }
 }

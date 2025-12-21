@@ -382,6 +382,14 @@ impl McpServer {
                         "character": {
                             "type": "integer",
                             "description": "1-based column number (position within the line)"
+                        },
+                        "include_source": {
+                            "type": "boolean",
+                            "description": "Include the definition's source code in the output (default: true)"
+                        },
+                        "context_lines": {
+                            "type": "integer",
+                            "description": "Number of lines to show before and after the symbol (like grep -C). Only applies when include_source is true."
                         }
                     },
                     "required": ["file", "line", "character"]
@@ -824,15 +832,58 @@ impl McpServer {
             .ok_or_else(|| anyhow::anyhow!("Missing 'character' argument"))?
             as usize;
 
+        // Format options - default to including source for definitions
+        let include_source = args
+            .get("include_source")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let context_lines = args
+            .get("context_lines")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+
+        let format_opts = FormatOptions {
+            include_source,
+            context_lines,
+        };
+
         // Infer workspace from file path
         let workspace = self.workspace_for_file(Some(file));
         let file_path = self.resolve_path_for_workspace(file, &workspace);
 
-        // Find symbol at position
-        if let Some(symbol) =
+        if !file_path.exists() {
+            return Ok(ToolResult::error(format!(
+                "File not found: {}",
+                file_path.display()
+            )));
+        }
+
+        // Convert line:col to byte offset
+        let contents = std::fs::read(&file_path)?;
+        let offset = line_col_to_offset(&contents, line, character)
+            .ok_or_else(|| anyhow::anyhow!("Could not map line/character to byte offset"))?
+            as i64;
+
+        let file_str = crate::store::normalize_path(&file_path);
+        let store = self.get_store_for_workspace(&workspace)?;
+
+        // First, check if cursor is on a recorded reference - if so, look up its target symbol
+        let definition = if let Some(ref_record) = store.reference_at_position(&file_str, offset)? {
+            // Found a reference - look up the symbol it points to
+            let symbols = store.symbols_by_ids(std::slice::from_ref(&ref_record.symbol_id))?;
+            if let Some(sym) = symbols.into_iter().next() {
+                Some(sym)
+            } else {
+                // Reference exists but symbol not found - fall back to find_symbol_at
+                self.find_symbol_at_in_workspace(&file_path, line, character, &workspace)?
+            }
+        } else {
+            // No reference at position - find symbol at position directly
             self.find_symbol_at_in_workspace(&file_path, line, character, &workspace)?
-        {
-            let output = format_symbol(&symbol, &workspace, &FormatOptions::default());
+        };
+
+        if let Some(symbol) = definition {
+            let output = format_symbol(&symbol, &workspace, &format_opts);
             return Ok(ToolResult::text(format!("Definition:\n{}", output)));
         }
 
@@ -1481,6 +1532,31 @@ fn offset_to_line_col(file_path: &str, offset: usize) -> Result<(usize, usize)> 
     } else {
         anyhow::bail!("offset out of bounds")
     }
+}
+
+/// Convert 1-based line:column to byte offset
+fn line_col_to_offset(buf: &[u8], line: usize, character: usize) -> Option<usize> {
+    if line == 0 || character == 0 {
+        return None;
+    }
+    let mut idx = 0;
+    let mut current_line = 1usize;
+    while current_line < line {
+        if let Some(pos) = buf[idx..].iter().position(|b| *b == b'\n') {
+            idx += pos + 1;
+            current_line += 1;
+        } else {
+            return None;
+        }
+    }
+    let line_end = buf[idx..]
+        .iter()
+        .position(|b| *b == b'\n')
+        .map(|p| idx + p)
+        .unwrap_or(buf.len());
+    let line_len = line_end - idx;
+    let col = character.saturating_sub(1).min(line_len);
+    Some(idx + col)
 }
 
 /// Check if a file path indicates a test file

@@ -47,6 +47,26 @@ brew install gabb
 
 This installs pre-built binaries for macOS (Intel and Apple Silicon) and Linux.
 
+### Windows
+
+#### Scoop (Recommended)
+
+```powershell
+# Add the gabb bucket
+scoop bucket add gabb https://github.com/gabb-software/scoop-bucket
+
+# Install gabb
+scoop install gabb
+```
+
+#### Manual Download
+
+Download the latest Windows binary from [GitHub Releases](https://github.com/gabb-software/gabb-cli/releases):
+
+1. Download `gabb-x86_64-pc-windows-msvc.zip`
+2. Extract to a directory (e.g., `C:\Program Files\gabb`)
+3. Add the directory to your PATH
+
 ### Cargo (Rust)
 
 ```bash
@@ -57,7 +77,7 @@ cargo install gabb-cli
 cargo binstall gabb-cli
 ```
 
-Requires Rust 1.70+. The `cargo binstall` option downloads pre-built binaries instead of compiling from source.
+Requires Rust 1.70+. The `cargo binstall` option downloads pre-built binaries instead of compiling from source. Works on Windows, macOS, and Linux.
 
 ## Usage
 ```bash

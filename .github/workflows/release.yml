@@ -212,3 +212,63 @@ jobs:
           git add Formula/gabb.rb
           git commit -m "Update gabb to ${GITHUB_REF#refs/tags/v}"
           git push
+
+  update-scoop:
+    name: Update Scoop Manifest
+    runs-on: ubuntu-latest
+    needs: release
+    steps:
+      - name: Download SHA256SUMS
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          curl -L "https://github.com/gabb-software/gabb-cli/releases/download/${VERSION}/SHA256SUMS.txt" -o SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Extract SHA256 hash
+        id: sha
+        run: |
+          echo "windows=$(grep x86_64-pc-windows-msvc SHA256SUMS.txt | awk '{print $1}')" >> $GITHUB_OUTPUT
+
+      - name: Checkout scoop-bucket
+        uses: actions/checkout@v4
+        with:
+          repository: gabb-software/scoop-bucket
+          token: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          path: scoop-bucket
+
+      - name: Update manifest
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          cat > scoop-bucket/gabb.json << EOF
+          {
+              "version": "${VERSION}",
+              "description": "Fast local code indexing CLI for TypeScript, Rust, Kotlin, and C++ projects",
+              "homepage": "https://github.com/gabb-software/gabb-cli",
+              "license": "MIT",
+              "architecture": {
+                  "64bit": {
+                      "url": "https://github.com/gabb-software/gabb-cli/releases/download/v${VERSION}/gabb-x86_64-pc-windows-msvc.zip",
+                      "hash": "${{ steps.sha.outputs.windows }}"
+                  }
+              },
+              "bin": "gabb.exe",
+              "checkver": "github",
+              "autoupdate": {
+                  "architecture": {
+                      "64bit": {
+                          "url": "https://github.com/gabb-software/gabb-cli/releases/download/v\$version/gabb-x86_64-pc-windows-msvc.zip"
+                      }
+                  }
+              }
+          }
+          EOF
+          cat scoop-bucket/gabb.json
+
+      - name: Commit and push
+        run: |
+          cd scoop-bucket
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add gabb.json
+          git commit -m "Update gabb to ${GITHUB_REF#refs/tags/v}"
+          git push

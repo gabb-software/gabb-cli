@@ -672,6 +672,8 @@ enum Commands {
         #[arg(short = 'C', long)]
         context: Option<usize>,
     },
+    /// Show index statistics (file counts, symbol counts, index metadata)
+    Stats,
 }
 
 #[derive(Subcommand, Debug)]
@@ -931,6 +933,10 @@ fn main() -> Result<()> {
                 context_lines: context,
             };
             file_structure(&db, &workspace, &file, format, source_opts)
+        }
+        Commands::Stats => {
+            ensure_index_available(&db, &daemon_opts)?;
+            show_stats(&db, format)
         }
     }
 }
@@ -2594,6 +2600,76 @@ fn print_tree(nodes: &[SymbolNode], prefix: &str, _is_last_group: bool, show_sou
     }
 }
 
+// ==================== Stats Command ====================
+
+fn show_stats(db: &Path, format: OutputFormat) -> Result<()> {
+    let store = open_store_for_query(db)?;
+    let stats = store.get_index_stats()?;
+
+    match format {
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(&stats)?);
+        }
+        OutputFormat::Jsonl => {
+            println!("{}", serde_json::to_string(&stats)?);
+        }
+        OutputFormat::Csv | OutputFormat::Tsv => {
+            // CSV/TSV format doesn't make sense for nested stats, output as JSON
+            println!("{}", serde_json::to_string_pretty(&stats)?);
+        }
+        OutputFormat::Text => {
+            println!("Index Statistics");
+            println!("================");
+            println!();
+
+            println!("Files:");
+            println!("  Total: {}", stats.files.total);
+            if !stats.files.by_language.is_empty() {
+                println!("  By language:");
+                let mut langs: Vec<_> = stats.files.by_language.iter().collect();
+                langs.sort_by(|a, b| b.1.cmp(a.1)); // Sort by count descending
+                for (lang, count) in langs {
+                    println!("    {}: {}", lang, count);
+                }
+            }
+            println!();
+
+            println!("Symbols:");
+            println!("  Total: {}", stats.symbols.total);
+            if !stats.symbols.by_kind.is_empty() {
+                println!("  By kind:");
+                let mut kinds: Vec<_> = stats.symbols.by_kind.iter().collect();
+                kinds.sort_by(|a, b| b.1.cmp(a.1)); // Sort by count descending
+                for (kind, count) in kinds {
+                    println!("    {}: {}", kind, count);
+                }
+            }
+            println!();
+
+            println!("Index:");
+            println!("  Size: {} bytes", stats.index.size_bytes);
+            if let Some(updated) = &stats.index.last_updated {
+                println!("  Last updated: {}", updated);
+            }
+            println!("  Schema version: {}", stats.index.schema_version);
+            println!();
+
+            if stats.errors.parse_failures > 0 {
+                println!("Errors:");
+                println!("  Parse failures: {}", stats.errors.parse_failures);
+                if !stats.errors.failed_files.is_empty() {
+                    println!("  Failed files:");
+                    for file in &stats.errors.failed_files {
+                        println!("    {}", file);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 // ==================== MCP Configuration Commands ====================
 
 /// Get the path to Claude Desktop config file
@@ -2996,6 +3072,7 @@ Available tools:
 - gabb_includers: Find all files that #include a header (C++ reverse dependency)
 - gabb_includes: Find all headers included by a file (C++ forward dependency)
 - gabb_daemon_status: Check if the indexing daemon is running
+- gabb_stats: Get index statistics (files by language, symbols by kind, index size)
 
 If the index doesn't exist, gabb will auto-start the daemon to build it.
 "#;

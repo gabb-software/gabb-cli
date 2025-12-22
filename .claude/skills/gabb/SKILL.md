@@ -54,6 +54,7 @@ provide precise file:line:column locations and understand code structure.
 - **gabb_includers**: Find all files that #include a header (C++ reverse dependency).
 - **gabb_includes**: Find all headers included by a file (C++ forward dependency).
 - **gabb_daemon_status**: Check if the indexing daemon is running.
+- **gabb_stats**: Get comprehensive index statistics (files by language, symbols by kind, index size).
 
 ## Tips
 

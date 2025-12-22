@@ -202,6 +202,57 @@ pub struct DuplicateGroup {
     pub symbols: Vec<SymbolRecord>,
 }
 
+/// Comprehensive index statistics for the `gabb stats` command and MCP tool.
+#[derive(Debug, Clone, Serialize)]
+pub struct IndexStats {
+    /// File statistics
+    pub files: FileCountStats,
+    /// Symbol statistics
+    pub symbols: SymbolCountStats,
+    /// Index metadata
+    pub index: IndexMetadata,
+    /// Parse error summary
+    pub errors: ParseErrorStats,
+}
+
+/// File count statistics broken down by language.
+#[derive(Debug, Clone, Serialize)]
+pub struct FileCountStats {
+    /// Total number of indexed files
+    pub total: i64,
+    /// File counts by language (e.g., "typescript": 150, "rust": 50)
+    pub by_language: HashMap<String, i64>,
+}
+
+/// Symbol count statistics broken down by kind.
+#[derive(Debug, Clone, Serialize)]
+pub struct SymbolCountStats {
+    /// Total number of symbols
+    pub total: i64,
+    /// Symbol counts by kind (e.g., "function": 2000, "class": 500)
+    pub by_kind: HashMap<String, i64>,
+}
+
+/// Index metadata including size and timestamps.
+#[derive(Debug, Clone, Serialize)]
+pub struct IndexMetadata {
+    /// Database file size in bytes
+    pub size_bytes: u64,
+    /// Last update timestamp (ISO 8601)
+    pub last_updated: Option<String>,
+    /// Schema version string
+    pub schema_version: String,
+}
+
+/// Parse error summary.
+#[derive(Debug, Clone, Serialize)]
+pub struct ParseErrorStats {
+    /// Number of files that failed to parse
+    pub parse_failures: i64,
+    /// List of failed file paths (limited to avoid huge output)
+    pub failed_files: Vec<String>,
+}
+
 /// Query options for searching symbols with flexible filtering.
 #[derive(Debug, Clone, Default)]
 pub struct SymbolQuery<'a> {
@@ -982,6 +1033,94 @@ impl IndexStore {
             function_count: row.get(1)?,
             class_count: row.get(2)?,
             interface_count: row.get(3)?,
+        })
+    }
+
+    /// Get comprehensive index statistics for the `gabb stats` command.
+    /// Returns file counts by language, symbol counts by kind, index metadata, and parse errors.
+    pub fn get_index_stats(&self) -> Result<IndexStats> {
+        let conn = self.conn.borrow();
+
+        // File counts by language (inferred from file extension)
+        let mut by_language: HashMap<String, i64> = HashMap::new();
+        let total_files: i64;
+        {
+            let mut stmt = conn.prepare("SELECT path FROM files")?;
+            let paths = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+
+            total_files = paths.len() as i64;
+            for path in paths {
+                let lang = infer_language_from_path(&path);
+                *by_language.entry(lang).or_insert(0) += 1;
+            }
+        }
+
+        // Symbol counts by kind
+        let mut by_kind: HashMap<String, i64> = HashMap::new();
+        let mut total_symbols: i64 = 0;
+        {
+            let mut stmt = conn.prepare("SELECT kind, COUNT(*) FROM symbols GROUP BY kind")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?;
+            for row in rows {
+                let (kind, count) = row?;
+                total_symbols += count;
+                by_kind.insert(kind, count);
+            }
+        }
+
+        // Index metadata
+        let size_bytes = fs::metadata(self.db_path()).map(|m| m.len()).unwrap_or(0);
+
+        let last_updated = {
+            let mut stmt = conn.prepare("SELECT MAX(indexed_at) FROM files")?;
+            let max_ts: Option<i64> = stmt.query_row([], |row| row.get(0)).ok().flatten();
+            max_ts.map(|ts| {
+                // Convert Unix timestamp to ISO 8601
+                chrono::DateTime::from_timestamp(ts, 0)
+                    .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+                    .unwrap_or_else(|| ts.to_string())
+            })
+        };
+
+        let schema_version = {
+            let version: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM schema_meta WHERE key = 'version'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            version.unwrap_or_else(|| "unknown".to_string())
+        };
+
+        // Parse error stats - for now we don't track failures explicitly,
+        // but we can detect files with no symbols as potential failures
+        // In the future, we could add a parse_errors table
+        let parse_failures: i64 = 0;
+        let failed_files: Vec<String> = Vec::new();
+
+        Ok(IndexStats {
+            files: FileCountStats {
+                total: total_files,
+                by_language,
+            },
+            symbols: SymbolCountStats {
+                total: total_symbols,
+                by_kind,
+            },
+            index: IndexMetadata {
+                size_bytes,
+                last_updated,
+                schema_version,
+            },
+            errors: ParseErrorStats {
+                parse_failures,
+                failed_files,
+            },
         })
     }
 
@@ -2206,6 +2345,43 @@ pub fn now_unix() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+/// Infer programming language from file path extension.
+fn infer_language_from_path(path: &str) -> String {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+
+    match ext.to_lowercase().as_str() {
+        "ts" | "tsx" | "mts" | "cts" => "typescript".to_string(),
+        "js" | "jsx" | "mjs" | "cjs" => "javascript".to_string(),
+        "rs" => "rust".to_string(),
+        "kt" | "kts" => "kotlin".to_string(),
+        "java" => "java".to_string(),
+        "py" | "pyi" => "python".to_string(),
+        "go" => "go".to_string(),
+        "c" | "h" => "c".to_string(),
+        "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" => "cpp".to_string(),
+        "cs" => "csharp".to_string(),
+        "rb" => "ruby".to_string(),
+        "php" => "php".to_string(),
+        "swift" => "swift".to_string(),
+        "scala" => "scala".to_string(),
+        "lua" => "lua".to_string(),
+        "sh" | "bash" | "zsh" => "shell".to_string(),
+        "json" => "json".to_string(),
+        "yaml" | "yml" => "yaml".to_string(),
+        "toml" => "toml".to_string(),
+        "xml" => "xml".to_string(),
+        "html" | "htm" => "html".to_string(),
+        "css" => "css".to_string(),
+        "scss" | "sass" => "scss".to_string(),
+        "sql" => "sql".to_string(),
+        "md" | "markdown" => "markdown".to_string(),
+        _ => "other".to_string(),
+    }
 }
 
 #[cfg(test)]

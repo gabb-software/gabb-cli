@@ -262,6 +262,17 @@ Parameters:
 
 No parameters. Returns daemon PID, version, indexed file count.
 
+### gabb_stats
+**Get comprehensive index statistics.**
+
+No parameters. Returns:
+- File counts by language (typescript, rust, kotlin, etc.)
+- Symbol counts by kind (function, class, interface, etc.)
+- Index size in bytes and last update time
+- Schema version
+
+Use to understand the scope of the indexed codebase or verify indexing is complete.
+
 ## Common Workflows
 
 ### Understanding unfamiliar code

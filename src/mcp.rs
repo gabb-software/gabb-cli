@@ -777,6 +777,19 @@ impl McpServer {
                     "required": ["file", "line", "character"]
                 }),
             },
+            Tool {
+                name: "gabb_stats".to_string(),
+                description: concat!(
+                    "Get comprehensive index statistics including file counts by language, ",
+                    "symbol counts by kind, index size, last update time, and schema version. ",
+                    "USE THIS to understand the scope of the indexed codebase, verify indexing is complete, ",
+                    "or diagnose issues with the index."
+                ).to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
         ];
 
         Ok(json!({ "tools": tools }))
@@ -806,6 +819,7 @@ impl McpServer {
             "gabb_rename" => self.tool_rename(&arguments),
             "gabb_callers" => self.tool_callers(&arguments),
             "gabb_callees" => self.tool_callees(&arguments),
+            "gabb_stats" => self.tool_stats(),
             _ => Ok(ToolResult::error(format!("Unknown tool: {}", name))),
         }?;
 
@@ -1389,6 +1403,17 @@ impl McpServer {
         }
 
         Ok(ToolResult::text(status))
+    }
+
+    fn tool_stats(&mut self) -> Result<ToolResult> {
+        // Use default workspace
+        let workspace = self.default_workspace.clone();
+        let store = self.get_store_for_workspace(&workspace)?;
+
+        let stats = store.get_index_stats()?;
+
+        // Format as JSON for structured output
+        Ok(ToolResult::text(serde_json::to_string_pretty(&stats)?))
     }
 
     fn tool_duplicates(&mut self, args: &Value) -> Result<ToolResult> {

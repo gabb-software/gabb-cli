@@ -833,6 +833,29 @@ impl McpServer {
             "gabb_callees" => self.tool_callees(&arguments),
             "gabb_stats" => self.tool_stats(),
             _ => Ok(ToolResult::error(format!("Unknown tool: {}", name))),
+        };
+
+        // Handle database corruption errors with automatic recovery
+        let result = match result {
+            Err(ref e) if Self::is_database_corruption_error(e) => {
+                log::warn!(
+                    "Database corruption detected: {}. Triggering automatic rebuild.",
+                    e
+                );
+
+                // Invalidate all cached workspaces to force rebuild
+                let workspaces = self.cached_workspace_roots();
+                for workspace in workspaces {
+                    self.invalidate_workspace(&workspace);
+                }
+
+                // Return a message for the AI agent - make it clear the issue is resolved
+                Ok(ToolResult::text(
+                    "Index corruption detected and automatically resolved. \
+                     Retry this query - the index will rebuild automatically.",
+                ))
+            }
+            other => other,
         }?;
 
         Ok(serde_json::to_value(result)?)
@@ -923,6 +946,7 @@ impl McpServer {
             no_start_daemon: false,
             timeout: std::time::Duration::from_secs(60),
             no_daemon_warnings: true, // Suppress warnings in MCP context
+            auto_restart_on_version_mismatch: true, // Auto-restart daemon when version differs
         };
 
         daemon::ensure_index_available(&root, &db_path, &opts)?;
@@ -951,6 +975,41 @@ impl McpServer {
         info.store
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Store not initialized"))
+    }
+
+    /// Check if an error indicates database corruption
+    fn is_database_corruption_error(err: &anyhow::Error) -> bool {
+        let err_str = err.to_string().to_lowercase();
+        err_str.contains("malformed")
+            || err_str.contains("corrupt")
+            || err_str.contains("disk i/o error")
+            || err_str.contains("database disk image")
+            || err_str.contains("file is not a database")
+            || err_str.contains("sqlite_corrupt")
+            || err_str.contains("sqlite_notadb")
+    }
+
+    /// Invalidate cached store for a workspace, forcing rebuild on next access
+    fn invalidate_workspace(&mut self, workspace_root: &Path) {
+        if let Some(info) = self.workspace_cache.get_mut(workspace_root) {
+            log::info!(
+                "Invalidating cached store for workspace: {}",
+                workspace_root.display()
+            );
+            // Drop the store
+            info.store = None;
+
+            // Delete the database files to force rebuild
+            let db_path = &info.db_path;
+            let _ = std::fs::remove_file(db_path);
+            let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+            let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+        }
+    }
+
+    /// Get all workspace roots that are currently cached
+    fn cached_workspace_roots(&self) -> Vec<PathBuf> {
+        self.workspace_cache.keys().cloned().collect()
     }
 
     // ==================== Tool Implementations ====================
@@ -1205,7 +1264,8 @@ impl McpServer {
 
         // Include the definition location first if requested
         if include_definition {
-            if let Ok((def_line, def_col)) = offset_to_line_col_in_file(&symbol.file, symbol.start as usize)
+            if let Ok((def_line, def_col)) =
+                offset_to_line_col_in_file(&symbol.file, symbol.start as usize)
             {
                 if let Ok((def_end_line, def_end_col)) =
                     offset_to_line_col_in_file(&symbol.file, symbol.end as usize)
@@ -1818,7 +1878,9 @@ impl McpServer {
         let mut edits: Vec<Value> = Vec::new();
 
         // Include the definition location first
-        if let Ok((def_line, def_col)) = offset_to_line_col_in_file(&symbol.file, symbol.start as usize) {
+        if let Ok((def_line, def_col)) =
+            offset_to_line_col_in_file(&symbol.file, symbol.start as usize)
+        {
             if let Ok((def_end_line, def_end_col)) =
                 offset_to_line_col_in_file(&symbol.file, symbol.end as usize)
             {
@@ -2132,11 +2194,12 @@ fn format_symbol(sym: &SymbolRecord, workspace_root: &Path, opts: &FormatOptions
     };
 
     // Convert byte offset to line:col
-    let location = if let Ok((line, col)) = offset_to_line_col_in_file(&sym.file, sym.start as usize) {
-        format!("{}:{}:{}", rel_path, line, col)
-    } else {
-        format!("{}:offset:{}", rel_path, sym.start)
-    };
+    let location =
+        if let Ok((line, col)) = offset_to_line_col_in_file(&sym.file, sym.start as usize) {
+            format!("{}:{}:{}", rel_path, line, col)
+        } else {
+            format!("{}:offset:{}", rel_path, sym.start)
+        };
 
     let mut parts = vec![format!(
         "{:<10} {:<30} [{}] {}",
@@ -2251,12 +2314,13 @@ fn format_duplicate_groups(groups: &[DuplicateGroup], workspace_root: &Path) -> 
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| sym.file.clone());
 
-            let location =
-                if let Ok((line, col)) = offset_to_line_col_in_file(&sym.file, sym.start as usize) {
-                    format!("{}:{}:{}", rel_path, line, col)
-                } else {
-                    format!("{}:offset:{}", rel_path, sym.start)
-                };
+            let location = if let Ok((line, col)) =
+                offset_to_line_col_in_file(&sym.file, sym.start as usize)
+            {
+                format!("{}:{}:{}", rel_path, line, col)
+            } else {
+                format!("{}:offset:{}", rel_path, sym.start)
+            };
 
             let container = sym
                 .container

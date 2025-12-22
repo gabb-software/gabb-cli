@@ -41,6 +41,7 @@ fn ensure_index_available(db: &Path, opts: &DaemonOptions) -> Result<()> {
         no_start_daemon: opts.no_start_daemon,
         timeout: std::time::Duration::from_secs(60),
         no_daemon_warnings: opts.no_daemon,
+        auto_restart_on_version_mismatch: false, // CLI shows warning, user decides
     };
 
     daemon::ensure_index_available(&workspace_root, db, &daemon_opts)

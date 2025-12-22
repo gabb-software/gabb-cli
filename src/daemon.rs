@@ -25,6 +25,8 @@ pub struct EnsureIndexOptions {
     pub timeout: Duration,
     /// If true, suppress informational warnings about daemon status
     pub no_daemon_warnings: bool,
+    /// If true, automatically restart daemon when version differs from CLI
+    pub auto_restart_on_version_mismatch: bool,
 }
 
 impl Default for EnsureIndexOptions {
@@ -33,6 +35,7 @@ impl Default for EnsureIndexOptions {
             no_start_daemon: false,
             timeout: Duration::from_secs(60),
             no_daemon_warnings: false,
+            auto_restart_on_version_mismatch: false,
         }
     }
 }
@@ -68,8 +71,8 @@ pub fn ensure_index_available(
     match IndexStore::try_open(db) {
         Ok(DbOpenResult::Ready(_)) => {
             // Index is good, check daemon version (unless suppressed)
-            if !opts.no_daemon_warnings {
-                check_daemon_version(workspace_root);
+            if !opts.no_daemon_warnings || opts.auto_restart_on_version_mismatch {
+                check_daemon_version(workspace_root, db, opts.auto_restart_on_version_mismatch)?;
             }
         }
         Ok(DbOpenResult::NeedsRegeneration { reason, .. }) => {
@@ -179,21 +182,32 @@ pub fn start_daemon_and_wait(
     }
 }
 
-/// Check daemon version and warn about mismatches.
-fn check_daemon_version(workspace_root: &Path) {
+/// Check daemon version and handle mismatches.
+/// Returns true if daemon was restarted, false otherwise.
+fn check_daemon_version(workspace_root: &Path, db: &Path, auto_restart: bool) -> Result<bool> {
     // Try to read PID file and check version
     if let Ok(Some(pid_info)) = read_pid_file(workspace_root) {
         if is_process_running(pid_info.pid) {
             let cli_version = env!("CARGO_PKG_VERSION");
             if pid_info.version != cli_version {
-                warn!(
-                    "Daemon version ({}) differs from CLI version ({}).\n\
-                     Consider restarting: gabb daemon restart",
-                    pid_info.version, cli_version
-                );
+                if auto_restart {
+                    info!(
+                        "Daemon version ({}) differs from CLI version ({}). Auto-restarting...",
+                        pid_info.version, cli_version
+                    );
+                    restart(workspace_root, db, false)?;
+                    return Ok(true);
+                } else {
+                    warn!(
+                        "Daemon version ({}) differs from CLI version ({}).\n\
+                         Consider restarting: gabb daemon restart",
+                        pid_info.version, cli_version
+                    );
+                }
             }
         }
     }
+    Ok(false)
 }
 
 /// Derive workspace root from database path.

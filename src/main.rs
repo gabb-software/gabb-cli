@@ -7,7 +7,9 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use gabb_cli::daemon;
+use gabb_cli::is_test_file;
 use gabb_cli::mcp;
+use gabb_cli::offset_to_line_col_in_file;
 use gabb_cli::store;
 use gabb_cli::store::{normalize_path, DbOpenResult, IndexStore, SymbolQuery, SymbolRecord};
 use gabb_cli::workspace;
@@ -2200,72 +2202,9 @@ fn line_char_to_offset(buf: &[u8], line: usize, character: usize) -> Option<usiz
     Some(idx + col)
 }
 
-/// Check if a file path indicates a test file based on common conventions.
-/// Returns true for:
-/// - Files in `tests/`, `__tests__/`, `test/` directories
-/// - Files matching `*_test.rs`, `*_spec.rs` (Rust)
-/// - Files matching `*.test.ts`, `*.spec.ts`, `*.test.tsx`, `*.spec.tsx` (TypeScript)
-fn is_test_file(path: &str) -> bool {
-    let path_lower = path.to_lowercase();
-
-    // Check directory patterns
-    if path_lower.contains("/tests/")
-        || path_lower.contains("/__tests__/")
-        || path_lower.contains("/test/")
-        || path_lower.contains("/spec/")
-    {
-        return true;
-    }
-
-    // Check file name patterns
-    if let Some(file_name) = path.rsplit('/').next() {
-        let name_lower = file_name.to_lowercase();
-        // Rust patterns
-        if name_lower.ends_with("_test.rs") || name_lower.ends_with("_spec.rs") {
-            return true;
-        }
-        // TypeScript/JavaScript patterns
-        if name_lower.ends_with(".test.ts")
-            || name_lower.ends_with(".spec.ts")
-            || name_lower.ends_with(".test.tsx")
-            || name_lower.ends_with(".spec.tsx")
-            || name_lower.ends_with(".test.js")
-            || name_lower.ends_with(".spec.js")
-            || name_lower.ends_with(".test.jsx")
-            || name_lower.ends_with(".spec.jsx")
-        {
-            return true;
-        }
-    }
-
-    false
-}
-
 fn offset_to_line_char_in_file(path: &str, offset: i64) -> Result<(usize, usize)> {
-    let buf = fs::read(path).with_context(|| format!("failed to read {}", path))?;
-    offset_to_line_char_in_buf(&buf, offset as usize)
-        .ok_or_else(|| anyhow!("could not map byte offset for {path}"))
-}
-
-fn offset_to_line_char_in_buf(buf: &[u8], offset: usize) -> Option<(usize, usize)> {
-    let mut line = 1usize;
-    let mut col = 1usize;
-    for (i, b) in buf.iter().enumerate() {
-        if i == offset {
-            return Some((line, col));
-        }
-        if *b == b'\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-    }
-    if offset == buf.len() {
-        Some((line, col))
-    } else {
-        None
-    }
+    offset_to_line_col_in_file(Path::new(path), offset as usize)
+        .with_context(|| format!("failed to convert offset for {path}"))
 }
 
 fn parse_file_position(
@@ -3429,6 +3368,7 @@ fn setup_wizard(root: &Path, db: &Path, yes: bool, dry_run: bool) -> Result<()> 
 mod tests {
     use super::*;
     use gabb_cli::indexer;
+    use gabb_cli::offset_to_line_col;
     use gabb_cli::store::IndexStore;
     use std::fs;
     use tempfile::tempdir;
@@ -3472,7 +3412,7 @@ mod tests {
         indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
         let offset = call_src.find("build_full_index").unwrap();
-        let (line, character) = offset_to_line_char(call_src.as_bytes(), offset).unwrap();
+        let (line, character) = offset_to_line_col(call_src.as_bytes(), offset).unwrap();
 
         let symbol = resolve_symbol_at(&store, &caller_path, line, character).unwrap();
         assert_eq!(symbol.name, "build_full_index");
@@ -3533,7 +3473,7 @@ mod tests {
         let def_path = def_path.canonicalize().unwrap();
         let src = fs::read_to_string(&def_path).unwrap();
         let offset = src.find("build_full_index").unwrap();
-        let (line, character) = offset_to_line_char(src.as_bytes(), offset).unwrap();
+        let (line, character) = offset_to_line_col(src.as_bytes(), offset).unwrap();
         let symbol = resolve_symbol_at(&store, &def_path, line, character).unwrap();
         let refs = super::search_usages_by_name(&store, &symbol, root).unwrap();
         assert!(
@@ -3557,27 +3497,6 @@ mod tests {
         assert_eq!(path2, PathBuf::from("src/daemon.rs"));
         assert_eq!(line2, 1);
         assert_eq!(character2, 2);
-    }
-
-    fn offset_to_line_char(buf: &[u8], offset: usize) -> Option<(usize, usize)> {
-        let mut line = 1usize;
-        let mut col = 1usize;
-        for (i, b) in buf.iter().enumerate() {
-            if i == offset {
-                return Some((line, col));
-            }
-            if *b == b'\n' {
-                line += 1;
-                col = 1;
-            } else {
-                col += 1;
-            }
-        }
-        if offset == buf.len() {
-            Some((line, col))
-        } else {
-            None
-        }
     }
 
     #[test]

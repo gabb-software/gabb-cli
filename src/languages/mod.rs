@@ -3,6 +3,58 @@ pub mod kotlin;
 pub mod rust;
 pub mod typescript;
 
+use crate::store::SymbolRecord;
+use tree_sitter::Node;
+
+// ============================================================================
+// Shared parser utilities
+// ============================================================================
+
+/// Extract the text content of a tree-sitter node from source code.
+pub fn slice(source: &str, node: &Node) -> String {
+    let bytes = node.byte_range();
+    source.get(bytes).unwrap_or_default().trim().to_string()
+}
+
+/// Binding for a locally-defined symbol with its ID and optional qualifier.
+#[derive(Clone, Debug)]
+pub struct SymbolBinding {
+    pub id: String,
+    pub qualifier: Option<String>,
+}
+
+impl From<&SymbolRecord> for SymbolBinding {
+    fn from(value: &SymbolRecord) -> Self {
+        Self {
+            id: value.id.clone(),
+            qualifier: value.qualifier.clone(),
+        }
+    }
+}
+
+/// A resolved target symbol with its ID and optional qualifier.
+/// Used for resolving member access and method calls.
+#[derive(Clone, Debug)]
+pub struct ResolvedTarget {
+    pub id: String,
+    pub qualifier: Option<String>,
+}
+
+impl ResolvedTarget {
+    /// Build a qualified member ID from this target.
+    pub fn member_id(&self, member: &str) -> String {
+        if let Some(q) = &self.qualifier {
+            format!("{q}::{member}")
+        } else {
+            format!("{}::{member}", self.id)
+        }
+    }
+}
+
+// ============================================================================
+// Import bindings
+// ============================================================================
+
 /// Represents an import binding that maps a local name to a symbol in another file.
 /// Used for two-phase indexing to resolve cross-file references.
 #[derive(Clone, Debug)]

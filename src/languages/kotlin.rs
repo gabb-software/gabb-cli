@@ -1,4 +1,4 @@
-use crate::languages::ImportBindingInfo;
+use crate::languages::{slice, ImportBindingInfo};
 use crate::store::{normalize_path, EdgeRecord, FileDependency, ReferenceRecord, SymbolRecord};
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
@@ -916,11 +916,6 @@ fn extract_visibility(node: &Node) -> Option<String> {
     }
     // Default visibility in Kotlin is public
     Some("public".to_string())
-}
-
-fn slice(source: &str, node: &Node) -> String {
-    let bytes = node.byte_range();
-    source.get(bytes).unwrap_or_default().trim().to_string()
 }
 
 #[cfg(test)]

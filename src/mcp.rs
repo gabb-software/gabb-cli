@@ -7,6 +7,7 @@
 //! from file paths passed to tools, enabling one MCP server to handle multiple
 //! projects.
 
+use crate::is_test_file;
 use crate::store::{DuplicateGroup, IndexStore, SymbolQuery, SymbolRecord};
 use crate::workspace;
 use anyhow::{bail, Result};
@@ -1184,7 +1185,7 @@ impl McpServer {
         for r in &refs {
             let rel_path = relative_path_for_workspace(&r.file, &workspace);
             // Convert offset to line:col
-            if let Ok((ref_line, ref_col)) = offset_to_line_col(&r.file, r.start as usize) {
+            if let Ok((ref_line, ref_col)) = offset_to_line_col_in_file(&r.file, r.start as usize) {
                 output.push_str(&format!("  {}:{}:{}\n", rel_path, ref_line, ref_col));
             }
         }
@@ -1204,10 +1205,10 @@ impl McpServer {
 
         // Include the definition location first if requested
         if include_definition {
-            if let Ok((def_line, def_col)) = offset_to_line_col(&symbol.file, symbol.start as usize)
+            if let Ok((def_line, def_col)) = offset_to_line_col_in_file(&symbol.file, symbol.start as usize)
             {
                 if let Ok((def_end_line, def_end_col)) =
-                    offset_to_line_col(&symbol.file, symbol.end as usize)
+                    offset_to_line_col_in_file(&symbol.file, symbol.end as usize)
                 {
                     let rel_path = relative_path_for_workspace(&symbol.file, workspace);
                     let context =
@@ -1232,13 +1233,13 @@ impl McpServer {
             let rel_path = relative_path_for_workspace(&r.file, workspace);
 
             // Get start position
-            let (ref_line, ref_col) = match offset_to_line_col(&r.file, r.start as usize) {
+            let (ref_line, ref_col) = match offset_to_line_col_in_file(&r.file, r.start as usize) {
                 Ok(pos) => pos,
                 Err(_) => continue,
             };
 
             // Get end position
-            let (end_line, end_col) = match offset_to_line_col(&r.file, r.end as usize) {
+            let (end_line, end_col) = match offset_to_line_col_in_file(&r.file, r.end as usize) {
                 Ok(pos) => pos,
                 Err(_) => continue,
             };
@@ -1264,7 +1265,7 @@ impl McpServer {
 
         // Get definition location for symbol info
         let (def_line, def_col) =
-            offset_to_line_col(&symbol.file, symbol.start as usize).unwrap_or((0, 0));
+            offset_to_line_col_in_file(&symbol.file, symbol.start as usize).unwrap_or((0, 0));
         let def_rel_path = relative_path_for_workspace(&symbol.file, workspace);
 
         let output = json!({
@@ -1817,9 +1818,9 @@ impl McpServer {
         let mut edits: Vec<Value> = Vec::new();
 
         // Include the definition location first
-        if let Ok((def_line, def_col)) = offset_to_line_col(&symbol.file, symbol.start as usize) {
+        if let Ok((def_line, def_col)) = offset_to_line_col_in_file(&symbol.file, symbol.start as usize) {
             if let Ok((def_end_line, def_end_col)) =
-                offset_to_line_col(&symbol.file, symbol.end as usize)
+                offset_to_line_col_in_file(&symbol.file, symbol.end as usize)
             {
                 let rel_path = relative_path_for_workspace(&symbol.file, &workspace);
                 let context =
@@ -1843,12 +1844,12 @@ impl McpServer {
         for r in &refs {
             let rel_path = relative_path_for_workspace(&r.file, &workspace);
 
-            let (ref_line, ref_col) = match offset_to_line_col(&r.file, r.start as usize) {
+            let (ref_line, ref_col) = match offset_to_line_col_in_file(&r.file, r.start as usize) {
                 Ok(pos) => pos,
                 Err(_) => continue,
             };
 
-            let (end_line, end_col) = match offset_to_line_col(&r.file, r.end as usize) {
+            let (end_line, end_col) = match offset_to_line_col_in_file(&r.file, r.end as usize) {
                 Ok(pos) => pos,
                 Err(_) => continue,
             };
@@ -1873,7 +1874,7 @@ impl McpServer {
 
         // Get definition location for symbol info
         let (def_line, def_col) =
-            offset_to_line_col(&symbol.file, symbol.start as usize).unwrap_or((0, 0));
+            offset_to_line_col_in_file(&symbol.file, symbol.start as usize).unwrap_or((0, 0));
         let def_rel_path = relative_path_for_workspace(&symbol.file, &workspace);
 
         let output = json!({
@@ -2131,7 +2132,7 @@ fn format_symbol(sym: &SymbolRecord, workspace_root: &Path, opts: &FormatOptions
     };
 
     // Convert byte offset to line:col
-    let location = if let Ok((line, col)) = offset_to_line_col(&sym.file, sym.start as usize) {
+    let location = if let Ok((line, col)) = offset_to_line_col_in_file(&sym.file, sym.start as usize) {
         format!("{}:{}:{}", rel_path, line, col)
     } else {
         format!("{}:offset:{}", rel_path, sym.start)
@@ -2251,7 +2252,7 @@ fn format_duplicate_groups(groups: &[DuplicateGroup], workspace_root: &Path) -> 
                 .unwrap_or_else(|_| sym.file.clone());
 
             let location =
-                if let Ok((line, col)) = offset_to_line_col(&sym.file, sym.start as usize) {
+                if let Ok((line, col)) = offset_to_line_col_in_file(&sym.file, sym.start as usize) {
                     format!("{}:{}:{}", rel_path, line, col)
                 } else {
                     format!("{}:offset:{}", rel_path, sym.start)
@@ -2301,27 +2302,10 @@ fn format_file_list(
     output
 }
 
-/// Convert byte offset to 1-based line:column
-fn offset_to_line_col(file_path: &str, offset: usize) -> Result<(usize, usize)> {
-    let content = std::fs::read(file_path)?;
-    let mut line = 1;
-    let mut col = 1;
-    for (i, &b) in content.iter().enumerate() {
-        if i == offset {
-            return Ok((line, col));
-        }
-        if b == b'\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-    }
-    if offset == content.len() {
-        Ok((line, col))
-    } else {
-        anyhow::bail!("offset out of bounds")
-    }
+/// Convert byte offset to 1-based line:column for a file
+fn offset_to_line_col_in_file(file_path: &str, offset: usize) -> Result<(usize, usize)> {
+    crate::offset_to_line_col_in_file(std::path::Path::new(file_path), offset)
+        .map_err(|e| anyhow::anyhow!("{}", e))
 }
 
 /// Convert 1-based line:column to byte offset
@@ -2382,43 +2366,6 @@ fn get_line_at_offset(file_path: &str, offset: usize) -> Option<String> {
     String::from_utf8(content[line_start..line_end].to_vec()).ok()
 }
 
-/// Check if a file path indicates a test file
-fn is_test_file(path: &str) -> bool {
-    let path_lower = path.to_lowercase();
-
-    // Check directory patterns
-    if path_lower.contains("/tests/")
-        || path_lower.contains("/__tests__/")
-        || path_lower.contains("/test/")
-        || path_lower.contains("/spec/")
-    {
-        return true;
-    }
-
-    // Check file name patterns
-    if let Some(file_name) = path.rsplit('/').next() {
-        let name_lower = file_name.to_lowercase();
-        // Rust patterns
-        if name_lower.ends_with("_test.rs") || name_lower.ends_with("_spec.rs") {
-            return true;
-        }
-        // TypeScript/JavaScript patterns
-        if name_lower.ends_with(".test.ts")
-            || name_lower.ends_with(".spec.ts")
-            || name_lower.ends_with(".test.tsx")
-            || name_lower.ends_with(".spec.tsx")
-            || name_lower.ends_with(".test.js")
-            || name_lower.ends_with(".spec.js")
-            || name_lower.ends_with(".test.jsx")
-            || name_lower.ends_with(".spec.jsx")
-        {
-            return true;
-        }
-    }
-
-    false
-}
-
 /// Build a hierarchical tree of symbols for the structure command
 fn build_structure_tree(
     symbols: &[SymbolRecord],
@@ -2432,8 +2379,8 @@ fn build_structure_tree(
     let mut nodes: Vec<(Option<String>, Value)> = Vec::new();
 
     for sym in symbols {
-        let (start_line, start_col) = offset_to_line_col(&sym.file, sym.start as usize)?;
-        let (end_line, end_col) = offset_to_line_col(&sym.file, sym.end as usize)?;
+        let (start_line, start_col) = offset_to_line_col_in_file(&sym.file, sym.start as usize)?;
+        let (end_line, end_col) = offset_to_line_col_in_file(&sym.file, sym.end as usize)?;
 
         // Determine context from file path OR inline test markers (#[cfg(test)], #[test])
         let context = if sym.is_test || is_test_file(file_path) {

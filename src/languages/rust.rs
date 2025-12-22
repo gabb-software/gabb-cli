@@ -1,4 +1,4 @@
-use crate::languages::ImportBindingInfo;
+use crate::languages::{slice, ImportBindingInfo, ResolvedTarget, SymbolBinding};
 use crate::store::{normalize_path, EdgeRecord, FileDependency, ReferenceRecord, SymbolRecord};
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
@@ -8,37 +8,6 @@ use std::path::Path;
 use tree_sitter::{Language, Node, Parser, TreeCursor};
 
 static RUST_LANGUAGE: Lazy<Language> = Lazy::new(|| tree_sitter_rust::LANGUAGE.into());
-
-#[derive(Clone, Debug)]
-struct SymbolBinding {
-    id: String,
-    qualifier: Option<String>,
-}
-
-impl From<&SymbolRecord> for SymbolBinding {
-    fn from(value: &SymbolRecord) -> Self {
-        Self {
-            id: value.id.clone(),
-            qualifier: value.qualifier.clone(),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct ResolvedTarget {
-    id: String,
-    qualifier: Option<String>,
-}
-
-impl ResolvedTarget {
-    fn member_id(&self, member: &str) -> String {
-        if let Some(q) = &self.qualifier {
-            format!("{q}::{member}")
-        } else {
-            format!("{}::{member}", self.id)
-        }
-    }
-}
 
 /// Index a Rust file, returning symbols, edges, references, file dependencies, and import bindings.
 #[allow(clippy::type_complexity)]
@@ -946,15 +915,6 @@ fn visibility(node: &Node, path: &Path) -> Option<String> {
         }
     }
     None
-}
-
-fn slice(source: &str, node: &Node) -> String {
-    let bytes = node.byte_range();
-    source
-        .get(bytes.clone())
-        .unwrap_or_default()
-        .trim()
-        .to_string()
 }
 
 fn slice_file(path: &Path, node: &Node) -> String {

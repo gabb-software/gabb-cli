@@ -1,4 +1,4 @@
-use crate::languages::ImportBindingInfo;
+use crate::languages::{slice, ImportBindingInfo, ResolvedTarget, SymbolBinding};
 use crate::store::{normalize_path, EdgeRecord, FileDependency, ReferenceRecord, SymbolRecord};
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
@@ -8,21 +8,6 @@ use tree_sitter::{Language, Node, Parser, TreeCursor};
 
 static TS_LANGUAGE: Lazy<Language> =
     Lazy::new(|| tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into());
-
-#[derive(Clone, Debug)]
-struct SymbolBinding {
-    id: String,
-    qualifier: Option<String>,
-}
-
-impl From<&SymbolRecord> for SymbolBinding {
-    fn from(value: &SymbolRecord) -> Self {
-        Self {
-            id: value.id.clone(),
-            qualifier: value.qualifier.clone(),
-        }
-    }
-}
 
 #[derive(Clone, Debug)]
 struct ImportBinding {
@@ -44,22 +29,6 @@ impl ImportBinding {
             format!("{q}::{name}")
         } else {
             fallback.to_string()
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct ResolvedTarget {
-    id: String,
-    qualifier: Option<String>,
-}
-
-impl ResolvedTarget {
-    fn member_id(&self, member: &str) -> String {
-        if let Some(q) = &self.qualifier {
-            format!("{q}::{member}")
-        } else {
-            format!("{}::{member}", self.id)
         }
     }
 }
@@ -1070,15 +1039,6 @@ fn module_qualifier(path: &Path, container: &Option<String>) -> String {
         base.push_str(c);
     }
     base
-}
-
-fn slice(source: &str, node: &Node) -> String {
-    let bytes = node.byte_range();
-    source
-        .get(bytes.clone())
-        .unwrap_or_default()
-        .trim()
-        .to_string()
 }
 
 #[cfg(test)]

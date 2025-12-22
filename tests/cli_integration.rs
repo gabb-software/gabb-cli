@@ -1,7 +1,7 @@
 use std::fs;
 use std::process::Command;
 
-use gabb_cli::{indexer, store::IndexStore};
+use gabb_cli::{indexer, offset_to_line_col, store::IndexStore};
 use tempfile::tempdir;
 
 #[test]
@@ -72,27 +72,6 @@ fn cross_file_usages_via_dependency_graph() {
     );
 }
 
-fn offset_to_line_char(buf: &[u8], offset: usize) -> Option<(usize, usize)> {
-    let mut line = 1usize;
-    let mut col = 1usize;
-    for (i, b) in buf.iter().enumerate() {
-        if i == offset {
-            return Some((line, col));
-        }
-        if *b == b'\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-    }
-    if offset == buf.len() {
-        Some((line, col))
-    } else {
-        None
-    }
-}
-
 #[test]
 fn symbols_and_implementation_commands_work() {
     let dir = tempdir().unwrap();
@@ -115,7 +94,7 @@ fn symbols_and_implementation_commands_work() {
         .find(|s| s.name == "foo")
         .cloned()
         .expect("symbol foo indexed");
-    let (line, character) = offset_to_line_char(&contents, symbol.start as usize).unwrap();
+    let (line, character) = offset_to_line_col(&contents, symbol.start as usize).unwrap();
 
     let bin = env!("CARGO_BIN_EXE_gabb");
 

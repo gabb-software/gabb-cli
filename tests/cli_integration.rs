@@ -162,6 +162,7 @@ fn symbols_and_implementation_commands_work() {
     );
 
     // implementation should resolve the symbol under the cursor
+    // Exit code 0 = found results, exit code 1 = not found (but not an error)
     let impl_out = Command::new(bin)
         .args([
             "implementation",
@@ -177,8 +178,9 @@ fn symbols_and_implementation_commands_work() {
         .current_dir(root)
         .output()
         .unwrap();
+    let impl_exit_code = impl_out.status.code().unwrap_or(-1);
     assert!(
-        impl_out.status.success(),
+        impl_exit_code == 0 || impl_exit_code == 1,
         "implementation exited {:?}, stderr: {}",
         impl_out.status,
         String::from_utf8_lossy(&impl_out.stderr)

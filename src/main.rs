@@ -10,6 +10,7 @@ use gabb_cli::mcp;
 use gabb_cli::store;
 use gabb_cli::store::{normalize_path, DbOpenResult, IndexStore, SymbolQuery, SymbolRecord};
 use gabb_cli::workspace;
+use gabb_cli::ExitCode;
 use gabb_cli::OutputFormat;
 
 /// Open index store for query commands with version checking.
@@ -452,6 +453,10 @@ struct Cli {
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     verbose: u8,
 
+    /// Suppress non-essential output (for scripts). Errors still go to stderr.
+    #[arg(short, long, global = true)]
+    quiet: bool,
+
     /// Output format (text, json, jsonl, csv, tsv)
     #[arg(long, short = 'f', global = true, value_enum, default_value = "text")]
     format: OutputFormat,
@@ -737,40 +742,52 @@ enum DaemonCommands {
     Status,
 }
 
-fn main() -> Result<()> {
+fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
-    init_logging(cli.verbose);
+    init_logging(cli.verbose, cli.quiet);
     let format = cli.format;
+    let quiet = cli.quiet;
     let daemon_opts = DaemonOptions {
         no_start_daemon: cli.no_start_daemon,
         no_daemon: cli.no_daemon,
     };
 
     // Resolve workspace and database paths
-    let workspace = workspace::resolve_workspace(cli.workspace.as_deref())?;
+    let workspace = match workspace::resolve_workspace(cli.workspace.as_deref()) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::Error.into();
+        }
+    };
     let db = workspace::resolve_db_path(cli.db.as_deref(), &workspace);
 
     // Set environment variables for child processes
     workspace::set_env_for_children(&workspace, &db);
 
-    match cli.command {
+    let result = match cli.command {
         Commands::Daemon { command } => match command {
             DaemonCommands::Start {
                 rebuild,
                 background,
                 log_file,
-                quiet,
+                quiet: daemon_quiet,
             } => daemon::start(
                 &workspace,
                 &db,
                 rebuild,
                 background,
                 log_file.as_deref(),
-                quiet,
-            ),
-            DaemonCommands::Stop { force } => daemon::stop(&workspace, force),
-            DaemonCommands::Restart { rebuild } => daemon::restart(&workspace, &db, rebuild),
-            DaemonCommands::Status => daemon::status(&workspace, format),
+                daemon_quiet || quiet,
+            )
+            .map(|_| ExitCode::Success),
+            DaemonCommands::Stop { force } => {
+                daemon::stop(&workspace, force).map(|_| ExitCode::Success)
+            }
+            DaemonCommands::Restart { rebuild } => {
+                daemon::restart(&workspace, &db, rebuild).map(|_| ExitCode::Success)
+            }
+            DaemonCommands::Status => daemon::status(&workspace, format).map(|_| ExitCode::Success),
         },
         Commands::Symbols {
             file,
@@ -781,8 +798,7 @@ fn main() -> Result<()> {
             offset,
             source,
             context,
-        } => {
-            ensure_index_available(&db, &daemon_opts)?;
+        } => ensure_index_available(&db, &daemon_opts).and_then(|_| {
             let source_opts = SourceDisplayOptions {
                 include_source: source,
                 context_lines: context,
@@ -797,8 +813,9 @@ fn main() -> Result<()> {
                 offset,
                 format,
                 source_opts,
+                quiet,
             )
-        }
+        }),
         Commands::Implementation {
             file,
             line,
@@ -807,8 +824,7 @@ fn main() -> Result<()> {
             kind,
             source,
             context,
-        } => {
-            ensure_index_available(&db, &daemon_opts)?;
+        } => ensure_index_available(&db, &daemon_opts).and_then(|_| {
             let source_opts = SourceDisplayOptions {
                 include_source: source,
                 context_lines: context,
@@ -822,8 +838,9 @@ fn main() -> Result<()> {
                 kind.as_deref(),
                 format,
                 source_opts,
+                quiet,
             )
-        }
+        }),
         Commands::Usages {
             file,
             line,
@@ -831,14 +848,22 @@ fn main() -> Result<()> {
             limit,
             source,
             context,
-        } => {
-            ensure_index_available(&db, &daemon_opts)?;
+        } => ensure_index_available(&db, &daemon_opts).and_then(|_| {
             let source_opts = SourceDisplayOptions {
                 include_source: source,
                 context_lines: context,
             };
-            find_usages(&db, &file, line, character, limit, format, source_opts)
-        }
+            find_usages(
+                &db,
+                &file,
+                line,
+                character,
+                limit,
+                format,
+                source_opts,
+                quiet,
+            )
+        }),
         Commands::Symbol {
             name,
             file,
@@ -847,8 +872,7 @@ fn main() -> Result<()> {
             limit,
             source,
             context,
-        } => {
-            ensure_index_available(&db, &daemon_opts)?;
+        } => ensure_index_available(&db, &daemon_opts).and_then(|_| {
             let source_opts = SourceDisplayOptions {
                 include_source: source,
                 context_lines: context,
@@ -862,90 +886,102 @@ fn main() -> Result<()> {
                 limit,
                 format,
                 source_opts,
+                quiet,
             )
-        }
+        }),
         Commands::Definition {
             file,
             line,
             character,
             source,
             context,
-        } => {
-            ensure_index_available(&db, &daemon_opts)?;
+        } => ensure_index_available(&db, &daemon_opts).and_then(|_| {
             let source_opts = SourceDisplayOptions {
                 include_source: source,
                 context_lines: context,
             };
-            find_definition(&db, &file, line, character, format, source_opts)
-        }
+            find_definition(&db, &file, line, character, format, source_opts, quiet)
+        }),
         Commands::Duplicates {
             uncommitted,
             staged,
             kind,
             min_count,
-        } => {
-            ensure_index_available(&db, &daemon_opts)?;
-            find_duplicates(&db, uncommitted, staged, kind.as_deref(), min_count, format)
-        }
-        Commands::McpServer => mcp::run_server(&workspace, &db),
+        } => ensure_index_available(&db, &daemon_opts).and_then(|_| {
+            find_duplicates(
+                &db,
+                uncommitted,
+                staged,
+                kind.as_deref(),
+                min_count,
+                format,
+                quiet,
+            )
+        }),
+        Commands::McpServer => mcp::run_server(&workspace, &db).map(|_| ExitCode::Success),
         Commands::Mcp { command } => match command {
-            McpCommands::Config => mcp_config(&workspace),
+            McpCommands::Config => mcp_config(&workspace).map(|_| ExitCode::Success),
             McpCommands::Install {
                 claude_desktop,
                 claude_code,
-            } => mcp_install(&workspace, claude_desktop, claude_code),
-            McpCommands::Status => mcp_status(),
+            } => mcp_install(&workspace, claude_desktop, claude_code).map(|_| ExitCode::Success),
+            McpCommands::Status => mcp_status().map(|_| ExitCode::Success),
             McpCommands::Uninstall {
                 claude_desktop,
                 claude_code,
-            } => mcp_uninstall(claude_desktop, claude_code),
-            McpCommands::Command => mcp_command(&workspace),
+            } => mcp_uninstall(claude_desktop, claude_code).map(|_| ExitCode::Success),
+            McpCommands::Command => mcp_command(&workspace).map(|_| ExitCode::Success),
         },
         Commands::Init {
             mcp,
             gitignore,
             skill,
-        } => init_project(&workspace, mcp, gitignore, skill),
+        } => init_project(&workspace, mcp, gitignore, skill).map(|_| ExitCode::Success),
         Commands::Includers {
             file,
             transitive,
             limit,
-        } => {
-            ensure_index_available(&db, &daemon_opts)?;
-            find_includers(&db, &file, transitive, limit, format)
-        }
+        } => ensure_index_available(&db, &daemon_opts)
+            .and_then(|_| find_includers(&db, &file, transitive, limit, format, quiet)),
         Commands::Includes {
             file,
             transitive,
             limit,
-        } => {
-            ensure_index_available(&db, &daemon_opts)?;
-            find_includes(&db, &file, transitive, limit, format)
-        }
+        } => ensure_index_available(&db, &daemon_opts)
+            .and_then(|_| find_includes(&db, &file, transitive, limit, format, quiet)),
         Commands::Structure {
             file,
             source,
             context,
-        } => {
-            ensure_index_available(&db, &daemon_opts)?;
+        } => ensure_index_available(&db, &daemon_opts).and_then(|_| {
             let source_opts = SourceDisplayOptions {
                 include_source: source,
                 context_lines: context,
             };
-            file_structure(&db, &workspace, &file, format, source_opts)
-        }
-        Commands::Stats => {
-            ensure_index_available(&db, &daemon_opts)?;
-            show_stats(&db, format)
+            file_structure(&db, &workspace, &file, format, source_opts, quiet)
+        }),
+        Commands::Stats => ensure_index_available(&db, &daemon_opts)
+            .and_then(|_| show_stats(&db, format).map(|_| ExitCode::Success)),
+    };
+
+    match result {
+        Ok(code) => code.into(),
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::Error.into()
         }
     }
 }
 
-fn init_logging(verbosity: u8) {
-    let level = match verbosity {
-        0 => "info",
-        1 => "debug",
-        _ => "trace",
+fn init_logging(verbosity: u8, quiet: bool) {
+    let level = if quiet {
+        "warn" // In quiet mode, only show warnings and errors
+    } else {
+        match verbosity {
+            0 => "info",
+            1 => "debug",
+            _ => "trace",
+        }
     };
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(level))
         .format_timestamp_secs()
@@ -963,7 +999,8 @@ fn list_symbols(
     offset: Option<usize>,
     format: OutputFormat,
     source_opts: SourceDisplayOptions,
-) -> Result<()> {
+    _quiet: bool,
+) -> Result<ExitCode> {
     let store = open_store_for_query(db)?;
     let file_str = file.map(|p| p.to_string_lossy().to_string());
 
@@ -1008,7 +1045,13 @@ fn list_symbols(
         symbols.sort_by(|a, b| a.name.cmp(&b.name));
     }
 
-    output_symbols(&symbols, format, source_opts)
+    let found = !symbols.is_empty();
+    output_symbols(&symbols, format, source_opts)?;
+    Ok(if found {
+        ExitCode::Success
+    } else {
+        ExitCode::NotFound
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1021,7 +1064,8 @@ fn find_implementation(
     kind: Option<&str>,
     format: OutputFormat,
     source_opts: SourceDisplayOptions,
-) -> Result<()> {
+    _quiet: bool,
+) -> Result<ExitCode> {
     let store = open_store_for_query(db)?;
     let (file, line, character) = parse_file_position(file, line, character)?;
     let target = resolve_symbol_at(&store, &file, line, character)?;
@@ -1055,9 +1099,16 @@ fn find_implementation(
         impl_symbols.truncate(lim);
     }
 
-    output_implementations(&target, &impl_symbols, format, source_opts)
+    let found = !impl_symbols.is_empty();
+    output_implementations(&target, &impl_symbols, format, source_opts)?;
+    Ok(if found {
+        ExitCode::Success
+    } else {
+        ExitCode::NotFound
+    })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn find_usages(
     db: &Path,
     file: &Path,
@@ -1066,7 +1117,8 @@ fn find_usages(
     limit: Option<usize>,
     format: OutputFormat,
     source_opts: SourceDisplayOptions,
-) -> Result<()> {
+    _quiet: bool,
+) -> Result<ExitCode> {
     let store = open_store_for_query(db)?;
     let (file, line, character) = parse_file_position(file, line, character)?;
     let target = resolve_symbol_at(&store, &file, line, character)?;
@@ -1100,7 +1152,13 @@ fn find_usages(
         refs.truncate(lim);
     }
 
-    output_usages(&target, &refs, &store, format, source_opts)
+    let found = !refs.is_empty();
+    output_usages(&target, &refs, &store, format, source_opts)?;
+    Ok(if found {
+        ExitCode::Success
+    } else {
+        ExitCode::NotFound
+    })
 }
 
 /// Output for usages with file grouping
@@ -1359,7 +1417,8 @@ fn show_symbol(
     limit: Option<usize>,
     format: OutputFormat,
     source_opts: SourceDisplayOptions,
-) -> Result<()> {
+    quiet: bool,
+) -> Result<ExitCode> {
     let store = open_store_for_query(db)?;
     let file_str = file.map(|p| p.to_string_lossy().to_string());
 
@@ -1404,10 +1463,12 @@ fn show_symbol(
                 );
             }
             OutputFormat::Text => {
-                println!("No symbols found for name '{}'.", name);
+                if !quiet {
+                    println!("No symbols found for name '{}'.", name);
+                }
             }
         }
-        return Ok(());
+        return Ok(ExitCode::NotFound);
     }
 
     let workspace_root = workspace_root_from_db(db)
@@ -1569,7 +1630,7 @@ fn show_symbol(
         }
     }
 
-    Ok(())
+    Ok(ExitCode::Success)
 }
 
 /// Definition output wrapper
@@ -1585,7 +1646,8 @@ fn find_definition(
     character: Option<usize>,
     format: OutputFormat,
     source_opts: SourceDisplayOptions,
-) -> Result<()> {
+    _quiet: bool,
+) -> Result<ExitCode> {
     let store = open_store_for_query(db)?;
     let (file, line, character) = parse_file_position(file, line, character)?;
     let canonical_file = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
@@ -1652,7 +1714,8 @@ fn find_definition(
         }
     }
 
-    Ok(())
+    // Definition always found if we reach here (errors are returned early)
+    Ok(ExitCode::Success)
 }
 
 /// Duplicates output structure
@@ -1682,7 +1745,8 @@ fn find_duplicates(
     kind: Option<&str>,
     min_count: usize,
     format: OutputFormat,
-) -> Result<()> {
+    quiet: bool,
+) -> Result<ExitCode> {
     let store = open_store_for_query(db)?;
     let workspace_root = workspace_root_from_db(db)?;
 
@@ -1690,8 +1754,8 @@ fn find_duplicates(
     let file_filter: Option<Vec<String>> = if uncommitted || staged {
         let files = get_git_changed_files(&workspace_root, uncommitted, staged)?;
         if files.is_empty() {
-            output_empty_duplicates(format)?;
-            return Ok(());
+            output_empty_duplicates(format, quiet)?;
+            return Ok(ExitCode::NotFound);
         }
         Some(files)
     } else {
@@ -1722,6 +1786,8 @@ fn find_duplicates(
         total_groups: group_outputs.len(),
         total_duplicates,
     };
+
+    let found = !group_outputs.is_empty();
 
     match format {
         OutputFormat::Json => {
@@ -1771,8 +1837,10 @@ fn find_duplicates(
         }
         OutputFormat::Text => {
             if group_outputs.is_empty() {
-                println!("No duplicates found.");
-                return Ok(());
+                if !quiet {
+                    println!("No duplicates found.");
+                }
+                return Ok(ExitCode::NotFound);
             }
 
             println!(
@@ -1807,10 +1875,14 @@ fn find_duplicates(
         }
     }
 
-    Ok(())
+    Ok(if found {
+        ExitCode::Success
+    } else {
+        ExitCode::NotFound
+    })
 }
 
-fn output_empty_duplicates(format: OutputFormat) -> Result<()> {
+fn output_empty_duplicates(format: OutputFormat, quiet: bool) -> Result<()> {
     match format {
         OutputFormat::Json => {
             let output = DuplicatesOutput {
@@ -1832,7 +1904,9 @@ fn output_empty_duplicates(format: OutputFormat) -> Result<()> {
             println!("group_hash\tname\tkind\tlocation\tcontainer");
         }
         OutputFormat::Text => {
-            println!("No changed files found.");
+            if !quiet {
+                println!("No changed files found.");
+            }
         }
     }
     Ok(())
@@ -1845,7 +1919,8 @@ fn find_includers(
     transitive: bool,
     limit: Option<usize>,
     format: OutputFormat,
-) -> Result<()> {
+    quiet: bool,
+) -> Result<ExitCode> {
     let store = open_store_for_query(db)?;
     let file_str = normalize_path(file);
 
@@ -1864,7 +1939,13 @@ fn find_includers(
         files.truncate(lim);
     }
 
-    output_file_list(&files, &file_str, "includers", transitive, format)
+    let found = !files.is_empty();
+    output_file_list(&files, &file_str, "includers", transitive, format, quiet)?;
+    Ok(if found {
+        ExitCode::Success
+    } else {
+        ExitCode::NotFound
+    })
 }
 
 /// Find all files that the given file includes/imports (forward dependency lookup).
@@ -1874,7 +1955,8 @@ fn find_includes(
     transitive: bool,
     limit: Option<usize>,
     format: OutputFormat,
-) -> Result<()> {
+    quiet: bool,
+) -> Result<ExitCode> {
     let store = open_store_for_query(db)?;
     let file_str = normalize_path(file);
 
@@ -1892,7 +1974,13 @@ fn find_includes(
         files.truncate(lim);
     }
 
-    output_file_list(&files, &file_str, "includes", transitive, format)
+    let found = !files.is_empty();
+    output_file_list(&files, &file_str, "includes", transitive, format, quiet)?;
+    Ok(if found {
+        ExitCode::Success
+    } else {
+        ExitCode::NotFound
+    })
 }
 
 /// Output a list of files in various formats.
@@ -1902,6 +1990,7 @@ fn output_file_list(
     relation: &str,
     transitive: bool,
     format: OutputFormat,
+    quiet: bool,
 ) -> Result<()> {
     #[derive(serde::Serialize)]
     struct FileListOutput {
@@ -1946,10 +2035,12 @@ fn output_file_list(
         OutputFormat::Text => {
             let transitive_str = if transitive { " (transitive)" } else { "" };
             if files.is_empty() {
-                println!(
-                    "No {} found for {}{}",
-                    relation, source_file, transitive_str
-                );
+                if !quiet {
+                    println!(
+                        "No {} found for {}{}",
+                        relation, source_file, transitive_str
+                    );
+                }
             } else {
                 println!(
                     "Found {} {}{} for {}:\n",
@@ -2455,7 +2546,8 @@ fn file_structure(
     file: &Path,
     format: OutputFormat,
     source_opts: SourceDisplayOptions,
-) -> Result<()> {
+    _quiet: bool,
+) -> Result<ExitCode> {
     let store = open_store_for_query(db)?;
 
     // Resolve the file path
@@ -2551,7 +2643,7 @@ fn file_structure(
         }
     }
 
-    Ok(())
+    Ok(ExitCode::Success)
 }
 
 /// Print symbol tree with ASCII art indentation

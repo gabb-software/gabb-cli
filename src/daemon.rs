@@ -16,6 +16,209 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
+/// Options for ensure_index_available
+#[derive(Debug, Clone)]
+pub struct EnsureIndexOptions {
+    /// If true, don't auto-start the daemon (error instead)
+    pub no_start_daemon: bool,
+    /// Timeout for waiting for index to be ready
+    pub timeout: Duration,
+    /// If true, suppress informational warnings about daemon status
+    pub no_daemon_warnings: bool,
+}
+
+impl Default for EnsureIndexOptions {
+    fn default() -> Self {
+        Self {
+            no_start_daemon: false,
+            timeout: Duration::from_secs(60),
+            no_daemon_warnings: false,
+        }
+    }
+}
+
+/// Ensure the index is available, auto-starting the daemon if needed.
+/// Also handles automatic rebuild when schema version changes or database is corrupt.
+///
+/// This is the shared logic used by both CLI commands and the MCP server.
+pub fn ensure_index_available(
+    workspace_root: &Path,
+    db: &Path,
+    opts: &EnsureIndexOptions,
+) -> Result<()> {
+    // Check if index exists
+    if !db.exists() {
+        if opts.no_start_daemon {
+            bail!(
+                "Index not found at {}\n\n\
+                 Start the daemon to build an index:\n\
+                 \n\
+                     gabb daemon start",
+                db.display()
+            );
+        }
+
+        // Auto-start daemon and wait for initial index
+        info!("Index not found. Starting daemon to build index...");
+        start_daemon_and_wait(workspace_root, db, false, opts.timeout)?;
+        return Ok(());
+    }
+
+    // Index exists - check if it needs regeneration (version mismatch)
+    match IndexStore::try_open(db) {
+        Ok(DbOpenResult::Ready(_)) => {
+            // Index is good, check daemon version (unless suppressed)
+            if !opts.no_daemon_warnings {
+                check_daemon_version(workspace_root);
+            }
+        }
+        Ok(DbOpenResult::NeedsRegeneration { reason, .. }) => {
+            if opts.no_start_daemon {
+                bail!(
+                    "{}\n\nRun `gabb daemon start --rebuild` to regenerate the index.",
+                    reason.message()
+                );
+            }
+
+            // Auto-rebuild the index
+            info!("{}", reason.message());
+            info!("Automatically rebuilding index...");
+
+            // Stop any running daemon first
+            if let Ok(Some(pid_info)) = read_pid_file(workspace_root) {
+                if is_process_running(pid_info.pid) {
+                    info!("Stopping existing daemon (PID {})...", pid_info.pid);
+                    let _ = stop(workspace_root, false);
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            }
+
+            // Delete the old database and WAL files
+            let _ = fs::remove_file(db);
+            let _ = fs::remove_file(db.with_extension("db-wal"));
+            let _ = fs::remove_file(db.with_extension("db-shm"));
+
+            // Start daemon with rebuild
+            start_daemon_and_wait(workspace_root, db, true, opts.timeout)?;
+        }
+        Err(e) => {
+            // Database is corrupted or unreadable
+            if opts.no_start_daemon {
+                bail!(
+                    "Failed to open index: {}\n\nRun `gabb daemon start --rebuild` to regenerate.",
+                    e
+                );
+            }
+
+            warn!("Failed to open index: {}. Rebuilding...", e);
+
+            // Stop daemon if running
+            if let Ok(Some(pid_info)) = read_pid_file(workspace_root) {
+                if is_process_running(pid_info.pid) {
+                    let _ = stop(workspace_root, false);
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            }
+
+            // Delete corrupted database and WAL files
+            let _ = fs::remove_file(db);
+            let _ = fs::remove_file(db.with_extension("db-wal"));
+            let _ = fs::remove_file(db.with_extension("db-shm"));
+
+            // Rebuild
+            start_daemon_and_wait(workspace_root, db, true, opts.timeout)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Start daemon in background and wait for index to be ready.
+pub fn start_daemon_and_wait(
+    workspace_root: &Path,
+    db: &Path,
+    rebuild: bool,
+    timeout: Duration,
+) -> Result<()> {
+    // Delete any leftover WAL files that might interfere
+    let wal_path = db.with_extension("db-wal");
+    let shm_path = db.with_extension("db-shm");
+    let _ = fs::remove_file(&wal_path);
+    let _ = fs::remove_file(&shm_path);
+
+    start(workspace_root, db, rebuild, true, None, true)?; // quiet=true for background
+
+    // Wait for index to be created AND readable (with timeout)
+    let start_time = std::time::Instant::now();
+    let check_interval = Duration::from_millis(500);
+
+    loop {
+        if start_time.elapsed() >= timeout {
+            bail!(
+                "Daemon started but index not ready within {} seconds.\n\
+                 Check daemon logs at {}/.gabb/daemon.log",
+                timeout.as_secs(),
+                workspace_root.display()
+            );
+        }
+
+        if db.exists() {
+            // Try to open the database to verify it's ready
+            match IndexStore::try_open(db) {
+                Ok(DbOpenResult::Ready(_)) => {
+                    info!("Index ready. Proceeding with query.");
+                    return Ok(());
+                }
+                _ => {
+                    // Database exists but not ready yet, keep waiting
+                }
+            }
+        }
+
+        std::thread::sleep(check_interval);
+    }
+}
+
+/// Check daemon version and warn about mismatches.
+fn check_daemon_version(workspace_root: &Path) {
+    // Try to read PID file and check version
+    if let Ok(Some(pid_info)) = read_pid_file(workspace_root) {
+        if is_process_running(pid_info.pid) {
+            let cli_version = env!("CARGO_PKG_VERSION");
+            if pid_info.version != cli_version {
+                warn!(
+                    "Daemon version ({}) differs from CLI version ({}).\n\
+                     Consider restarting: gabb daemon restart",
+                    pid_info.version, cli_version
+                );
+            }
+        }
+    }
+}
+
+/// Derive workspace root from database path.
+/// The database is expected to be at <workspace>/.gabb/index.db
+/// Handles both relative and absolute paths.
+pub fn workspace_root_from_db(db: &Path) -> Result<PathBuf> {
+    let abs = if db.is_absolute() {
+        db.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(db)
+    };
+    let path = abs.canonicalize().unwrap_or(abs);
+    if let Some(parent) = path.parent() {
+        if parent.file_name().and_then(|n| n.to_str()) == Some(".gabb") {
+            if let Some(root) = parent.parent() {
+                return Ok(root.to_path_buf());
+            }
+        }
+        return Ok(parent.to_path_buf());
+    }
+    bail!("could not derive workspace root from db path")
+}
+
 /// PID file content structure
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PidFile {

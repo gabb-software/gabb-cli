@@ -28,157 +28,19 @@ fn open_store_for_query(db: &Path) -> Result<IndexStore> {
     }
 }
 
-/// Ensure the index is available, auto-starting the daemon if needed.
-/// Also handles automatic rebuild when schema version changes.
+/// Ensure the index is available using the shared daemon logic.
 fn ensure_index_available(db: &Path, opts: &DaemonOptions) -> Result<()> {
     // Derive workspace root from db path
-    let workspace_root = workspace_root_from_db(db)
+    let workspace_root = daemon::workspace_root_from_db(db)
         .unwrap_or_else(|_| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-    // Check if index exists
-    if !db.exists() {
-        if opts.no_start_daemon {
-            bail!(
-                "Index not found at {}\n\n\
-                 Start the daemon to build an index:\n\
-                 \n\
-                     gabb daemon start",
-                db.display()
-            );
-        }
+    let daemon_opts = daemon::EnsureIndexOptions {
+        no_start_daemon: opts.no_start_daemon,
+        timeout: std::time::Duration::from_secs(60),
+        no_daemon_warnings: opts.no_daemon,
+    };
 
-        // Auto-start daemon and wait for initial index
-        log::info!("Index not found. Starting daemon to build index...");
-        start_daemon_and_wait(&workspace_root, db, false)?;
-        return Ok(());
-    }
-
-    // Index exists - check if it needs regeneration (version mismatch)
-    match IndexStore::try_open(db) {
-        Ok(DbOpenResult::Ready(_)) => {
-            // Index is good, check daemon version (unless suppressed)
-            if !opts.no_daemon {
-                check_daemon_version(&workspace_root);
-            }
-        }
-        Ok(DbOpenResult::NeedsRegeneration { reason, .. }) => {
-            if opts.no_start_daemon {
-                bail!(
-                    "{}\n\nRun `gabb daemon start --rebuild` to regenerate the index.",
-                    reason.message()
-                );
-            }
-
-            // Auto-rebuild the index
-            log::info!("{}", reason.message());
-            log::info!("Automatically rebuilding index...");
-
-            // Stop any running daemon first
-            if let Ok(Some(pid_info)) = daemon::read_pid_file(&workspace_root) {
-                if daemon::is_process_running(pid_info.pid) {
-                    log::info!("Stopping existing daemon (PID {})...", pid_info.pid);
-                    let _ = daemon::stop(&workspace_root, false);
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                }
-            }
-
-            // Delete the old database and WAL files
-            let _ = fs::remove_file(db);
-            let _ = fs::remove_file(db.with_extension("db-wal"));
-            let _ = fs::remove_file(db.with_extension("db-shm"));
-
-            // Start daemon with rebuild
-            start_daemon_and_wait(&workspace_root, db, true)?;
-        }
-        Err(e) => {
-            // Database is corrupted or unreadable
-            if opts.no_start_daemon {
-                bail!(
-                    "Failed to open index: {}\n\nRun `gabb daemon start --rebuild` to regenerate.",
-                    e
-                );
-            }
-
-            log::warn!("Failed to open index: {}. Rebuilding...", e);
-
-            // Stop daemon if running
-            if let Ok(Some(pid_info)) = daemon::read_pid_file(&workspace_root) {
-                if daemon::is_process_running(pid_info.pid) {
-                    let _ = daemon::stop(&workspace_root, false);
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                }
-            }
-
-            // Delete corrupted database and WAL files
-            let _ = fs::remove_file(db);
-            let _ = fs::remove_file(db.with_extension("db-wal"));
-            let _ = fs::remove_file(db.with_extension("db-shm"));
-
-            // Rebuild
-            start_daemon_and_wait(&workspace_root, db, true)?;
-        }
-    }
-
-    Ok(())
-}
-
-/// Start daemon in background and wait for index to be ready.
-fn start_daemon_and_wait(workspace_root: &Path, db: &Path, rebuild: bool) -> Result<()> {
-    // Delete any leftover WAL files that might interfere
-    let wal_path = db.with_extension("db-wal");
-    let shm_path = db.with_extension("db-shm");
-    let _ = fs::remove_file(&wal_path);
-    let _ = fs::remove_file(&shm_path);
-
-    daemon::start(workspace_root, db, rebuild, true, None, true)?; // quiet=true for background
-
-    // Wait for index to be created AND readable (with timeout)
-    let max_wait = std::time::Duration::from_secs(60);
-    let start_time = std::time::Instant::now();
-    let check_interval = std::time::Duration::from_millis(500);
-
-    loop {
-        if start_time.elapsed() >= max_wait {
-            bail!(
-                "Daemon started but index not ready within 60 seconds.\n\
-                 Check daemon logs at {}/.gabb/daemon.log",
-                workspace_root.display()
-            );
-        }
-
-        if db.exists() {
-            // Try to open the database to verify it's ready
-            match IndexStore::try_open(db) {
-                Ok(DbOpenResult::Ready(_)) => {
-                    log::info!("Index ready. Proceeding with query.");
-                    return Ok(());
-                }
-                _ => {
-                    // Database exists but not ready yet, keep waiting
-                }
-            }
-        }
-
-        std::thread::sleep(check_interval);
-    }
-}
-
-/// Check daemon version and warn about mismatches.
-fn check_daemon_version(workspace_root: &Path) {
-    // Try to read PID file and check version
-    if let Ok(Some(pid_info)) = daemon::read_pid_file(workspace_root) {
-        if daemon::is_process_running(pid_info.pid) {
-            let cli_version = env!("CARGO_PKG_VERSION");
-            if pid_info.version != cli_version {
-                log::warn!(
-                    "Daemon version ({}) differs from CLI version ({}).\n\
-                     Consider restarting: gabb daemon restart",
-                    pid_info.version,
-                    cli_version
-                );
-            }
-        }
-    }
+    daemon::ensure_index_available(&workspace_root, db, &daemon_opts)
 }
 
 // ==================== Output Formatting ====================
@@ -1122,7 +984,7 @@ fn find_usages(
     let store = open_store_for_query(db)?;
     let (file, line, character) = parse_file_position(file, line, character)?;
     let target = resolve_symbol_at(&store, &file, line, character)?;
-    let workspace_root = workspace_root_from_db(db).unwrap_or_else(|_| {
+    let workspace_root = daemon::workspace_root_from_db(db).unwrap_or_else(|_| {
         file.parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
@@ -1471,7 +1333,7 @@ fn show_symbol(
         return Ok(ExitCode::NotFound);
     }
 
-    let workspace_root = workspace_root_from_db(db)
+    let workspace_root = daemon::workspace_root_from_db(db)
         .unwrap_or_else(|_| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     // Build detailed output for each symbol
@@ -1748,7 +1610,7 @@ fn find_duplicates(
     quiet: bool,
 ) -> Result<ExitCode> {
     let store = open_store_for_query(db)?;
-    let workspace_root = workspace_root_from_db(db)?;
+    let workspace_root = daemon::workspace_root_from_db(db)?;
 
     // Get file filter based on git flags
     let file_filter: Option<Vec<String>> = if uncommitted || staged {
@@ -2389,26 +2251,6 @@ fn offset_to_line_char_in_buf(buf: &[u8], offset: usize) -> Option<(usize, usize
     } else {
         None
     }
-}
-
-fn workspace_root_from_db(db: &Path) -> Result<PathBuf> {
-    let abs = if db.is_absolute() {
-        db.to_path_buf()
-    } else {
-        env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(db)
-    };
-    let path = abs.canonicalize().unwrap_or(abs);
-    if let Some(parent) = path.parent() {
-        if parent.file_name().and_then(|n| n.to_str()) == Some(".gabb") {
-            if let Some(root) = parent.parent() {
-                return Ok(root.to_path_buf());
-            }
-        }
-        return Ok(parent.to_path_buf());
-    }
-    Err(anyhow!("could not derive workspace root from db path"))
 }
 
 fn parse_file_position(

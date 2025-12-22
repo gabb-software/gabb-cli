@@ -246,9 +246,20 @@ impl McpServer {
     }
 
     fn handle_initialize(&mut self, _params: &Value) -> Result<Value> {
-        // Ensure default workspace index is available (auto-start daemon if needed)
+        // Try to ensure default workspace index is available (auto-start daemon if needed).
+        // If this fails, we still proceed with initialization - tools can retry on first call.
+        // This makes the MCP server more resilient to transient startup issues.
         let default_workspace = self.default_workspace.clone();
-        self.ensure_workspace_index(&default_workspace)?;
+        if let Err(e) = self.ensure_workspace_index(&default_workspace) {
+            log::warn!(
+                "Could not initialize index during startup: {}. Will retry on first tool call.",
+                e
+            );
+            // Don't fail - let initialization succeed so tools are available
+            // Tools will retry ensure_workspace_index when called
+        }
+
+        self.initialized = true;
 
         Ok(json!({
             "protocolVersion": PROTOCOL_VERSION,
@@ -887,7 +898,12 @@ impl McpServer {
         Ok(info)
     }
 
-    /// Ensure index exists for a workspace, starting daemon if needed
+    /// Ensure index exists for a workspace, starting daemon if needed.
+    /// Uses the shared daemon logic that handles:
+    /// - Auto-starting daemon if index doesn't exist
+    /// - Waiting for database to be fully ready (not just file existence)
+    /// - Schema version mismatches (auto-rebuild)
+    /// - Corrupt databases (auto-rebuild)
     fn ensure_workspace_index(&mut self, workspace_root: &Path) -> Result<()> {
         use crate::daemon;
 
@@ -897,28 +913,20 @@ impl McpServer {
             return Ok(());
         }
 
-        if !info.db_path.exists() {
-            // Start daemon in background
-            log::info!(
-                "Index not found for {}. Starting daemon...",
-                info.root.display()
-            );
-            daemon::start(&info.root, &info.db_path, false, true, None, true)?; // quiet=true for background
+        // Clone paths before the borrow ends
+        let root = info.root.clone();
+        let db_path = info.db_path.clone();
 
-            // Wait for index to be ready
-            let max_wait = std::time::Duration::from_secs(60);
-            let start = std::time::Instant::now();
-            let db_path = info.db_path.clone();
-            while !db_path.exists() && start.elapsed() < max_wait {
-                std::thread::sleep(std::time::Duration::from_millis(500));
-            }
+        // Use the shared daemon logic for proper index initialization
+        let opts = daemon::EnsureIndexOptions {
+            no_start_daemon: false,
+            timeout: std::time::Duration::from_secs(60),
+            no_daemon_warnings: true, // Suppress warnings in MCP context
+        };
 
-            if !db_path.exists() {
-                bail!("Daemon started but index not created within 60 seconds");
-            }
-        }
+        daemon::ensure_index_available(&root, &db_path, &opts)?;
 
-        // Re-get info (borrow checker)
+        // Re-get info (borrow checker) and open the store
         let info = self.workspace_cache.get_mut(workspace_root).unwrap();
         info.store = Some(IndexStore::open(&info.db_path)?);
         Ok(())

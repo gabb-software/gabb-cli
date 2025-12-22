@@ -4,7 +4,7 @@ Gabb is a Rust CLI that builds a local code index so editors and AI coding assis
 
 ## Status
 - Indexes TypeScript/TSX, Rust, Kotlin, and C++, storing results in a local SQLite database
-- Commands: `gabb daemon start/stop/restart/status`, `gabb symbols`, `gabb symbol`, `gabb implementation`, `gabb usages`, `gabb definition`, `gabb duplicates`, `gabb structure`, `gabb stats`, `gabb includers`, `gabb includes`, `gabb mcp-server`
+- Commands: `gabb setup`, `gabb init`, `gabb daemon start/stop/restart/status`, `gabb symbols`, `gabb symbol`, `gabb implementation`, `gabb usages`, `gabb definition`, `gabb duplicates`, `gabb structure`, `gabb stats`, `gabb includers`, `gabb includes`, `gabb mcp-server`
 - Outputs: symbol definitions, relationships (implements/extends), and references
 - MCP server for AI assistant integration (Claude Desktop, Claude Code)
 
@@ -13,21 +13,24 @@ Gabb is a Rust CLI that builds a local code index so editors and AI coding assis
 # 1) Install via Homebrew
 brew install dmb23/tap/gabb
 
-# 2) Initialize gabb with AI assistant integration
-gabb init --mcp --skill
+# 2) Run the interactive setup wizard
+gabb setup
 
-# 3) Start the daemon in background
-gabb daemon start --background
-
-# 4) Query the index
+# 3) Query the index
 gabb symbols --kind function --limit 10
 gabb symbol --name MyClass
 gabb usages --file src/main.rs:10:5
 ```
 
-The `gabb init --mcp --skill` command sets up:
-- `.claude/mcp.json` - MCP server config for Claude Code
-- `.claude/skills/gabb/SKILL.md` - Agent skill that teaches Claude to prefer gabb over grep
+The `gabb setup` command is an interactive wizard that:
+1. Detects your workspace and project type
+2. Creates the `.gabb/` directory
+3. Offers to install MCP config (`.claude/mcp.json`) for Claude Code
+4. Offers to create an agent skill (`.claude/skills/gabb/SKILL.md`)
+5. Updates `.gitignore` to exclude generated files
+6. Starts the daemon and runs the initial index
+
+Use `gabb setup --yes` for non-interactive mode, or `gabb setup --dry-run` to preview what would happen.
 
 The daemon will crawl your workspace, index all supported files, and keep the SQLite database up to date as files change. Use `-v`/`-vv` to increase logging.
 
@@ -59,6 +62,8 @@ Requires Rust 1.70+. The `cargo binstall` option downloads pre-built binaries in
 ## Usage
 ```bash
 # Workspace is auto-detected from .gabb/, .git/, Cargo.toml, package.json, etc.
+gabb setup [--yes] [--dry-run]
+gabb init [--mcp] [--skill] [--gitignore]
 gabb daemon start [--rebuild] [--background] [-v|-vv]
 gabb daemon stop [--force]
 gabb daemon status

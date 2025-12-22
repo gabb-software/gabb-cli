@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use std::collections::HashSet;
 use std::env;
 use std::fs;
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use gabb_cli::daemon;
@@ -506,6 +507,15 @@ enum Commands {
         #[arg(long)]
         skill: bool,
     },
+    /// Interactive setup wizard for one-command onboarding
+    Setup {
+        /// Accept all defaults without prompting (non-interactive mode)
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Show what would happen without making changes
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Find all files that #include this header (reverse dependency lookup)
     Includers {
         /// Header file to find includers for
@@ -799,6 +809,9 @@ fn main() -> std::process::ExitCode {
             gitignore,
             skill,
         } => init_project(&workspace, mcp, gitignore, skill).map(|_| ExitCode::Success),
+        Commands::Setup { yes, dry_run } => {
+            setup_wizard(&workspace, &db, yes, dry_run).map(|_| ExitCode::Success)
+        }
         Commands::Includers {
             file,
             transitive,
@@ -3221,6 +3234,193 @@ fn init_skill(root: &Path) -> Result<()> {
     fs::write(&skill_file, content)?;
     println!("  Created .claude/skills/gabb/SKILL.md");
     println!("  Claude will auto-discover this skill for code navigation tasks");
+
+    Ok(())
+}
+
+// ==================== Setup Wizard ====================
+
+/// Detect what kind of project this is based on marker files
+fn detect_project_type(root: &Path) -> Option<&'static str> {
+    let markers = [
+        ("Cargo.toml", "Rust"),
+        ("package.json", "Node.js"),
+        ("pyproject.toml", "Python"),
+        ("go.mod", "Go"),
+        ("build.gradle", "Gradle"),
+        ("build.gradle.kts", "Gradle (Kotlin)"),
+        ("pom.xml", "Maven"),
+        ("CMakeLists.txt", "CMake"),
+        ("Makefile", "Make"),
+    ];
+
+    for (file, project_type) in markers {
+        if root.join(file).exists() {
+            return Some(project_type);
+        }
+    }
+    None
+}
+
+/// Prompt user for yes/no confirmation
+fn prompt_yes_no(prompt: &str, default_yes: bool) -> Result<bool> {
+    let suffix = if default_yes { "[Y/n]" } else { "[y/N]" };
+    print!("{} {} ", prompt, suffix);
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().lock().read_line(&mut input)?;
+    let input = input.trim().to_lowercase();
+
+    if input.is_empty() {
+        return Ok(default_yes);
+    }
+
+    Ok(input == "y" || input == "yes")
+}
+
+/// Interactive setup wizard for one-command onboarding
+fn setup_wizard(root: &Path, db: &Path, yes: bool, dry_run: bool) -> Result<()> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let gabb_dir = root.join(".gabb");
+
+    // Step 1: Detect and display workspace
+    println!();
+    let project_type = detect_project_type(&root);
+    if let Some(ptype) = project_type {
+        println!(
+            "🔍 Detected workspace: {} ({} found)",
+            root.display(),
+            ptype
+        );
+    } else {
+        println!("🔍 Detected workspace: {}", root.display());
+    }
+
+    // Step 2: Create .gabb directory
+    let gabb_exists = gabb_dir.exists();
+    if gabb_exists {
+        println!("📁 .gabb/ already exists");
+    } else if dry_run {
+        println!("📁 Would create .gabb/");
+    } else {
+        fs::create_dir_all(&gabb_dir)?;
+        println!("📁 Created .gabb/");
+    }
+
+    // Step 3: Offer to install MCP config for Claude Code
+    let claude_dir = root.join(".claude");
+    let mcp_config_path = claude_dir.join("mcp.json");
+    let mcp_already_configured = if mcp_config_path.exists() {
+        let content = fs::read_to_string(&mcp_config_path).unwrap_or_default();
+        content.contains("\"gabb\"")
+    } else {
+        false
+    };
+
+    let install_mcp = if mcp_already_configured {
+        println!("🔧 Claude Code MCP already configured");
+        false
+    } else {
+        let should_install = yes || prompt_yes_no("🔧 Install MCP config for Claude Code?", true)?;
+        if should_install {
+            if dry_run {
+                println!("   Would add gabb to .claude/mcp.json");
+            } else {
+                init_mcp_config(&root)?;
+                println!("   ✅ Added gabb to Claude Code config");
+            }
+        }
+        should_install
+    };
+
+    // Step 4: Offer to add skill file
+    let skill_dir = root.join(".claude").join("skills").join("gabb");
+    let skill_file = skill_dir.join("SKILL.md");
+    let skill_exists = skill_file.exists();
+
+    let install_skill = if skill_exists {
+        println!("📚 Agent skill already exists");
+        false
+    } else {
+        let should_install = yes || prompt_yes_no("📚 Create agent skill for Claude?", true)?;
+        if should_install {
+            if dry_run {
+                println!("   Would create .claude/skills/gabb/SKILL.md");
+            } else {
+                init_skill(&root)?;
+                println!("   ✅ Created agent skill");
+            }
+        }
+        should_install
+    };
+
+    // Step 5: Offer to update .gitignore
+    let gitignore_path = root.join(".gitignore");
+    let gitignore_content = if gitignore_path.exists() {
+        fs::read_to_string(&gitignore_path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let gitignore_has_gabb = gitignore_content.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed == ".gabb/" || trimmed == ".gabb"
+    });
+    let gitignore_has_claude = gitignore_content.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed == ".claude/" || trimmed == ".claude"
+    });
+
+    if gitignore_has_gabb && gitignore_has_claude {
+        println!("📝 .gitignore already configured");
+    } else {
+        let should_update =
+            yes || prompt_yes_no("📝 Add .gabb/ and .claude/ to .gitignore?", true)?;
+        if should_update {
+            if dry_run {
+                if !gitignore_has_gabb {
+                    println!("   Would add .gabb/ to .gitignore");
+                }
+                if !gitignore_has_claude {
+                    println!("   Would add .claude/ to .gitignore");
+                }
+            } else {
+                init_gitignore(&root)?;
+                println!("   ✅ Updated .gitignore");
+            }
+        }
+    }
+
+    // Step 6: Start daemon and run initial index
+    if dry_run {
+        println!("🚀 Would start daemon and run initial index");
+    } else {
+        println!("🚀 Starting daemon...");
+
+        // Check if daemon is already running
+        if let Ok(Some(pid_info)) = daemon::read_pid_file(&root) {
+            if daemon::is_process_running(pid_info.pid) {
+                println!("   Daemon already running (PID {})", pid_info.pid);
+            } else {
+                // Start daemon in foreground to show progress, but don't block
+                daemon::start(&root, db, false, false, None, false)?;
+            }
+        } else {
+            // Start daemon in foreground to show progress
+            daemon::start(&root, db, false, false, None, false)?;
+        }
+    }
+
+    // Step 7: Print success message
+    println!();
+    if dry_run {
+        println!("Dry run complete. No changes were made.");
+    } else {
+        println!("Setup complete! Claude can now use gabb tools in this project.");
+        if install_mcp || install_skill {
+            println!("Restart Claude Code to load the new MCP server.");
+        }
+    }
 
     Ok(())
 }

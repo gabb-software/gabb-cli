@@ -2661,7 +2661,7 @@ fn generate_mcp_config(root: &Path, use_absolute_path: bool) -> serde_json::Valu
         "mcpServers": {
             "gabb": {
                 "command": find_gabb_binary(),
-                "args": ["mcp-server", "--root", root_str]
+                "args": ["mcp-server", "--workspace", root_str]
             }
         }
     })
@@ -3093,7 +3093,7 @@ fn init_mcp_config(root: &Path) -> Result<()> {
         "mcpServers": {
             "gabb": {
                 "command": find_gabb_binary(),
-                "args": ["mcp-server", "--root", "."]
+                "args": ["mcp-server", "--workspace", "."]
             }
         }
     });

@@ -152,7 +152,7 @@ struct WorkspaceInfo {
 
 /// MCP Server state with multi-workspace support
 pub struct McpServer {
-    /// Default workspace (from --root flag), used when no file path is provided
+    /// Default workspace (from --workspace flag), used when no file path is provided
     default_workspace: PathBuf,
     /// Default database path
     default_db_path: PathBuf,

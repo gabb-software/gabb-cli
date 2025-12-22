@@ -484,7 +484,7 @@ fn start_background(
     let mut cmd = Command::new(exe);
     cmd.arg("daemon")
         .arg("start")
-        .arg("--root")
+        .arg("--workspace")
         .arg(&root)
         .arg("--db")
         .arg(&db_arg);

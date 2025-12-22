@@ -3,7 +3,7 @@
     "gabb": {
       "args": [
         "mcp-server",
-        "--root",
+        "--workspace",
         "."
       ],
       "command": "/opt/homebrew/bin/gabb"

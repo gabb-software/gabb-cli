@@ -1354,6 +1354,19 @@ impl McpServer {
                     self.default_workspace.display(),
                     self.default_db_path.display()
                 ));
+                // Add index stats if available
+                if let Ok(store) = self.get_store_for_workspace(&self.default_workspace.clone()) {
+                    if let Ok(stats) = store.get_index_stats() {
+                        status.push_str(&format!(
+                            "  Index: {} files, {} symbols\n",
+                            stats.files.total, stats.symbols.total
+                        ));
+                        if let Some(ref last_time) = stats.index.last_updated {
+                            status.push_str(&format!("  Last indexed: {}\n", last_time));
+                        }
+                    }
+                }
+                status.push_str("  Activity: watching for changes\n");
             } else {
                 status.push_str(&format!(
                     "  Daemon: not running (stale PID file)\n  Root: {}\n  Database: {}\n",
@@ -1367,6 +1380,20 @@ impl McpServer {
                 self.default_workspace.display(),
                 self.default_db_path.display()
             ));
+            // Show stats even if daemon is not running
+            if self.default_db_path.exists() {
+                if let Ok(store) = self.get_store_for_workspace(&self.default_workspace.clone()) {
+                    if let Ok(stats) = store.get_index_stats() {
+                        status.push_str(&format!(
+                            "  Index: {} files, {} symbols\n",
+                            stats.files.total, stats.symbols.total
+                        ));
+                        if let Some(ref last_time) = stats.index.last_updated {
+                            status.push_str(&format!("  Last indexed: {}\n", last_time));
+                        }
+                    }
+                }
+            }
         }
 
         // Show cached workspaces

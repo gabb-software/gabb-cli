@@ -23,10 +23,24 @@ pub struct PidFile {
     pub version: String,
     pub schema_version: String,
     pub started_at: String,
+    /// Original start options (for restart)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_options: Option<StartOptions>,
+}
+
+/// Options used when starting the daemon, stored for restart
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StartOptions {
+    /// Database path (relative to workspace root)
+    pub db_path: Option<String>,
+    /// Whether rebuild was requested
+    pub rebuild: bool,
+    /// Log file path
+    pub log_file: Option<String>,
 }
 
 impl PidFile {
-    fn new(pid: u32) -> Self {
+    fn new(pid: u32, start_options: Option<StartOptions>) -> Self {
         Self {
             pid,
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -36,6 +50,7 @@ impl PidFile {
                 crate::store::SCHEMA_MINOR
             ),
             started_at: chrono_lite_now(),
+            start_options,
         }
     }
 }
@@ -440,9 +455,16 @@ fn run_foreground(root: &Path, db_path: &Path, rebuild: bool, quiet: bool) -> Re
         remove_pid_file(&root)?;
     }
 
+    // Create start options for restart capability
+    let start_options = StartOptions {
+        db_path: Some(db_path.to_string_lossy().to_string()),
+        rebuild,
+        log_file: None,
+    };
+
     // Write PID file
     let pid = std::process::id();
-    let pid_file = PidFile::new(pid);
+    let pid_file = PidFile::new(pid, Some(start_options));
     write_pid_file(&root, &pid_file)?;
     info!("Daemon started (PID {})", pid);
 
@@ -654,10 +676,14 @@ pub fn stop(root: &Path, force: bool) -> Result<()> {
 }
 
 /// Restart the daemon
+/// If rebuild is true, forces a full reindex. Otherwise, preserves original start options.
 pub fn restart(root: &Path, db_path: &Path, rebuild: bool) -> Result<()> {
     let root = root
         .canonicalize()
         .with_context(|| format!("failed to canonicalize root {}", root.display()))?;
+
+    // Read existing start options before stopping
+    let existing_options = read_pid_file(&root)?.and_then(|pf| pf.start_options);
 
     // Try to stop existing daemon
     if let Some(pid_info) = read_pid_file(&root)? {
@@ -673,12 +699,46 @@ pub fn restart(root: &Path, db_path: &Path, rebuild: bool) -> Result<()> {
         }
     }
 
+    // Determine database path: use provided, then stored, then default
+    let effective_db_path = if db_path != Path::new(".gabb/index.db") {
+        // Explicit db_path was provided
+        db_path.to_path_buf()
+    } else if let Some(ref opts) = existing_options {
+        // Use stored db_path from previous run
+        opts.db_path
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| db_path.to_path_buf())
+    } else {
+        db_path.to_path_buf()
+    };
+
+    // Determine log file from stored options
+    let log_file = existing_options
+        .as_ref()
+        .and_then(|o| o.log_file.as_ref())
+        .map(PathBuf::from);
+
+    info!(
+        "Restarting daemon with db_path: {}",
+        effective_db_path.display()
+    );
+
     // Start new daemon in background (quiet=true since it's backgrounded)
-    start(&root, db_path, rebuild, true, None, true)
+    start(
+        &root,
+        &effective_db_path,
+        rebuild,
+        true,
+        log_file.as_deref(),
+        true,
+    )
 }
 
 /// Show daemon status
 pub fn status(root: &Path, format: OutputFormat) -> Result<()> {
+    use crate::store::IndexStore;
+
     let root = root
         .canonicalize()
         .with_context(|| format!("failed to canonicalize root {}", root.display()))?;
@@ -695,6 +755,10 @@ pub fn status(root: &Path, format: OutputFormat) -> Result<()> {
         database: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         version: Option<VersionInfo>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        stats: Option<StatsInfo>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        activity: Option<ActivityInfo>,
     }
 
     #[derive(Serialize)]
@@ -706,11 +770,41 @@ pub fn status(root: &Path, format: OutputFormat) -> Result<()> {
         action: String,
     }
 
+    #[derive(Serialize)]
+    struct StatsInfo {
+        files_indexed: i64,
+        symbols_count: i64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        last_index_time: Option<String>,
+    }
+
+    #[derive(Serialize)]
+    struct ActivityInfo {
+        watching: bool,
+        pending_changes: i64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        currently_indexing: Option<String>,
+    }
+
     let cli_version = env!("CARGO_PKG_VERSION").to_string();
     let db_path = root.join(".gabb").join("index.db");
 
+    // Try to get stats from the database if it exists
+    let stats = if db_path.exists() {
+        IndexStore::open(&db_path)
+            .ok()
+            .and_then(|store| store.get_index_stats().ok())
+            .map(|index_stats| StatsInfo {
+                files_indexed: index_stats.files.total,
+                symbols_count: index_stats.symbols.total,
+                last_index_time: index_stats.index.last_updated,
+            })
+    } else {
+        None
+    };
+
     let status = match pid_info {
-        Some(pid_info) if is_process_running(pid_info.pid) => {
+        Some(ref pid_info) if is_process_running(pid_info.pid) => {
             let version_match = pid_info.version == cli_version;
             let action = if version_match {
                 "none"
@@ -729,10 +823,16 @@ pub fn status(root: &Path, format: OutputFormat) -> Result<()> {
                     None
                 },
                 version: Some(VersionInfo {
-                    daemon: pid_info.version,
+                    daemon: pid_info.version.clone(),
                     cli: cli_version,
                     matches: version_match,
                     action,
+                }),
+                stats,
+                activity: Some(ActivityInfo {
+                    watching: true,
+                    pending_changes: 0, // We can't know this without daemon IPC
+                    currently_indexing: None,
                 }),
             }
         }
@@ -746,6 +846,8 @@ pub fn status(root: &Path, format: OutputFormat) -> Result<()> {
                 None
             },
             version: None,
+            stats,
+            activity: None,
         },
     };
 
@@ -773,6 +875,20 @@ pub fn status(root: &Path, format: OutputFormat) -> Result<()> {
                 println!("Database: {}", db);
             } else {
                 println!("Database: not found (index not created)");
+            }
+            if let Some(ref stats) = status.stats {
+                println!(
+                    "Index: {} files, {} symbols",
+                    stats.files_indexed, stats.symbols_count
+                );
+                if let Some(ref last_time) = stats.last_index_time {
+                    println!("Last indexed: {}", last_time);
+                }
+            }
+            if let Some(ref activity) = status.activity {
+                if activity.watching {
+                    println!("Activity: watching for changes");
+                }
             }
         }
     }

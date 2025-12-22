@@ -24,7 +24,7 @@ gabb understands code structure and provides precise file:line:column locations.
 | "What inherits from this?" | `gabb_subtypes` | Finds all derived types |
 | "What calls this function?" | `gabb_callers` | Call graph: trace backwards through callers |
 | "What does this function call?" | `gabb_callees` | Call graph: trace forwards through callees |
-| "Rename this function safely" | `gabb_rename` | Returns edit-ready JSON for all locations |
+| "Rename this function safely" | `gabb_rename` | Returns locations to edit (apply with Edit tool) |
 | "What symbols are in this file?" | `gabb_structure` | Hierarchical view with test/prod context |
 | "Find all Handler classes" | `gabb_symbols` | Filter by kind, pattern, namespace |
 | "Is there duplicate code?" | `gabb_duplicates` | Content-hash based, not text |
@@ -163,7 +163,8 @@ Example: You see `process_request`. Find all functions it calls.
 Use `transitive: true` to see the full call chain (callees of callees).
 
 ### gabb_rename
-**Get all locations to update when renaming a symbol.** The safest way to rename.
+**Get all locations that need editing to rename a symbol.** Does NOT perform the
+rename - returns edit-ready JSON that you then apply using the Edit tool.
 
 ```
 Parameters:
@@ -175,11 +176,12 @@ Parameters:
 ```
 
 Returns JSON with `old_text`, `new_text`, and exact positions for each location.
-Includes both the definition and all usages. Output is structured for direct
-use with Edit tool - each entry has file, line, column, old_text, new_text.
+Includes both the definition and all usages. Each entry has file, line, column,
+end_line, end_column, old_text, new_text, context, and is_definition flag.
 
 Example: Rename `getUserById` to `findUserById`. Point to the function definition
-and provide the new name. Get back all 15 locations that need updating.
+and provide the new name. Get back all 15 locations that need updating, then
+apply each edit using the Edit tool with the old_text → new_text replacement.
 
 ### gabb_symbols
 **Search for symbols by name, pattern, or kind.** For exploration.

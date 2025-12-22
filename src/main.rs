@@ -866,40 +866,42 @@ fn list_symbols(
     let store = open_store_for_query(db)?;
     let file_str = file.map(|p| p.to_string_lossy().to_string());
 
-    let mut symbols: Vec<SymbolRecord> = if fuzzy && name.is_some() {
-        // Use FTS5 search for fuzzy matching
-        let query = name.unwrap();
-        let mut results = store.search_symbols_fts(query)?;
+    let mut symbols: Vec<SymbolRecord> = match (fuzzy, name) {
+        (true, Some(query)) => {
+            // Use FTS5 search for fuzzy matching
+            let mut results = store.search_symbols_fts(query)?;
 
-        // Apply additional filters
-        if let Some(f) = &file_str {
-            results.retain(|s| s.file == *f);
-        }
-        if let Some(k) = kind {
-            results.retain(|s| s.kind == k);
-        }
-        // Apply offset
-        if let Some(off) = offset {
-            if off < results.len() {
-                results = results.into_iter().skip(off).collect();
-            } else {
-                results.clear();
+            // Apply additional filters
+            if let Some(f) = &file_str {
+                results.retain(|s| s.file == *f);
             }
+            if let Some(k) = kind {
+                results.retain(|s| s.kind == k);
+            }
+            // Apply offset
+            if let Some(off) = offset {
+                if off < results.len() {
+                    results = results.into_iter().skip(off).collect();
+                } else {
+                    results.clear();
+                }
+            }
+            if let Some(l) = limit {
+                results.truncate(l);
+            }
+            results
         }
-        if let Some(l) = limit {
-            results.truncate(l);
+        _ => {
+            let query = SymbolQuery {
+                file: file_str.as_deref(),
+                kind,
+                name,
+                limit,
+                offset,
+                ..Default::default()
+            };
+            store.list_symbols_filtered(&query)?
         }
-        results
-    } else {
-        let query = SymbolQuery {
-            file: file_str.as_deref(),
-            kind,
-            name,
-            limit,
-            offset,
-            ..Default::default()
-        };
-        store.list_symbols_filtered(&query)?
     };
 
     // Sort by name for consistent output

@@ -4263,4 +4263,107 @@ mod tests {
         );
         assert_eq!(results[0].name, "index_file");
     }
+
+    /// Test that relative paths match ALL files with the same suffix.
+    /// This documents expected behavior: if multiple files share the same
+    /// relative path suffix, they all match. Use more specific paths to disambiguate.
+    #[test]
+    fn relative_path_matches_multiple_files_with_same_suffix() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        // Create symbols in two different directories with the same filename
+        let path1 = "/workspace/src/utils/helpers.rs";
+        let path2 = "/workspace/tests/utils/helpers.rs";
+
+        let sym1 = SymbolRecord {
+            id: format!("{}#0-50", path1),
+            file: path1.to_string(),
+            kind: "function".to_string(),
+            name: "src_helper".to_string(),
+            start: 0,
+            end: 50,
+            qualifier: None,
+            visibility: Some("pub".to_string()),
+            container: None,
+            content_hash: None,
+            is_test: false,
+        };
+
+        let sym2 = SymbolRecord {
+            id: format!("{}#0-50", path2),
+            file: path2.to_string(),
+            kind: "function".to_string(),
+            name: "test_helper".to_string(),
+            start: 0,
+            end: 50,
+            qualifier: None,
+            visibility: Some("pub".to_string()),
+            container: None,
+            content_hash: None,
+            is_test: true,
+        };
+
+        store
+            .save_file_index(
+                &FileRecord {
+                    path: path1.to_string(),
+                    hash: "abc".to_string(),
+                    mtime: 1,
+                    indexed_at: 1,
+                },
+                &[sym1],
+                &[],
+                &[],
+            )
+            .unwrap();
+
+        store
+            .save_file_index(
+                &FileRecord {
+                    path: path2.to_string(),
+                    hash: "def".to_string(),
+                    mtime: 2,
+                    indexed_at: 2,
+                },
+                &[sym2],
+                &[],
+                &[],
+            )
+            .unwrap();
+
+        // Query with ambiguous relative path - should match BOTH files
+        let query = SymbolQuery {
+            file: Some("utils/helpers.rs"),
+            ..Default::default()
+        };
+        let results = store.list_symbols_filtered(&query).unwrap();
+        assert_eq!(
+            results.len(),
+            2,
+            "Ambiguous path 'utils/helpers.rs' should match both files"
+        );
+
+        // Query with more specific path - should match only one
+        let query = SymbolQuery {
+            file: Some("src/utils/helpers.rs"),
+            ..Default::default()
+        };
+        let results = store.list_symbols_filtered(&query).unwrap();
+        assert_eq!(results.len(), 1, "Specific path should match only src file");
+        assert_eq!(results[0].name, "src_helper");
+
+        let query = SymbolQuery {
+            file: Some("tests/utils/helpers.rs"),
+            ..Default::default()
+        };
+        let results = store.list_symbols_filtered(&query).unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "Specific path should match only tests file"
+        );
+        assert_eq!(results[0].name, "test_helper");
+    }
 }

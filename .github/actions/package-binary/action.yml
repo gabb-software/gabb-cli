@@ -1,0 +1,33 @@
+name: Package Binary
+description: Package a built binary as tar.gz (Unix) or zip (Windows) and upload as artifact
+
+inputs:
+  target:
+    description: Target triple (e.g., x86_64-apple-darwin)
+    required: true
+  binary-name:
+    description: Name of the binary
+    default: gabb
+
+runs:
+  using: composite
+  steps:
+    - name: Package binary
+      shell: bash
+      run: |
+        TARGET="${{ inputs.target }}"
+        BINARY="${{ inputs.binary-name }}"
+
+        if [[ "$TARGET" == *windows* ]]; then
+          # Windows: create zip
+          7z a "${BINARY}-${TARGET}.zip" "./target/${TARGET}/release/${BINARY}.exe"
+        else
+          # Unix: create tar.gz
+          tar -czvf "${BINARY}-${TARGET}.tar.gz" -C "target/${TARGET}/release" "${BINARY}"
+        fi
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.binary-name }}-${{ inputs.target }}
+        path: ${{ inputs.binary-name }}-${{ inputs.target }}.*

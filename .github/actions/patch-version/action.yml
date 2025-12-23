@@ -1,0 +1,22 @@
+name: Patch Version
+description: Update Cargo.toml version field
+
+inputs:
+  version:
+    description: Version string to set (e.g., 1.2.3)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Patch Cargo.toml version
+      shell: bash
+      run: |
+        VERSION="${{ inputs.version }}"
+        echo "Setting version to ${VERSION}"
+
+        # Use perl for cross-platform compatibility (available on all GitHub runners)
+        perl -i -pe 's/^version = ".*"/version = "'"${VERSION}"'"/' Cargo.toml
+
+        echo "Updated Cargo.toml:"
+        grep "^version" Cargo.toml

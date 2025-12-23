@@ -1,0 +1,26 @@
+name: Setup Rust
+description: Checkout code and install Rust toolchain with optional target
+
+inputs:
+  target:
+    description: Target triple to install (optional)
+    required: false
+  components:
+    description: Additional components to install (e.g., rustfmt, clippy)
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ inputs.target }}
+        components: ${{ inputs.components }}
+
+    - name: Install musl-tools (Linux musl target)
+      if: contains(inputs.target, 'musl')
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y musl-tools

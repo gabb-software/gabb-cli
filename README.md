@@ -36,6 +36,81 @@ The daemon will crawl your workspace, index all supported files, and keep the SQ
 
 Query commands (symbols, usages, etc.) will auto-start the daemon if it's not running.
 
+## When to Use Gabb vs Read/Grep
+
+Gabb provides **semantic** code understanding, not just text search. Here's when to use it:
+
+| Goal | Use Gabb | Why |
+|------|----------|-----|
+| Find a symbol definition | `gabb symbol --name MyType` | Instant O(1) index lookup vs scanning files |
+| Understand a file's structure | `gabb structure src/main.rs` | Get outline without reading 1000+ lines |
+| Find all usages of a symbol | `gabb usages --file path:line:col` | Semantic refs only, no false matches in comments |
+| See what calls a function | `gabb callers --file path:line:col` | Follows actual call graph |
+| See what a function calls | `gabb callees --file path:line:col` | Trace execution flow forward |
+| Find trait implementations | `gabb implementation --file path:line:col` | Understands type relationships |
+| Safe rename refactoring | `gabb rename --file path:line:col --new-name X` | Gets all locations that need updating |
+
+**Rule of thumb**: If you're looking for code structure or symbol information, gabb is almost always faster and more accurate than text search.
+
+### Performance Benefits
+
+| Operation | Gabb | Text Search |
+|-----------|------|-------------|
+| Find symbol in 2000-line file | ~1ms (index lookup) | ~100ms+ (read & scan) |
+| Find all usages across codebase | ~5ms (indexed refs) | Seconds (grep entire tree) |
+| Token cost (AI assistants) | ~50 tokens (structured result) | ~40,000 tokens (full file read) |
+
+## Example Workflows
+
+### Understanding a New Codebase
+```bash
+# 1. See language breakdown and symbol counts
+gabb stats
+
+# 2. Find key abstractions (traits, interfaces)
+gabb symbols --kind trait
+gabb symbols --kind interface
+
+# 3. Understand entry points
+gabb structure src/main.rs
+```
+
+### Implementing a Feature Using Existing Types
+```bash
+# 1. Find the type you need to use
+gabb symbol --name ExistingType
+
+# 2. See the file structure around it
+gabb structure src/types.rs
+
+# 3. Find how others use it
+gabb usages --file src/types.rs:42:1
+```
+
+### Safe Refactoring
+```bash
+# 1. Find all usages before changing anything
+gabb usages --file src/api.rs:100:5
+
+# 2. Check what implements the interface you're changing
+gabb implementation --file src/traits.rs:25:1
+
+# 3. Get rename locations (then apply with your editor)
+gabb rename --file src/api.rs:100:5 --new-name betterName
+```
+
+### Tracing Execution Flow
+```bash
+# Who calls this function? (trace backwards)
+gabb callers --file src/auth.rs:50:1
+
+# What does this function call? (trace forwards)
+gabb callees --file src/auth.rs:50:1
+
+# Full call chain (recursive)
+gabb callers --file src/auth.rs:50:1 --transitive
+```
+
 ## Installation
 
 ### Homebrew (macOS/Linux)

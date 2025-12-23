@@ -224,8 +224,8 @@ fn resolve_mod_path(parent: Option<&Path>, mod_name: &str) -> Option<String> {
     } else if mod_dir_file.exists() {
         Some(normalize_path(&mod_dir_file))
     } else {
-        // Use the expected path even if it doesn't exist
-        Some(normalize_path(&mod_file))
+        // Don't return fake paths for non-existent files
+        None
     }
 }
 
@@ -269,6 +269,11 @@ fn resolve_use_path(
             // crate:: paths start from crate root
             let root = crate_root?;
             if parts.len() < 2 {
+                // Just `use crate::*` - depend on lib.rs
+                let lib_file = root.join("lib.rs");
+                if lib_file.exists() {
+                    return Some(normalize_path(&lib_file));
+                }
                 return None;
             }
             // Take the first module after crate::
@@ -299,6 +304,25 @@ fn resolve_use_path(
             if let Some(resolved) = resolve_mod_path(Some(parent), first) {
                 return Some(resolved);
             }
+
+            // Check if this is the current crate name (use crate_name::Foo from main.rs)
+            // The crate name is typically the parent directory of src/
+            if let Some(root) = crate_root {
+                let crate_name = root
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.replace('-', "_")); // Cargo converts hyphens to underscores
+
+                if crate_name.as_deref() == Some(first) {
+                    // This is `use crate_name::*` - resolve to lib.rs
+                    let lib_file = root.join("lib.rs");
+                    if lib_file.exists() {
+                        return Some(normalize_path(&lib_file));
+                    }
+                }
+            }
+
             // External crate or other - no local file dependency
             None
         }

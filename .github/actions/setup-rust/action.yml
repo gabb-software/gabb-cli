@@ -1,5 +1,5 @@
 name: Setup Rust
-description: Checkout code and install Rust toolchain with optional target
+description: Install Rust toolchain with optional target and components
 
 inputs:
   target:
@@ -12,8 +12,6 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: actions/checkout@v4
-
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
       with:

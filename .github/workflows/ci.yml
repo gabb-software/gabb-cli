@@ -24,6 +24,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
       - run: cargo test --all-features
 
@@ -31,6 +32,7 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
         with:
           components: rustfmt, clippy
@@ -81,6 +83,7 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
         with:
           target: ${{ matrix.target }}

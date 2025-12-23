@@ -1522,10 +1522,17 @@ impl IndexStore {
                     results.retain(|s| glob_match(file_path, &s.file));
                 } else if file_path.ends_with('/') {
                     results.retain(|s| s.file.starts_with(&file_normalized));
-                } else {
+                } else if file_path.starts_with('/') {
+                    // Absolute path - exact match or directory prefix
                     results.retain(|s| {
                         s.file == file_normalized
                             || s.file.starts_with(&format!("{}/", file_normalized))
+                    });
+                } else {
+                    // Relative path - match as suffix (DB stores absolute paths)
+                    results.retain(|s| {
+                        s.file == file_normalized
+                            || s.file.ends_with(&format!("/{}", file_normalized))
                     });
                 }
             }
@@ -1590,10 +1597,19 @@ impl IndexStore {
                     values.push(Value::from(normalized.clone()));
                     values.push(Value::from(format!("{}/%", normalized)));
                 } else {
-                    // Exact file path match
+                    // File path match
                     let normalized = normalize_path(Path::new(file_path));
-                    clauses.push("file = ?".to_string());
-                    values.push(Value::from(normalized));
+                    if file_path.starts_with('/') {
+                        // Absolute path - exact match only
+                        clauses.push("file = ?".to_string());
+                        values.push(Value::from(normalized));
+                    } else {
+                        // Relative path - match as suffix (DB stores absolute paths)
+                        // Match either exact or ending with /relative/path
+                        clauses.push("(file = ? OR file LIKE ?)".to_string());
+                        values.push(Value::from(normalized.clone()));
+                        values.push(Value::from(format!("%/{}", normalized)));
+                    }
                 }
             }
         }
@@ -4193,5 +4209,58 @@ mod tests {
 
         let user = RegenerationReason::UserRequested;
         assert!(user.message().contains("requested"));
+    }
+
+    /// Test that relative file paths match symbols stored with absolute paths.
+    /// This is issue #66: file filter should support relative paths.
+    #[test]
+    fn relative_file_path_matches_absolute_stored_path() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = IndexStore::open(&db_path).unwrap();
+
+        // Create a symbol with an absolute path (as the indexer does)
+        let absolute_path = "/workspace/src/languages/rust.rs";
+        let sym = SymbolRecord {
+            id: format!("{}#0-100", absolute_path),
+            file: absolute_path.to_string(),
+            kind: "function".to_string(),
+            name: "index_file".to_string(),
+            start: 0,
+            end: 100,
+            qualifier: None,
+            visibility: Some("pub".to_string()),
+            container: None,
+            content_hash: None,
+            is_test: false,
+        };
+
+        store
+            .save_file_index(
+                &FileRecord {
+                    path: absolute_path.to_string(),
+                    hash: "abc123".to_string(),
+                    mtime: 12345,
+                    indexed_at: 12345,
+                },
+                &[sym],
+                &[],
+                &[],
+            )
+            .unwrap();
+
+        // Query with relative path (without leading slash) - should find the symbol
+        let query = SymbolQuery {
+            file: Some("src/languages/rust.rs"),
+            ..Default::default()
+        };
+        let results = store.list_symbols_filtered(&query).unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "Relative path 'src/languages/rust.rs' should match absolute path '{}'",
+            absolute_path
+        );
+        assert_eq!(results[0].name, "index_file");
     }
 }

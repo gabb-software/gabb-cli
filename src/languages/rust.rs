@@ -34,6 +34,15 @@ pub fn index_file(
     let mut declared_spans: HashSet<(usize, usize)> = HashSet::new();
     let mut symbol_by_name: HashMap<String, SymbolBinding> = HashMap::new();
 
+    // Extract file dependencies and import bindings FIRST (needed for reference collection)
+    let (dependencies, import_bindings) = collect_dependencies(path, source, &tree.root_node());
+
+    // Build imports map from import bindings for cross-file reference resolution
+    let imports: HashMap<String, &ImportBindingInfo> = import_bindings
+        .iter()
+        .map(|b| (b.local_name.clone(), b))
+        .collect();
+
     {
         let mut cursor = tree.walk();
         walk_symbols(
@@ -57,6 +66,7 @@ pub fn index_file(
         &tree.root_node(),
         &declared_spans,
         &symbol_by_name,
+        &imports,
     );
 
     // Collect call edges (caller -> callee relationships)
@@ -65,10 +75,8 @@ pub fn index_file(
         source,
         &tree.root_node(),
         &symbol_by_name,
+        &imports,
     ));
-
-    // Extract file dependencies and import bindings from mod and use declarations
-    let (dependencies, import_bindings) = collect_dependencies(path, source, &tree.root_node());
 
     Ok((symbols, edges, references, dependencies, import_bindings))
 }
@@ -242,7 +250,7 @@ fn extract_use_path(source: &str, node: &Node) -> Option<String> {
 }
 
 /// Resolve a use path to a file path
-/// Handles crate::, super::, and self:: prefixes
+/// Handles crate::, super::, self::, and bare module paths (e.g., `use lib::Foo`)
 fn resolve_use_path(
     use_path: &str,
     current_file: &Path,
@@ -286,6 +294,11 @@ fn resolve_use_path(
             None
         }
         _ => {
+            // Bare module path (e.g., `use lib::Foo` after `mod lib;`)
+            // Try to resolve as a sibling module in the same directory
+            if let Some(resolved) = resolve_mod_path(Some(parent), first) {
+                return Some(resolved);
+            }
             // External crate or other - no local file dependency
             None
         }
@@ -503,6 +516,7 @@ fn collect_references(
     root: &Node,
     declared_spans: &HashSet<(usize, usize)>,
     symbol_by_name: &HashMap<String, SymbolBinding>,
+    imports: &HashMap<String, &ImportBindingInfo>,
 ) -> Vec<ReferenceRecord> {
     let mut refs = Vec::new();
     let mut stack = vec![*root];
@@ -513,12 +527,25 @@ fn collect_references(
             let span = (node.start_byte(), node.end_byte());
             if !declared_spans.contains(&span) {
                 let name = slice(source, &node);
+                // First try local symbols
                 if let Some(sym) = symbol_by_name.get(&name) {
                     refs.push(ReferenceRecord {
                         file: file.clone(),
                         start: node.start_byte() as i64,
                         end: node.end_byte() as i64,
                         symbol_id: sym.id.clone(),
+                    });
+                } else if let Some(import) = imports.get(&name) {
+                    // Cross-file reference via import - create placeholder
+                    // Format: {source_file}::{original_name}
+                    // This will be resolved in phase 2 by resolve_and_store_references
+                    let placeholder_id =
+                        format!("{}::{}", import.source_file, import.original_name);
+                    refs.push(ReferenceRecord {
+                        file: file.clone(),
+                        start: node.start_byte() as i64,
+                        end: node.end_byte() as i64,
+                        symbol_id: placeholder_id,
                     });
                 }
             }
@@ -539,6 +566,7 @@ fn collect_call_edges(
     source: &str,
     root: &Node,
     symbol_by_name: &HashMap<String, SymbolBinding>,
+    imports: &HashMap<String, &ImportBindingInfo>,
 ) -> Vec<EdgeRecord> {
     let mut edges = Vec::new();
     let mut stack = vec![*root];
@@ -549,7 +577,9 @@ fn collect_call_edges(
             // Find the enclosing function (the caller)
             if let Some(caller_id) = find_enclosing_function_id(path, source, &node) {
                 // Get the function being called (the callee)
-                if let Some(callee_id) = resolve_call_target(path, source, &node, symbol_by_name) {
+                if let Some(callee_id) =
+                    resolve_call_target(path, source, &node, symbol_by_name, imports)
+                {
                     edges.push(EdgeRecord {
                         src: caller_id,
                         dst: callee_id,
@@ -646,12 +676,13 @@ fn resolve_call_target(
     source: &str,
     call_node: &Node,
     symbol_by_name: &HashMap<String, SymbolBinding>,
+    imports: &HashMap<String, &ImportBindingInfo>,
 ) -> Option<String> {
     match call_node.kind() {
         "call_expression" => {
             // Function call: foo() or path::foo()
             let function_node = call_node.child_by_field_name("function")?;
-            resolve_function_path(path, source, &function_node, symbol_by_name)
+            resolve_function_path(path, source, &function_node, symbol_by_name, imports)
         }
         "method_call_expression" => {
             // Method call: obj.method()
@@ -684,13 +715,18 @@ fn resolve_function_path(
     source: &str,
     node: &Node,
     symbol_by_name: &HashMap<String, SymbolBinding>,
+    imports: &HashMap<String, &ImportBindingInfo>,
 ) -> Option<String> {
     match node.kind() {
         "identifier" => {
             let name = slice(source, node);
-            // Try to resolve to a known symbol
+            // Try to resolve to a known local symbol
             if let Some(sym) = symbol_by_name.get(&name) {
                 return Some(sym.id.clone());
+            }
+            // Try to resolve via imports (cross-file call)
+            if let Some(import) = imports.get(&name) {
+                return Some(format!("{}::{}", import.source_file, import.original_name));
             }
             // Unresolved - use placeholder
             Some(format!("{}::{}", normalize_path(path), name))

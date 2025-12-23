@@ -979,3 +979,90 @@ fn usages_json_includes_import_via() {
         stdout
     );
 }
+
+/// Test for issue #80: Cross-file references not captured in Rust
+/// When a symbol is defined in one file (lib.rs) and used in another (main.rs),
+/// the usages command should find all usages across both files.
+#[test]
+fn rust_cross_file_usages_captured() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    // Create a Rust "lib.rs" that defines an enum
+    let lib_path = root.join("lib.rs");
+    fs::write(
+        &lib_path,
+        r#"pub enum ExitCode {
+    Success,
+    Failure,
+}
+
+pub fn get_exit_code() -> ExitCode {
+    ExitCode::Success
+}
+"#,
+    )
+    .unwrap();
+
+    // Create a Rust "main.rs" that uses the enum from lib.rs
+    let main_path = root.join("main.rs");
+    fs::write(
+        &main_path,
+        r#"mod lib;
+use lib::ExitCode;
+
+fn main() {
+    let code: ExitCode = ExitCode::Success;
+    match code {
+        ExitCode::Success => println!("OK"),
+        ExitCode::Failure => println!("FAIL"),
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    let db_path = root.join(".gabb/index.db");
+    let store = IndexStore::open(&db_path).unwrap();
+    indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
+
+    // Get the symbol for ExitCode in lib.rs
+    let lib_canonical = lib_path.canonicalize().unwrap();
+    let lib_str = lib_canonical.to_string_lossy().to_string();
+    let symbols = store
+        .list_symbols(Some(&lib_str), None, Some("ExitCode"), None)
+        .unwrap();
+    assert!(!symbols.is_empty(), "ExitCode should be indexed in lib.rs");
+    let exit_code_symbol = &symbols[0];
+
+    // Query references for ExitCode
+    let refs = store.references_for_symbol(&exit_code_symbol.id).unwrap();
+
+    // Should find references in main.rs (the cross-file usages)
+    let main_canonical = main_path.canonicalize().unwrap();
+    let main_str = main_canonical.to_string_lossy().to_string();
+    let main_refs: Vec<_> = refs.iter().filter(|r| r.file == main_str).collect();
+
+    // This is the key assertion - currently fails because cross-file references
+    // are not captured (issue #80)
+    assert!(
+        !main_refs.is_empty(),
+        "Expected cross-file references in main.rs to ExitCode defined in lib.rs.\n\
+         Found {} total refs: {:?}\n\
+         This tests issue #80: cross-file references not captured",
+        refs.len(),
+        refs
+    );
+
+    // Should find multiple usages in main.rs:
+    // - `use lib::ExitCode;`
+    // - `let code: ExitCode`
+    // - `ExitCode::Success` (2x)
+    // - `ExitCode::Failure`
+    assert!(
+        main_refs.len() >= 3,
+        "Expected at least 3 ExitCode references in main.rs, found {}: {:?}",
+        main_refs.len(),
+        main_refs
+    );
+}

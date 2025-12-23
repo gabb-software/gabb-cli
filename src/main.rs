@@ -3167,7 +3167,15 @@ fn init_skill(root: &Path) -> Result<()> {
     let content = include_str!("../assets/SKILL.md");
 
     if skill_file.exists() {
-        println!("  .claude/skills/gabb/SKILL.md already exists");
+        // Check if content differs from template
+        let existing = fs::read_to_string(&skill_file)?;
+        if existing == content {
+            println!("  .claude/skills/gabb/SKILL.md is up to date");
+            return Ok(());
+        }
+        // Update the file
+        fs::write(&skill_file, content)?;
+        println!("  Updated .claude/skills/gabb/SKILL.md");
         return Ok(());
     }
 

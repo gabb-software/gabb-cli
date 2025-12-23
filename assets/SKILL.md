@@ -1,15 +1,63 @@
 ---
 name: gabb-code-navigation
 description: |
-  Use gabb MCP tools for semantic code navigation. Prefer gabb over grep/ripgrep
-  when navigating code structure: finding definitions, usages, implementations.
-  Gabb understands code semantically - it knows what's a function vs a comment.
+  Use gabb MCP tools for semantic code navigation. ALWAYS prefer gabb over
+  Read/Grep/Glob when exploring code. Gabb understands code semantically -
+  it knows what's a function vs a comment, and provides instant results.
 ---
 
 # Code Navigation with gabb
 
 This project uses gabb for fast, semantic code navigation. Unlike text search,
 gabb understands code structure and provides precise file:line:column locations.
+
+## IMPORTANT: Use gabb Instead of Read/Grep
+
+**Before using Read, Grep, or Glob on code files, STOP and ask:**
+
+1. **Am I looking for a specific symbol?** → `gabb_symbol name="MyType"`
+2. **Do I need to understand a file's structure?** → `gabb_structure file="path"`
+3. **Am I searching for symbols by pattern?** → `gabb_symbols`
+4. **Do I need to trace usage/calls?** → `gabb_usages` / `gabb_callers`
+5. **None of the above?** → Fall back to Read/Grep
+
+### Why This Matters
+
+| Situation | Bad Approach | Good Approach |
+|-----------|--------------|---------------|
+| Need type definition from large file | `Read` entire 2000-line file | `gabb_symbol name="MyType" include_source=true` |
+| Understanding unfamiliar file | `Read` then scan for functions | `gabb_structure file="path"` |
+| Find where function is defined | `Grep` for function name | `gabb_definition` at call site |
+| Find all usages before refactoring | `Grep` for symbol name | `gabb_usages` (semantic, no false matches) |
+| Find all structs with "Handler" | `Grep "struct.*Handler"` | `gabb_symbols kind="struct" name_contains="Handler"` |
+
+### Rules of Thumb
+
+- **Use `gabb_structure` before Read** on any file >100 lines
+- **Use `gabb_symbol`** when you need a specific struct/type/function definition
+- **Use `gabb_symbols`** when searching for symbols by pattern or kind
+- **Use `gabb_definition`** when you see a call and want to find where it's defined
+- **Use `gabb_usages`** before any refactoring to find all references
+
+### When Read/Grep ARE Appropriate
+
+- Reading non-code files (markdown, config, JSON)
+- Searching for literal strings in comments or log messages
+- Pattern matching in string content (not symbol names)
+- Files gabb doesn't index (non-supported languages)
+
+## Common Task Patterns
+
+| Task | Use This | Not This |
+|------|----------|----------|
+| Find a type/struct definition | `gabb_symbol name="MyType"` | Read + grep |
+| Understand a large file | `gabb_structure file="path"` | Read entire file |
+| Find all structs matching pattern | `gabb_symbols kind="struct" name_contains="X"` | Grep for "struct" |
+| See what calls a function | `gabb_callers file="..." line=N character=M` | Grep for function name |
+| Find implementations of trait | `gabb_implementations file="..." line=N character=M` | Manual search |
+| Get function source code | `gabb_symbol name="fn" include_source=true` | Read file + find function |
+| List all functions in directory | `gabb_symbols kind="function" file="src/api/"` | Glob + Read each file |
+| Rename a symbol safely | `gabb_rename` + Edit tool | Find/replace (misses some) |
 
 ## When to Use gabb vs grep/ripgrep
 
@@ -29,10 +77,10 @@ gabb understands code structure and provides precise file:line:column locations.
 | "Find all Handler classes" | `gabb_symbols` | Filter by kind, pattern, namespace |
 | "Is there duplicate code?" | `gabb_duplicates` | Content-hash based, not text |
 
-**Use grep/ripgrep when:**
+**Use grep/ripgrep only when:**
 - Searching for literal strings, comments, or log messages
-- Pattern matching across non-code files
-- The search term isn't a code symbol
+- Pattern matching across non-code files (markdown, config)
+- The search term isn't a code symbol (e.g., error messages, URLs)
 
 ## Position-Based Navigation (Key Concept)
 

@@ -143,11 +143,42 @@ impl ToolResult {
 
 // ==================== MCP Server ====================
 
+/// Metadata about the database file at the time the store was opened
+#[derive(Debug, Clone)]
+struct DbFileMetadata {
+    /// File size in bytes
+    size: u64,
+    /// File modification time
+    mtime: std::time::SystemTime,
+}
+
+impl DbFileMetadata {
+    /// Capture current metadata for a database file
+    fn capture(db_path: &Path) -> Option<Self> {
+        let metadata = fs::metadata(db_path).ok()?;
+        Some(Self {
+            size: metadata.len(),
+            mtime: metadata.modified().ok()?,
+        })
+    }
+
+    /// Check if the current file matches this metadata
+    fn matches(&self, db_path: &Path) -> bool {
+        if let Some(current) = Self::capture(db_path) {
+            self.size == current.size && self.mtime == current.mtime
+        } else {
+            false // File doesn't exist anymore
+        }
+    }
+}
+
 /// Cached workspace information
 struct WorkspaceInfo {
     root: PathBuf,
     db_path: PathBuf,
     store: Option<IndexStore>,
+    /// Metadata of the DB file when the store was opened (for staleness detection)
+    db_metadata: Option<DbFileMetadata>,
     last_used: std::time::Instant,
 }
 
@@ -838,9 +869,17 @@ impl McpServer {
         // Handle database corruption errors with automatic recovery
         let result = match result {
             Err(ref e) if Self::is_database_corruption_error(e) => {
+                // Check if version mismatch might be the cause
+                let version_info = self.check_version_mismatch_info();
+
                 log::warn!(
-                    "Database corruption detected: {}. Triggering automatic rebuild.",
-                    e
+                    "Database corruption detected: {}. {}Triggering automatic rebuild.",
+                    e,
+                    if version_info.is_some() {
+                        "Version mismatch detected. "
+                    } else {
+                        ""
+                    }
                 );
 
                 // Invalidate all cached workspaces to force rebuild
@@ -849,11 +888,19 @@ impl McpServer {
                     self.invalidate_workspace(&workspace);
                 }
 
-                // Return a message for the AI agent - make it clear the issue is resolved
-                Ok(ToolResult::text(
+                // Return a message for the AI agent - include version mismatch info if relevant
+                let message = if let Some(info) = version_info {
+                    format!(
+                        "Index corruption detected (likely caused by version mismatch: {}). \
+                         Automatically resolved. Retry this query.",
+                        info
+                    )
+                } else {
                     "Index corruption detected and automatically resolved. \
-                     Retry this query - the index will rebuild automatically.",
-                ))
+                     Retry this query - the index will rebuild automatically."
+                        .to_string()
+                };
+                Ok(ToolResult::text(message))
             }
             other => other,
         }?;
@@ -911,6 +958,7 @@ impl McpServer {
                     root: workspace_root.clone(),
                     db_path,
                     store: None,
+                    db_metadata: None,
                     last_used: std::time::Instant::now(),
                 },
             );
@@ -954,6 +1002,8 @@ impl McpServer {
         // Re-get info (borrow checker) and open the store
         let info = self.workspace_cache.get_mut(workspace_root).unwrap();
         info.store = Some(IndexStore::open(&info.db_path)?);
+        // Capture DB metadata for staleness detection
+        info.db_metadata = DbFileMetadata::capture(&info.db_path);
         Ok(())
     }
 
@@ -968,8 +1018,53 @@ impl McpServer {
         self.default_workspace.clone()
     }
 
-    /// Get store for a workspace (ensures index exists)
+    /// Check if a cached store is stale (DB file changed or missing)
+    fn is_store_stale(&self, workspace_root: &Path) -> bool {
+        if let Some(info) = self.workspace_cache.get(workspace_root) {
+            // No store cached = not stale (needs initialization)
+            if info.store.is_none() {
+                return false;
+            }
+
+            // Check if DB file still exists
+            if !info.db_path.exists() {
+                log::info!("Database file no longer exists: {}", info.db_path.display());
+                return true;
+            }
+
+            // Check if DB metadata changed (file was modified/rebuilt)
+            if let Some(ref cached_metadata) = info.db_metadata {
+                if !cached_metadata.matches(&info.db_path) {
+                    log::info!(
+                        "Database file changed since last access: {}",
+                        info.db_path.display()
+                    );
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Invalidate a stale cached store, forcing reconnection on next access
+    fn invalidate_stale_store(&mut self, workspace_root: &Path) {
+        if let Some(info) = self.workspace_cache.get_mut(workspace_root) {
+            log::info!(
+                "Invalidating stale store for workspace: {}",
+                workspace_root.display()
+            );
+            info.store = None;
+            info.db_metadata = None;
+        }
+    }
+
+    /// Get store for a workspace (ensures index exists and is fresh)
     fn get_store_for_workspace(&mut self, workspace_root: &Path) -> Result<&IndexStore> {
+        // Check if cached store is stale before using it
+        if self.is_store_stale(workspace_root) {
+            self.invalidate_stale_store(workspace_root);
+        }
+
         self.ensure_workspace_index(workspace_root)?;
         let info = self.workspace_cache.get(workspace_root).unwrap();
         info.store
@@ -989,6 +1084,38 @@ impl McpServer {
             || err_str.contains("sqlite_notadb")
     }
 
+    /// Check if there's a version mismatch between MCP server and any running daemon
+    /// Returns a description of the mismatch if found
+    fn check_version_mismatch_info(&self) -> Option<String> {
+        use crate::daemon;
+
+        let mcp_version = SERVER_VERSION;
+
+        // Check default workspace first
+        if let Ok(Some(pid_info)) = daemon::read_pid_file(&self.default_workspace) {
+            if daemon::is_process_running(pid_info.pid) && pid_info.version != mcp_version {
+                return Some(format!(
+                    "daemon v{} vs MCP server v{}",
+                    pid_info.version, mcp_version
+                ));
+            }
+        }
+
+        // Check cached workspaces
+        for workspace_root in self.workspace_cache.keys() {
+            if let Ok(Some(pid_info)) = daemon::read_pid_file(workspace_root) {
+                if daemon::is_process_running(pid_info.pid) && pid_info.version != mcp_version {
+                    return Some(format!(
+                        "daemon v{} vs MCP server v{}",
+                        pid_info.version, mcp_version
+                    ));
+                }
+            }
+        }
+
+        None
+    }
+
     /// Invalidate cached store for a workspace, forcing rebuild on next access
     fn invalidate_workspace(&mut self, workspace_root: &Path) {
         if let Some(info) = self.workspace_cache.get_mut(workspace_root) {
@@ -996,8 +1123,9 @@ impl McpServer {
                 "Invalidating cached store for workspace: {}",
                 workspace_root.display()
             );
-            // Drop the store
+            // Drop the store and metadata
             info.store = None;
+            info.db_metadata = None;
 
             // Delete the database files to force rebuild
             let db_path = &info.db_path;
@@ -1411,17 +1539,31 @@ impl McpServer {
         use crate::daemon;
 
         let mut status = String::new();
+        let mcp_version = SERVER_VERSION;
 
         // Show default workspace status
         status.push_str("Default Workspace:\n");
         if let Ok(Some(pid_info)) = daemon::read_pid_file(&self.default_workspace) {
             if daemon::is_process_running(pid_info.pid) {
+                // Check for version mismatch
+                let version_warning = if pid_info.version != mcp_version {
+                    format!(
+                        "\n  ⚠️  VERSION MISMATCH: daemon={}, MCP server={}\n  \
+                         This can cause corruption errors. Run: gabb daemon restart\n",
+                        pid_info.version, mcp_version
+                    )
+                } else {
+                    String::new()
+                };
+
                 status.push_str(&format!(
-                    "  Daemon: running (PID {})\n  Version: {}\n  Root: {}\n  Database: {}\n",
+                    "  Daemon: running (PID {})\n  Version: {}\n  MCP Server: {}\n  Root: {}\n  Database: {}\n{}",
                     pid_info.pid,
                     pid_info.version,
+                    mcp_version,
                     self.default_workspace.display(),
-                    self.default_db_path.display()
+                    self.default_db_path.display(),
+                    version_warning
                 ));
                 // Add index stats if available
                 if let Ok(store) = self.get_store_for_workspace(&self.default_workspace.clone()) {
@@ -1473,15 +1615,24 @@ impl McpServer {
                 MAX_CACHED_WORKSPACES
             ));
             for (root, info) in &self.workspace_cache {
-                let daemon_status = if let Ok(Some(pid_info)) = daemon::read_pid_file(root) {
-                    if daemon::is_process_running(pid_info.pid) {
-                        format!("running (PID {})", pid_info.pid)
+                let (daemon_status, version_warning) =
+                    if let Ok(Some(pid_info)) = daemon::read_pid_file(root) {
+                        if daemon::is_process_running(pid_info.pid) {
+                            let warning = if pid_info.version != mcp_version {
+                                " ⚠️ VERSION MISMATCH"
+                            } else {
+                                ""
+                            };
+                            (
+                                format!("running (PID {}, v{})", pid_info.pid, pid_info.version),
+                                warning,
+                            )
+                        } else {
+                            ("not running".to_string(), "")
+                        }
                     } else {
-                        "not running".to_string()
-                    }
-                } else {
-                    "not running".to_string()
-                };
+                        ("not running".to_string(), "")
+                    };
                 let index_status = if info.store.is_some() {
                     "loaded"
                 } else if info.db_path.exists() {
@@ -1490,10 +1641,11 @@ impl McpServer {
                     "not indexed"
                 };
                 status.push_str(&format!(
-                    "  {}\n    Daemon: {}, Index: {}\n",
+                    "  {}\n    Daemon: {}, Index: {}{}\n",
                     root.display(),
                     daemon_status,
-                    index_status
+                    index_status,
+                    version_warning
                 ));
             }
         }

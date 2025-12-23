@@ -11,6 +11,25 @@ description: |
 This project uses gabb for fast, semantic code navigation. Unlike text search,
 gabb understands code structure and provides precise file:line:column locations.
 
+## Supported Languages
+
+**gabb indexes these languages and file extensions:**
+
+| Language   | Extensions                                           |
+|------------|------------------------------------------------------|
+| TypeScript | `.ts`, `.tsx`                                        |
+| Rust       | `.rs`                                                |
+| Kotlin     | `.kt`, `.kts`                                        |
+| C++        | `.cpp`, `.cc`, `.cxx`, `.c++`, `.hpp`, `.hh`, `.hxx`, `.h++` |
+| Python     | `.py`, `.pyi`                                        |
+
+**Not indexed** (use Grep/Glob instead):
+- JavaScript (`.js`, `.jsx`) — not currently supported
+- Plain C (`.c`, `.h`) — not currently supported
+- Go, Java, Ruby, and other languages
+
+**Quick decision:** Check the file extension. If it's in the table above, use gabb. Otherwise, use Grep/Glob.
+
 ## IMPORTANT: Use gabb Instead of Read/Grep
 
 **Before using Read, Grep, or Glob on code files, STOP and ask:**
@@ -355,4 +374,4 @@ Use to understand the scope of the indexed codebase or verify indexing is comple
 - The daemon auto-starts when needed - no manual setup required
 - Results include precise `file:line:column` locations
 - Index updates automatically when files change
-- Supports TypeScript, Rust, Kotlin, and C++
+- See "Supported Languages" section above for indexed file types

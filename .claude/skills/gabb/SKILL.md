@@ -65,6 +65,36 @@ gabb understands code structure and provides precise file:line:column locations.
 - Pattern matching in string content (not symbol names)
 - Files gabb doesn't index (non-supported languages)
 
+### After gabb_structure: Surgical Reads Only
+
+`gabb_structure` gives you exact line ranges for every symbol. **Use them.**
+The structure output is a replacement for exploratory reading, not a precursor to it.
+
+**Anti-pattern:**
+```
+gabb_structure file="src/mcp.rs"
+→ Shows handle_tools_list at lines 310-839 (15 Tool definitions)
+→ Read file_path="src/mcp.rs" offset=310 limit=550  ❌ Reading 550 lines!
+```
+
+**Correct pattern:**
+```
+gabb_structure file="src/mcp.rs"
+→ Shows handle_tools_list at lines 310-839, gabb_stats tool at 823-835
+→ Read file_path="src/mcp.rs" offset=823 limit=15  ✓ Read ONE example
+→ Implement based on the pattern
+```
+
+**Rule of thumb:** After getting structure, your total Read should be <100 lines
+to understand a pattern. If you're reading 500+ lines after getting structure,
+you're ignoring the line numbers it gave you.
+
+**Workflow for adding similar code:**
+1. `gabb_structure` — see all existing examples with line ranges
+2. Pick ONE simple example, Read just those lines (~20-50 lines)
+3. Implement your addition following the pattern
+4. Do NOT read "extra context" — the structure already told you everything
+
 ## Common Task Patterns
 
 | Task | Use This | Not This |

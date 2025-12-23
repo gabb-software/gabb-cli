@@ -3,7 +3,7 @@
 Gabb is a Rust CLI that builds a local code index so editors and AI coding assistants can answer questions like "where is this implemented?" without shipping your sources to a remote service. It includes an indexing daemon that stays in sync with filesystem changes.
 
 ## Status
-- Indexes TypeScript/TSX, Rust, Kotlin, and C++, storing results in a local SQLite database
+- Indexes TypeScript/TSX, Rust, Kotlin, C++, and Python, storing results in a local SQLite database
 - Commands: `gabb setup`, `gabb init`, `gabb daemon start/stop/restart/status`, `gabb symbols`, `gabb symbol`, `gabb implementation`, `gabb usages`, `gabb definition`, `gabb duplicates`, `gabb structure`, `gabb stats`, `gabb includers`, `gabb includes`, `gabb mcp-server`
 - Outputs: symbol definitions, relationships (implements/extends), and references
 - MCP server for AI assistant integration (Claude Desktop, Claude Code)

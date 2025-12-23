@@ -1,7 +1,14 @@
 pub mod cpp;
 pub mod kotlin;
+pub mod python;
+pub mod registry;
 pub mod rust;
+pub mod traits;
 pub mod typescript;
+
+// Re-export key types for convenience
+pub use registry::ParserRegistry;
+pub use traits::{EdgeKind, LanguageConfig, LanguageParser, ParseResult, SymbolKind};
 
 use crate::store::SymbolRecord;
 use tree_sitter::Node;

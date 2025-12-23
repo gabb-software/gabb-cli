@@ -1041,6 +1041,46 @@ fn module_qualifier(path: &Path, container: &Option<String>) -> String {
     base
 }
 
+// ============================================================================
+// LanguageParser trait implementation
+// ============================================================================
+
+use super::traits::{LanguageConfig, LanguageParser, ParseResult};
+
+/// TypeScript/TSX language parser implementing the `LanguageParser` trait.
+#[derive(Clone)]
+pub struct TypeScriptParser;
+
+impl TypeScriptParser {
+    /// Create a new TypeScript parser.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for TypeScriptParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LanguageParser for TypeScriptParser {
+    fn config(&self) -> LanguageConfig {
+        LanguageConfig {
+            name: "TypeScript",
+            extensions: &["ts", "tsx"],
+        }
+    }
+
+    fn language(&self) -> &Language {
+        &TS_LANGUAGE
+    }
+
+    fn parse(&self, path: &Path, source: &str) -> Result<ParseResult> {
+        index_file(path, source).map(ParseResult::from_tuple)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

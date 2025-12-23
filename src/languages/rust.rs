@@ -983,6 +983,46 @@ fn slice_file(path: &Path, node: &Node) -> String {
     slice(&source, node)
 }
 
+// ============================================================================
+// LanguageParser trait implementation
+// ============================================================================
+
+use super::traits::{LanguageConfig, LanguageParser, ParseResult};
+
+/// Rust language parser implementing the `LanguageParser` trait.
+#[derive(Clone)]
+pub struct RustParser;
+
+impl RustParser {
+    /// Create a new Rust parser.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for RustParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LanguageParser for RustParser {
+    fn config(&self) -> LanguageConfig {
+        LanguageConfig {
+            name: "Rust",
+            extensions: &["rs"],
+        }
+    }
+
+    fn language(&self) -> &Language {
+        &RUST_LANGUAGE
+    }
+
+    fn parse(&self, path: &Path, source: &str) -> Result<ParseResult> {
+        index_file(path, source).map(ParseResult::from_tuple)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,15 +1,19 @@
-use crate::languages::{cpp, kotlin, rust, typescript, ImportBindingInfo};
+use crate::languages::{ImportBindingInfo, ParserRegistry};
 use crate::store::{
     normalize_path, now_unix, FileRecord, ImportBindingRecord, IndexStore, ReferenceRecord,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use blake3::Hasher;
 use log::{debug, info, warn};
+use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use walkdir::{DirEntry, WalkDir};
+
+/// Global parser registry for all supported languages.
+static PARSER_REGISTRY: Lazy<ParserRegistry> = Lazy::new(ParserRegistry::new);
 
 const SKIP_DIRS: &[&str] = &[".git", ".gabb", "target", "node_modules"];
 
@@ -426,17 +430,8 @@ fn index_first_pass(
     let contents = fs::read(path)?;
     let source = String::from_utf8_lossy(&contents).to_string();
     let record = to_record(path, &contents)?;
-    let (symbols, edges, references, dependencies, import_bindings) = if is_ts_file(path) {
-        typescript::index_file(path, &source)?
-    } else if is_rust_file(path) {
-        rust::index_file(path, &source)?
-    } else if is_kotlin_file(path) {
-        kotlin::index_file(path, &source)?
-    } else if is_cpp_file(path) {
-        cpp::index_file(path, &source)?
-    } else {
-        bail!("unsupported file type: {}", path.display());
-    };
+    let result = PARSER_REGISTRY.parse(path, &source)?;
+    let (symbols, edges, references, dependencies, import_bindings) = result.into_tuple();
 
     let symbol_count = symbols.len();
 
@@ -478,17 +473,8 @@ pub fn index_one(path: &Path, store: &IndexStore) -> Result<String> {
     let contents = fs::read(path)?;
     let source = String::from_utf8_lossy(&contents).to_string();
     let record = to_record(path, &contents)?;
-    let (symbols, edges, references, dependencies, import_bindings) = if is_ts_file(path) {
-        typescript::index_file(path, &source)?
-    } else if is_rust_file(path) {
-        rust::index_file(path, &source)?
-    } else if is_kotlin_file(path) {
-        kotlin::index_file(path, &source)?
-    } else if is_cpp_file(path) {
-        cpp::index_file(path, &source)?
-    } else {
-        bail!("unsupported file type: {}", path.display());
-    };
+    let result = PARSER_REGISTRY.parse(path, &source)?;
+    let (symbols, edges, references, dependencies, import_bindings) = result.into_tuple();
     store.save_file_index(&record, &symbols, &edges, &references)?;
     store.save_file_dependencies(&record.path, &dependencies)?;
 
@@ -570,7 +556,7 @@ pub fn is_cpp_file(path: &Path) -> bool {
 }
 
 pub fn is_indexed_file(path: &Path) -> bool {
-    is_ts_file(path) || is_rust_file(path) || is_kotlin_file(path) || is_cpp_file(path)
+    PARSER_REGISTRY.is_supported(path)
 }
 
 fn to_record(path: &Path, contents: &[u8]) -> Result<FileRecord> {

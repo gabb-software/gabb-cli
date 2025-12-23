@@ -649,6 +649,46 @@ fn slice_bytes(path: &Path, node: &Node) -> String {
     slice(&source, node)
 }
 
+// ============================================================================
+// LanguageParser trait implementation
+// ============================================================================
+
+use super::traits::{LanguageConfig, LanguageParser, ParseResult};
+
+/// C++ language parser implementing the `LanguageParser` trait.
+#[derive(Clone)]
+pub struct CppParser;
+
+impl CppParser {
+    /// Create a new C++ parser.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for CppParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LanguageParser for CppParser {
+    fn config(&self) -> LanguageConfig {
+        LanguageConfig {
+            name: "C++",
+            extensions: &["cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++"],
+        }
+    }
+
+    fn language(&self) -> &Language {
+        &CPP_LANGUAGE
+    }
+
+    fn parse(&self, path: &Path, source: &str) -> Result<ParseResult> {
+        index_file(path, source).map(ParseResult::from_tuple)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

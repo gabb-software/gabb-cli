@@ -918,6 +918,46 @@ fn extract_visibility(node: &Node) -> Option<String> {
     Some("public".to_string())
 }
 
+// ============================================================================
+// LanguageParser trait implementation
+// ============================================================================
+
+use super::traits::{LanguageConfig, LanguageParser, ParseResult};
+
+/// Kotlin language parser implementing the `LanguageParser` trait.
+#[derive(Clone)]
+pub struct KotlinParser;
+
+impl KotlinParser {
+    /// Create a new Kotlin parser.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for KotlinParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LanguageParser for KotlinParser {
+    fn config(&self) -> LanguageConfig {
+        LanguageConfig {
+            name: "Kotlin",
+            extensions: &["kt", "kts"],
+        }
+    }
+
+    fn language(&self) -> &Language {
+        &KOTLIN_LANGUAGE
+    }
+
+    fn parse(&self, path: &Path, source: &str) -> Result<ParseResult> {
+        index_file(path, source).map(ParseResult::from_tuple)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

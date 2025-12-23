@@ -1,0 +1,12 @@
+# Semantic version components managed manually
+# Patch number is automatically set to the GitHub Actions run number
+#
+# To bump versions:
+#   - major: Breaking changes or major milestones
+#   - minor: New features or significant improvements
+#
+# The full version becomes: {major}.{minor}.{run_number}
+# Example: 0.9.142 (where 142 is the CI build number)
+
+major = 0
+minor = 9

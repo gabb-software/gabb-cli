@@ -337,6 +337,7 @@ class ClaudeCodeRunner:
         self.tool_log: Path | None = None
         self.temp_dir: Path | None = None
         self.workspace_claude_dir: Path | None = None
+        self.mcp_config_file: Path | None = None
 
     def setup(self) -> None:
         """Set up workspace-local config for Claude Code.
@@ -375,9 +376,14 @@ class ClaudeCodeRunner:
             settings["mcpServers"] = {
                 "gabb": {
                     "command": str(self.gabb_binary),
-                    "args": ["mcp"],
+                    "args": ["mcp-server", "--workspace", str(self.workspace)],
                 }
             }
+            # Also create a separate MCP config file for --mcp-config flag
+            self.mcp_config_file = self.temp_dir / "mcp_config.json"
+            self.mcp_config_file.write_text(json.dumps({
+                "mcpServers": settings["mcpServers"]
+            }, indent=2))
 
         # Write workspace-local settings
         (self.workspace_claude_dir / "settings.local.json").write_text(
@@ -407,19 +413,57 @@ class ClaudeCodeRunner:
             capture_output=True,
         )
 
+        # Start daemon in background mode
         result = subprocess.run(
-            [str(self.gabb_binary), "daemon", "start", "--wait"],
+            [str(self.gabb_binary), "daemon", "start", "-b"],
             cwd=self.workspace,
             capture_output=True,
             text=True,
-            timeout=300,  # 5 min for large repos
         )
 
+        if result.returncode != 0:
+            if self.verbose:
+                print_msg(f"gabb daemon start warning: {result.stderr[:200]}", "yellow")
+
+        # Wait for daemon to be ready with an index
+        # Poll status until indexed file count > 0 or timeout
+        max_wait = 300  # 5 minutes for large repos
+        poll_interval = 2
+        waited = 0
+
+        while waited < max_wait:
+            status_result = subprocess.run(
+                [str(self.gabb_binary), "daemon", "status", "--format", "json"],
+                cwd=self.workspace,
+                capture_output=True,
+                text=True,
+            )
+
+            if status_result.returncode == 0:
+                try:
+                    status = json.loads(status_result.stdout)
+                    # Check if daemon is running and has indexed files
+                    # Stats are nested under "stats" key
+                    stats = status.get("stats", {})
+                    files_indexed = stats.get("files_indexed", 0)
+                    if status.get("running") and files_indexed > 0:
+                        if self.verbose:
+                            print_msg(
+                                f"gabb ready: {files_indexed} files indexed",
+                                "green"
+                            )
+                        return
+                except json.JSONDecodeError:
+                    pass
+
+            time.sleep(poll_interval)
+            waited += poll_interval
+
+            if self.verbose and waited % 10 == 0:
+                print_msg(f"  waiting for gabb indexing... ({waited}s)", "dim")
+
         if self.verbose:
-            if result.returncode == 0:
-                print_msg("gabb daemon started", "green")
-            else:
-                print_msg(f"gabb warning: {result.stderr[:200]}", "yellow")
+            print_msg(f"gabb warning: timeout waiting for index after {max_wait}s", "yellow")
 
     def run(self, prompt: str, timeout: int = 300) -> RunMetrics:
         """Run Claude Code with the given prompt."""
@@ -447,6 +491,30 @@ FINAL_ANSWER: path/to/file1.py
 FINAL_ANSWER: path/to/file2.py"""
 
         cmd = ["claude", "-p", full_prompt, "--output-format", "json"]
+
+        # Add MCP config for gabb condition
+        if self.mcp_config_file and self.mcp_config_file.exists():
+            cmd.extend(["--mcp-config", str(self.mcp_config_file)])
+            # Allow all gabb MCP tools
+            cmd.extend([
+                "--allowedTools",
+                "mcp__gabb__gabb_symbols",
+                "mcp__gabb__gabb_symbol",
+                "mcp__gabb__gabb_definition",
+                "mcp__gabb__gabb_usages",
+                "mcp__gabb__gabb_implementations",
+                "mcp__gabb__gabb_daemon_status",
+                "mcp__gabb__gabb_duplicates",
+                "mcp__gabb__gabb_includers",
+                "mcp__gabb__gabb_includes",
+                "mcp__gabb__gabb_structure",
+                "mcp__gabb__gabb_supertypes",
+                "mcp__gabb__gabb_subtypes",
+                "mcp__gabb__gabb_rename",
+                "mcp__gabb__gabb_callers",
+                "mcp__gabb__gabb_callees",
+                "mcp__gabb__gabb_stats",
+            ])
 
         if self.verbose:
             print_msg(f"Running claude in {self.workspace}", "dim")

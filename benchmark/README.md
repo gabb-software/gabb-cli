@@ -1,201 +1,182 @@
 # Gabb Benchmark Suite
 
-A modular benchmarking suite to evaluate `gabb-cli` (semantic code indexing) vs traditional tools (`grep`/`find`/`read`) for code navigation tasks.
+Two complementary benchmarks for evaluating gabb's code navigation capabilities.
 
-## Hypothesis
+## Benchmarks Overview
 
-Agents using gabb's semantic indexing will find relevant source code files **faster** and with **less token overhead** than agents using traditional text-search tools.
+| Benchmark | Question Answered | How It Works |
+|-----------|-------------------|--------------|
+| **API Benchmark** (`api/`) | Is semantic indexing more efficient than grep? | Direct Anthropic API with custom tool definitions |
+| **Claude Code Benchmark** (`claude-code/`) | Does Claude Code choose gabb over Grep/Read? | Runs Claude Code CLI with/without gabb MCP |
 
-## Quick Start
+### Why Two Benchmarks?
 
-### 1. Setup
+The **API benchmark** isolates the core value proposition: given identical LLM capabilities, does semantic indexing reduce tokens and time vs text search?
 
-```bash
-cd benchmark
+The **Claude Code benchmark** tests real-world UX: with SKILL.md guidance, does Claude Code actually prefer gabb tools, and does that improve outcomes?
 
-# Full automated setup (builds gabb, pulls Docker images, installs deps)
-python setup.py
+If gabb wins in API but loses in Claude Code, that indicates a SKILL.md or MCP integration issue.
+If gabb loses in both, that's a fundamental capability gap.
 
-# Verify setup
-python setup.py --verify-only
-```
+---
 
-### 2. Configure API Key
+## Claude Code Benchmark (`claude-code/`)
 
-```bash
-# Copy the example and add your API key
-cp .env.example .env
-# Edit .env and set ANTHROPIC_API_KEY=your-key-here
-```
+Tests Claude Code's tool selection behavior with and without gabb.
 
-### 3. Run Benchmark
+### Quick Start
 
 ```bash
-# Phase 1: Single task test
-python run.py --task scikit-learn__scikit-learn-10297
+cd benchmark/claude-code
 
-# Phase 2: Multiple tasks
-python run.py --tasks 20 --concurrent 5
+# List available tasks
+python run.py --list-tasks
+
+# Run a single task comparison
+python run.py --task sklearn-ridge-normalize --workspace /path/to/sklearn-repo
+
+# Run just one condition
+python run.py --task sklearn-ridge-normalize --workspace /path/to/sklearn-repo --condition gabb
 ```
 
-## Architecture
-
-```
-benchmark/
-├── core/
-│   ├── dataset.py    # SWE-bench data loader and patch parser
-│   ├── env.py        # Docker environment wrapper
-│   ├── agent.py      # BaseAgent, ControlAgent, GabbAgent
-│   └── tools.py      # Tool definitions (grep, find, gabb_symbols, etc.)
-├── bin/
-│   └── gabb          # Linux binary (built by setup.py)
-├── results/          # Benchmark results (CSV, JSON)
-├── setup.py          # Automated setup script
-├── run.py            # Main benchmark runner
-└── README.md
-```
-
-## Components
-
-### Dataset (`core/dataset.py`)
-
-Loads the `princeton-nlp/SWE-bench_Verified` dataset from HuggingFace. Parses git patches to extract the "gold standard" files that were actually modified.
-
-```python
-from core.dataset import load_swebench, parse_gold_files
-
-dataset = load_swebench()
-task = dataset.get_task("scikit-learn__scikit-learn-10297")
-print(task.gold_files)  # Files that need modification
-```
-
-### Environment (`core/env.py`)
-
-Docker environment wrapper that:
-- Creates isolated containers for each task
-- Clones repositories at specific commits
-- Mounts the gabb binary
-- Initializes the gabb index
-
-```python
-from core.env import BenchmarkEnv, EnvConfig
-
-config = EnvConfig(gabb_binary_path=Path("bin/gabb"))
-async with BenchmarkEnv(config) as env:
-    await env.setup(task)
-    result = await env.exec("gabb symbols --name MyClass")
-```
-
-### Agents (`core/agent.py`)
-
-Two agent implementations:
-
-1. **ControlAgent**: Uses `grep`, `find_file`, `read_file`, `bash`
-2. **GabbAgent**: Uses `gabb_symbols`, `gabb_definition`, `gabb_structure`, `gabb_usages`, `read_file`
-
-Both agents follow the same system prompt and output `FINAL_ANSWER: <filepath>` when done.
-
-### Tools (`core/tools.py`)
-
-Tool definitions that wrap Docker command execution:
-
-| Tool | Agent | Description |
-|------|-------|-------------|
-| `grep` | Control | Search for patterns in files |
-| `find_file` | Control | Find files by name pattern |
-| `read_file` | Both | Read file contents |
-| `bash` | Control | Run arbitrary commands |
-| `gabb_symbols` | Gabb | Search code symbols by name/pattern |
-| `gabb_definition` | Gabb | Jump to symbol definition |
-| `gabb_structure` | Gabb | Get file symbol outline |
-| `gabb_usages` | Gabb | Find symbol references |
-
-## Metrics
-
-The benchmark collects:
+### What It Measures
 
 | Metric | Description |
 |--------|-------------|
-| `tokens_input` | Input tokens consumed |
-| `tokens_output` | Output tokens generated |
-| `turns` | Number of conversation turns |
-| `tool_calls` | Total tool invocations |
-| `time_seconds` | Wall-clock time |
-| `success` | Did the agent find the correct file? |
+| Wall-clock time | Total seconds to complete task |
+| Tokens (input/output) | Token consumption |
+| Tool calls by type | Grep, Read, Glob, mcp__gabb__* counts |
+| Success | Did Claude find the correct file? |
 
-Derived metrics:
-- **Token Savings**: `(control_tokens - gabb_tokens) / control_tokens * 100`
-- **Speedup**: `control_time / gabb_time`
+### How It Works
 
-## Output
+1. **Control condition**: Standard Claude Code (Grep, Read, Glob tools)
+2. **Gabb condition**: Claude Code with gabb MCP server + SKILL.md
 
-Results are saved to `results/`:
+Both conditions receive the same prompt. A PostToolUse hook logs every tool call.
 
-- `results_YYYYMMDD_HHMMSS.csv`: Spreadsheet-friendly format
-- `results_YYYYMMDD_HHMMSS.json`: Full structured data
-
-## Configuration
-
-Create a `.env` file in the benchmark folder (use `.env.example` as a template):
+### Output
 
 ```
-ANTHROPIC_API_KEY=your-api-key-here
+Results: sklearn-ridge-normalize
+┌──────────────┬─────────┬─────────┬──────────────────┐
+│ Metric       │ Control │    Gabb │             Diff │
+├──────────────┼─────────┼─────────┼──────────────────┤
+│ Success      │    PASS │    PASS │                  │
+│ Time (s)     │    45.2 │    32.1 │  -13.1 (-29%)    │
+│ Total Tokens │  52,340 │  38,210 │ -14,130 (-27%)   │
+│ Tool Calls   │      18 │      11 │              -7  │
+└──────────────┴─────────┴─────────┴──────────────────┘
+
+Tool Usage Breakdown:
+┌────────────────────────────┬─────────┬──────┐
+│ Tool                       │ Control │ Gabb │
+├────────────────────────────┼─────────┼──────┤
+│ Grep                       │       8 │    2 │
+│ Read                       │       7 │    4 │
+│ mcp__gabb__gabb_symbols    │       0 │    3 │
+│ mcp__gabb__gabb_structure  │       0 │    2 │
+└────────────────────────────┴─────────┴──────┘
 ```
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | Anthropic API key (set in .env file) |
-| `DOCKER_HOST` | No | Docker socket path (optional, env var) |
+### Adding Tasks
 
-### Command Line Options
+Edit `tasks/tasks.json`:
+
+```json
+{
+  "tasks": [
+    {
+      "id": "my-task-id",
+      "repo": "owner/repo",
+      "prompt": "Find the file that...",
+      "expected_files": ["path/to/expected.py"]
+    }
+  ]
+}
+```
+
+---
+
+## API Benchmark (`api/`)
+
+Tests gabb CLI directly via Anthropic API in Docker containers.
+
+### Quick Start
+
+```bash
+cd benchmark/api
+
+# Setup (builds gabb binary, pulls Docker images)
+python setup.py
+
+# Configure API key
+cp .env.example .env
+# Edit .env: ANTHROPIC_API_KEY=your-key
+
+# Run single task
+python run.py --task scikit-learn__scikit-learn-10297
+
+# Run multiple tasks
+python run.py --tasks 20 --concurrent 5
+```
+
+### Architecture
 
 ```
---task INSTANCE_ID     Run a specific task (Phase 1)
---tasks N              Number of tasks to run (Phase 2)
---concurrent N         Parallel containers (default: 1)
---model MODEL          Anthropic model (default: claude-sonnet-4-20250514)
---max-turns N          Max turns per agent (default: 20)
---no-save              Don't save results
--v, --verbose          Enable debug logging
+api/
+├── core/
+│   ├── dataset.py    # SWE-bench data loader
+│   ├── env.py        # Docker environment wrapper
+│   ├── agent.py      # Control vs Gabb agents
+│   └── tools.py      # Tool definitions
+├── bin/gabb          # Linux binary (built by setup.py)
+├── results/          # Output CSV/JSON
+└── run.py            # Main runner
 ```
+
+### Agents
+
+| Agent | Tools |
+|-------|-------|
+| **Control** | grep, find_file, read_file, bash |
+| **Gabb** | gabb_symbols, gabb_definition, gabb_structure, gabb_usages, read_file |
+
+### Metrics
+
+| Metric | Description |
+|--------|-------------|
+| tokens_input/output | Token consumption |
+| turns | Conversation turns |
+| tool_calls | Total + per-tool breakdown |
+| time_seconds | Wall-clock time |
+| success | Found correct file? |
+
+---
 
 ## Development
 
-### Running Tests
+### Requirements
+
+- Python 3.9+
+- Docker (for API benchmark)
+- Claude Code CLI (for Claude Code benchmark)
+- gabb binary
+
+### Install Dependencies
 
 ```bash
-# Install dev dependencies
-pip install -e ".[dev]"
+# For API benchmark
+cd api && pip install -r requirements.txt
 
-# Run tests
-pytest
+# For Claude Code benchmark
+cd claude-code && pip install rich  # optional, for pretty output
 ```
 
-### Adding New Tools
+### Adding New Benchmarks
 
-1. Create a new class extending `BaseTool` in `core/tools.py`
-2. Implement `get_schema()` and `execute()`
-3. Add to `get_control_tools()` or `get_gabb_tools()`
-
-### Adding New Agents
-
-1. Create a new class extending `BaseAgent` in `core/agent.py`
-2. Implement `get_tools()` and `get_system_prompt()`
-3. Register in `create_agent()` factory
-
-## Phase Roadmap
-
-### Phase 1: Walking Skeleton (Current)
-- Single task end-to-end
-- Control vs Gabb comparison
-- Basic metrics collection
-
-### Phase 2: Retrieval Suite
-- Concurrent task execution
-- Statistical analysis
-- CSV/JSON reporting
-
-### Phase 3: Full SWE-bench (Future)
-- Full SWE-bench Docker images
-- Code modification evaluation
-- Test execution validation
+Follow the pattern:
+1. Create condition configs in `configs/`
+2. Define tasks in `tasks/`
+3. Implement runner with metrics collection
+4. Output to `results/`

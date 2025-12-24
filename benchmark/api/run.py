@@ -94,6 +94,7 @@ class TaskResult:
     control_turns: int
     control_tool_calls: int
     control_time_seconds: float
+    control_tool_usage: dict[str, int]
 
     # Gabb agent results
     gabb_success: bool
@@ -103,6 +104,7 @@ class TaskResult:
     gabb_turns: int
     gabb_tool_calls: int
     gabb_time_seconds: float
+    gabb_tool_usage: dict[str, int]
 
     # Comparison metrics
     @property
@@ -122,7 +124,7 @@ class TaskResult:
         return self.control_time_seconds / self.gabb_time_seconds
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for CSV export."""
+        """Convert to dictionary for JSON export (includes nested dicts)."""
         return {
             "instance_id": self.instance_id,
             "repo": self.repo,
@@ -134,6 +136,7 @@ class TaskResult:
             "control_turns": self.control_turns,
             "control_tool_calls": self.control_tool_calls,
             "control_time_seconds": round(self.control_time_seconds, 2),
+            "control_tool_usage": self.control_tool_usage,
             "gabb_success": self.gabb_success,
             "gabb_final_answer": self.gabb_final_answer,
             "gabb_tokens_input": self.gabb_tokens_input,
@@ -141,6 +144,33 @@ class TaskResult:
             "gabb_turns": self.gabb_turns,
             "gabb_tool_calls": self.gabb_tool_calls,
             "gabb_time_seconds": round(self.gabb_time_seconds, 2),
+            "gabb_tool_usage": self.gabb_tool_usage,
+            "token_savings_pct": round(self.token_savings, 1),
+            "speedup_x": round(self.speedup, 2),
+        }
+
+    def to_csv_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for CSV export (flattens tool_usage)."""
+        return {
+            "instance_id": self.instance_id,
+            "repo": self.repo,
+            "gold_files": "|".join(self.gold_files),
+            "control_success": self.control_success,
+            "control_final_answer": self.control_final_answer,
+            "control_tokens_input": self.control_tokens_input,
+            "control_tokens_output": self.control_tokens_output,
+            "control_turns": self.control_turns,
+            "control_tool_calls": self.control_tool_calls,
+            "control_time_seconds": round(self.control_time_seconds, 2),
+            "control_tool_usage": json.dumps(self.control_tool_usage),
+            "gabb_success": self.gabb_success,
+            "gabb_final_answer": self.gabb_final_answer,
+            "gabb_tokens_input": self.gabb_tokens_input,
+            "gabb_tokens_output": self.gabb_tokens_output,
+            "gabb_turns": self.gabb_turns,
+            "gabb_tool_calls": self.gabb_tool_calls,
+            "gabb_time_seconds": round(self.gabb_time_seconds, 2),
+            "gabb_tool_usage": json.dumps(self.gabb_tool_usage),
             "token_savings_pct": round(self.token_savings, 1),
             "speedup_x": round(self.speedup, 2),
         }
@@ -268,6 +298,7 @@ async def run_task_comparison(
         control_turns=control_metrics.turns,
         control_tool_calls=control_metrics.tool_calls,
         control_time_seconds=control_metrics.time_seconds,
+        control_tool_usage=control_metrics.tool_usage,
         gabb_success=check_success(gabb_metrics.final_answer, task.gold_files),
         gabb_final_answer=gabb_metrics.final_answer,
         gabb_tokens_input=gabb_metrics.tokens_input,
@@ -275,6 +306,7 @@ async def run_task_comparison(
         gabb_turns=gabb_metrics.turns,
         gabb_tool_calls=gabb_metrics.tool_calls,
         gabb_time_seconds=gabb_metrics.time_seconds,
+        gabb_tool_usage=gabb_metrics.tool_usage,
     )
 
 
@@ -380,6 +412,28 @@ def print_summary(results: list[TaskResult]) -> None:
     console.print(f"Average speedup: {avg_speedup:.2f}x")
     console.print("=" * 50)
 
+    # Aggregate tool usage
+    control_tools: dict[str, int] = {}
+    gabb_tools: dict[str, int] = {}
+    for r in results:
+        for tool, count in r.control_tool_usage.items():
+            control_tools[tool] = control_tools.get(tool, 0) + count
+        for tool, count in r.gabb_tool_usage.items():
+            gabb_tools[tool] = gabb_tools.get(tool, 0) + count
+
+    if control_tools or gabb_tools:
+        console.print("\n[bold]Tool Usage[/bold]")
+        console.print("-" * 50)
+        if control_tools:
+            console.print("[cyan]Control agent:[/cyan]")
+            for tool, count in sorted(control_tools.items(), key=lambda x: -x[1]):
+                console.print(f"  {tool:25} {count:5}")
+        if gabb_tools:
+            console.print("[cyan]Gabb agent:[/cyan]")
+            for tool, count in sorted(gabb_tools.items(), key=lambda x: -x[1]):
+                console.print(f"  {tool:25} {count:5}")
+        console.print("-" * 50)
+
 
 def save_results(results: list[TaskResult], output_dir: Path) -> None:
     """Save results to CSV and JSON files."""
@@ -391,10 +445,10 @@ def save_results(results: list[TaskResult], output_dir: Path) -> None:
     csv_path = output_dir / f"results_{timestamp}.csv"
     with open(csv_path, "w", newline="") as f:
         if results:
-            writer = csv.DictWriter(f, fieldnames=results[0].to_dict().keys())
+            writer = csv.DictWriter(f, fieldnames=results[0].to_csv_dict().keys())
             writer.writeheader()
             for result in results:
-                writer.writerow(result.to_dict())
+                writer.writerow(result.to_csv_dict())
 
     console.print(f"\n[green]Results saved to {csv_path}[/green]")
 

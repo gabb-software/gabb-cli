@@ -9,3 +9,5 @@ TOOL_PLAN.md
 benchmark/.env
 benchmark/bin/
 benchmark/results/
+/benchmark/api/.env
+/benchmark/claude-code/.env

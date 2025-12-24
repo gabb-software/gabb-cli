@@ -1,0 +1,44 @@
+{
+  "tasks": [
+    {
+      "id": "sklearn-ridge-normalize",
+      "repo": "scikit-learn/scikit-learn",
+      "version": "0.20",
+      "prompt": "Find the file that needs to be modified to fix the deprecation of the 'normalize' parameter in Ridge regression. The issue is that Ridge.fit() has a 'normalize' parameter that should be deprecated in favor of using a Pipeline with StandardScaler. Which file contains the Ridge class implementation that needs to be changed?",
+      "expected_files": ["sklearn/linear_model/ridge.py", "sklearn/linear_model/_ridge.py"],
+      "tags": ["file-retrieval", "single-file", "python"]
+    },
+    {
+      "id": "django-admin-utils",
+      "repo": "django/django",
+      "version": "3.0",
+      "prompt": "Find the file that handles the 'get_deleted_objects' function used by Django admin for displaying deletion confirmation pages. This function collects all related objects that would be deleted when deleting an object through the admin interface.",
+      "expected_files": ["django/contrib/admin/utils.py"],
+      "tags": ["file-retrieval", "single-file", "python"]
+    },
+    {
+      "id": "requests-session-hooks",
+      "repo": "psf/requests",
+      "version": "2.25",
+      "prompt": "Find the file that implements the Session class and handles request/response hooks in the requests library. The Session class is the main interface for making HTTP requests with persistent settings.",
+      "expected_files": ["requests/sessions.py", "src/requests/sessions.py"],
+      "tags": ["file-retrieval", "single-file", "python"]
+    },
+    {
+      "id": "flask-blueprints",
+      "repo": "pallets/flask",
+      "version": "2.0",
+      "prompt": "Find the file that implements Flask's Blueprint class, which is used for organizing routes and views into reusable components.",
+      "expected_files": ["src/flask/blueprints.py", "flask/blueprints.py"],
+      "tags": ["file-retrieval", "single-file", "python"]
+    },
+    {
+      "id": "pytest-fixtures",
+      "repo": "pytest-dev/pytest",
+      "version": "7.0",
+      "prompt": "Find the file that implements pytest's fixture mechanism, specifically where the @pytest.fixture decorator is defined and fixture resolution/injection happens.",
+      "expected_files": ["src/_pytest/fixtures.py", "_pytest/fixtures.py"],
+      "tags": ["file-retrieval", "single-file", "python"]
+    }
+  ]
+}

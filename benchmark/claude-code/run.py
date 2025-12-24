@@ -135,6 +135,84 @@ class RunMetrics:
 
 
 @dataclass
+class AggregateStats:
+    """Aggregate statistics for multiple runs."""
+
+    mean: float
+    std: float
+    min: float
+    max: float
+
+    def to_dict(self) -> dict[str, float]:
+        return {
+            "mean": round(self.mean, 2),
+            "std": round(self.std, 2),
+            "min": round(self.min, 2),
+            "max": round(self.max, 2),
+        }
+
+
+def compute_stats(values: list[float]) -> AggregateStats:
+    """Compute aggregate statistics for a list of values."""
+    import statistics
+
+    if not values:
+        return AggregateStats(0, 0, 0, 0)
+    if len(values) == 1:
+        return AggregateStats(values[0], 0, values[0], values[0])
+
+    return AggregateStats(
+        mean=statistics.mean(values),
+        std=statistics.stdev(values),
+        min=min(values),
+        max=max(values),
+    )
+
+
+def aggregate_runs(runs: list[RunMetrics]) -> dict[str, Any]:
+    """Aggregate multiple runs into summary statistics."""
+    if not runs:
+        return {}
+
+    # Collect values for each metric
+    times = [r.wall_time_seconds for r in runs]
+    tokens_input = [r.tokens_input for r in runs]
+    tokens_output = [r.tokens_output for r in runs]
+    tokens_total = [r.tokens_input + r.tokens_output for r in runs]
+    tool_calls_total = [sum(r.tool_calls.values()) for r in runs]
+    turns = [r.turns for r in runs]
+    successes = sum(1 for r in runs if r.success)
+
+    # Aggregate tool calls across all runs
+    all_tools: dict[str, list[int]] = {}
+    for r in runs:
+        for tool, count in r.tool_calls.items():
+            if tool not in all_tools:
+                all_tools[tool] = []
+            all_tools[tool].append(count)
+
+    # For tools not used in some runs, add zeros
+    for tool in all_tools:
+        while len(all_tools[tool]) < len(runs):
+            all_tools[tool].append(0)
+
+    tool_stats = {tool: compute_stats(counts).to_dict() for tool, counts in all_tools.items()}
+
+    return {
+        "wall_time_seconds": compute_stats(times).to_dict(),
+        "tokens_input": compute_stats(tokens_input).to_dict(),
+        "tokens_output": compute_stats(tokens_output).to_dict(),
+        "tokens_total": compute_stats(tokens_total).to_dict(),
+        "tool_calls_total": compute_stats(tool_calls_total).to_dict(),
+        "turns": compute_stats(turns).to_dict(),
+        "success_rate": round(successes / len(runs), 2) if runs else 0,
+        "success_count": successes,
+        "run_count": len(runs),
+        "tool_calls": tool_stats,
+    }
+
+
+@dataclass
 class Task:
     """A benchmark task definition."""
 
@@ -619,9 +697,14 @@ def run_single_condition(
     condition: str,
     gabb_binary: Path | None = None,
     verbose: bool = False,
+    run_number: int | None = None,
+    total_runs: int | None = None,
 ) -> RunMetrics:
     """Run a single condition and return metrics."""
-    print_msg(f"  Running {condition}...", "cyan")
+    if run_number is not None and total_runs is not None:
+        print_msg(f"  [{run_number}/{total_runs}] {condition}...", "cyan")
+    else:
+        print_msg(f"  Running {condition}...", "cyan")
 
     runner = ClaudeCodeRunner(
         workspace=workspace,
@@ -635,9 +718,38 @@ def run_single_condition(
         metrics = runner.run(task.prompt)
         metrics.task_id = task.id
         metrics.success = check_success(metrics.final_answer, task.expected_files)
+
+        # Print brief result for multi-run mode
+        if run_number is not None:
+            tokens = metrics.tokens_input + metrics.tokens_output
+            status = "✓" if metrics.success else "✗"
+            print_msg(
+                f"      → {metrics.wall_time_seconds:.1f}s, {tokens:,} tokens, {status}",
+                "green" if metrics.success else "red"
+            )
+
         return metrics
     finally:
         runner.cleanup()
+
+
+def run_multiple(
+    task: Task,
+    workspace: Path,
+    condition: str,
+    run_count: int,
+    gabb_binary: Path | None = None,
+    verbose: bool = False,
+) -> list[RunMetrics]:
+    """Run a condition multiple times and return all results."""
+    results = []
+    for i in range(run_count):
+        metrics = run_single_condition(
+            task, workspace, condition, gabb_binary, verbose,
+            run_number=i + 1, total_runs=run_count
+        )
+        results.append(metrics)
+    return results
 
 
 def run_comparison(
@@ -645,11 +757,12 @@ def run_comparison(
     workspace: Path,
     gabb_binary: Path | None = None,
     verbose: bool = False,
-) -> tuple[RunMetrics, RunMetrics]:
-    """Run both conditions on a task."""
-    control = run_single_condition(task, workspace, "control", gabb_binary, verbose)
-    gabb = run_single_condition(task, workspace, "gabb", gabb_binary, verbose)
-    return control, gabb
+    run_count: int = 1,
+) -> tuple[list[RunMetrics], list[RunMetrics]]:
+    """Run both conditions on a task, optionally multiple times."""
+    control_runs = run_multiple(task, workspace, "control", run_count, gabb_binary, verbose)
+    gabb_runs = run_multiple(task, workspace, "gabb", run_count, gabb_binary, verbose)
+    return control_runs, gabb_runs
 
 
 # =============================================================================
@@ -657,135 +770,236 @@ def run_comparison(
 # =============================================================================
 
 
-def print_comparison(control: RunMetrics, gabb: RunMetrics) -> None:
-    """Print comparison of two runs."""
+def print_comparison(
+    control: list[RunMetrics] | RunMetrics,
+    gabb: list[RunMetrics] | RunMetrics,
+) -> None:
+    """Print comparison of runs (single or multiple)."""
+    # Normalize to lists
+    control_runs = control if isinstance(control, list) else [control]
+    gabb_runs = gabb if isinstance(gabb, list) else [gabb]
+
     if HAS_RICH and console:
-        _print_comparison_rich(control, gabb)
+        _print_comparison_rich(control_runs, gabb_runs)
     else:
-        _print_comparison_plain(control, gabb)
+        _print_comparison_plain(control_runs, gabb_runs)
 
 
-def _print_comparison_rich(control: RunMetrics, gabb: RunMetrics) -> None:
-    table = Table(title=f"Results: {control.task_id}")
+def _format_stat(stats: dict[str, float], single_run: bool = False) -> str:
+    """Format a statistic for display."""
+    if single_run:
+        return f"{stats['mean']:.1f}"
+    return f"{stats['mean']:.1f} ± {stats['std']:.1f}"
+
+
+def _print_comparison_rich(control_runs: list[RunMetrics], gabb_runs: list[RunMetrics]) -> None:
+    control_agg = aggregate_runs(control_runs)
+    gabb_agg = aggregate_runs(gabb_runs)
+    single_run = len(control_runs) == 1
+
+    task_id = control_runs[0].task_id if control_runs else "Unknown"
+    title = f"Results: {task_id}"
+    if not single_run:
+        title += f" ({len(control_runs)} runs)"
+
+    table = Table(title=title)
     table.add_column("Metric", style="cyan")
     table.add_column("Control", justify="right")
     table.add_column("Gabb", justify="right")
     table.add_column("Diff", justify="right")
 
-    table.add_row(
-        "Success",
-        "[green]PASS[/green]" if control.success else "[red]FAIL[/red]",
-        "[green]PASS[/green]" if gabb.success else "[red]FAIL[/red]",
-        "",
-    )
+    # Success rate
+    c_rate = control_agg["success_rate"]
+    g_rate = gabb_agg["success_rate"]
+    if single_run:
+        c_success = "[green]PASS[/green]" if c_rate == 1 else "[red]FAIL[/red]"
+        g_success = "[green]PASS[/green]" if g_rate == 1 else "[red]FAIL[/red]"
+    else:
+        c_success = f"{c_rate * 100:.0f}%"
+        g_success = f"{g_rate * 100:.0f}%"
+    table.add_row("Success", c_success, g_success, "")
 
-    time_diff = control.wall_time_seconds - gabb.wall_time_seconds
-    time_pct = (time_diff / control.wall_time_seconds * 100) if control.wall_time_seconds > 0 else 0
+    # Time
+    c_time = control_agg["wall_time_seconds"]
+    g_time = gabb_agg["wall_time_seconds"]
+    time_diff = c_time["mean"] - g_time["mean"]
+    time_pct = (time_diff / c_time["mean"] * 100) if c_time["mean"] > 0 else 0
     table.add_row(
         "Time (s)",
-        f"{control.wall_time_seconds:.1f}",
-        f"{gabb.wall_time_seconds:.1f}",
+        _format_stat(c_time, single_run),
+        _format_stat(g_time, single_run),
         f"{time_diff:+.1f} ({time_pct:+.0f}%)",
     )
 
-    control_tokens = control.tokens_input + control.tokens_output
-    gabb_tokens = gabb.tokens_input + gabb.tokens_output
-    token_diff = control_tokens - gabb_tokens
-    token_pct = (token_diff / control_tokens * 100) if control_tokens > 0 else 0
-    table.add_row(
-        "Total Tokens",
-        f"{control_tokens:,}",
-        f"{gabb_tokens:,}",
-        f"{token_diff:+,} ({token_pct:+.0f}%)",
-    )
+    # Tokens
+    c_tokens = control_agg["tokens_total"]
+    g_tokens = gabb_agg["tokens_total"]
+    token_diff = c_tokens["mean"] - g_tokens["mean"]
+    token_pct = (token_diff / c_tokens["mean"] * 100) if c_tokens["mean"] > 0 else 0
+    if single_run:
+        table.add_row(
+            "Total Tokens",
+            f"{c_tokens['mean']:,.0f}",
+            f"{g_tokens['mean']:,.0f}",
+            f"{token_diff:+,.0f} ({token_pct:+.0f}%)",
+        )
+    else:
+        table.add_row(
+            "Total Tokens",
+            f"{c_tokens['mean']:,.0f} ± {c_tokens['std']:,.0f}",
+            f"{g_tokens['mean']:,.0f} ± {g_tokens['std']:,.0f}",
+            f"{token_diff:+,.0f} ({token_pct:+.0f}%)",
+        )
 
-    control_calls = sum(control.tool_calls.values())
-    gabb_calls = sum(gabb.tool_calls.values())
+    # Tool calls
+    c_calls = control_agg["tool_calls_total"]
+    g_calls = gabb_agg["tool_calls_total"]
     table.add_row(
         "Tool Calls",
-        str(control_calls),
-        str(gabb_calls),
-        f"{control_calls - gabb_calls:+d}",
+        _format_stat(c_calls, single_run),
+        _format_stat(g_calls, single_run),
+        f"{c_calls['mean'] - g_calls['mean']:+.1f}",
     )
 
     console.print(table)
 
     # Tool breakdown
     console.print("\n[bold]Tool Usage:[/bold]")
-    all_tools = set(control.tool_calls.keys()) | set(gabb.tool_calls.keys())
-    gabb_tools = sorted([t for t in all_tools if "gabb" in t.lower()])
+    c_tools = control_agg.get("tool_calls", {})
+    g_tools = gabb_agg.get("tool_calls", {})
+    all_tools = set(c_tools.keys()) | set(g_tools.keys())
+    gabb_tool_names = sorted([t for t in all_tools if "gabb" in t.lower()])
     search_tools = sorted([t for t in all_tools if t in ("Grep", "Glob", "Read")])
-    other_tools = sorted([t for t in all_tools if t not in gabb_tools and t not in search_tools])
+    other_tools = sorted([t for t in all_tools if t not in gabb_tool_names and t not in search_tools])
 
     tool_table = Table()
     tool_table.add_column("Tool", style="cyan")
     tool_table.add_column("Control", justify="right")
     tool_table.add_column("Gabb", justify="right")
 
-    for tool in search_tools + gabb_tools + other_tools:
-        c = control.tool_calls.get(tool, 0)
-        g = gabb.tool_calls.get(tool, 0)
-        if c > 0 or g > 0:
-            tool_table.add_row(tool, str(c), str(g))
+    for tool in search_tools + gabb_tool_names + other_tools:
+        c = c_tools.get(tool, {"mean": 0, "std": 0})
+        g = g_tools.get(tool, {"mean": 0, "std": 0})
+        if c["mean"] > 0 or g["mean"] > 0:
+            tool_table.add_row(
+                tool,
+                _format_stat(c, single_run),
+                _format_stat(g, single_run),
+            )
 
     console.print(tool_table)
 
 
-def _print_comparison_plain(control: RunMetrics, gabb: RunMetrics) -> None:
+def _print_comparison_plain(control_runs: list[RunMetrics], gabb_runs: list[RunMetrics]) -> None:
+    control_agg = aggregate_runs(control_runs)
+    gabb_agg = aggregate_runs(gabb_runs)
+    single_run = len(control_runs) == 1
+
+    task_id = control_runs[0].task_id if control_runs else "Unknown"
     print(f"\n{'=' * 60}")
-    print(f"Results: {control.task_id}")
+    title = f"Results: {task_id}"
+    if not single_run:
+        title += f" ({len(control_runs)} runs)"
+    print(title)
     print('=' * 60)
-    print(f"{'Metric':<20} {'Control':>15} {'Gabb':>15}")
+    print(f"{'Metric':<20} {'Control':>18} {'Gabb':>18}")
     print('-' * 60)
 
-    c_status = "PASS" if control.success else "FAIL"
-    g_status = "PASS" if gabb.success else "FAIL"
-    print(f"{'Success':<20} {c_status:>15} {g_status:>15}")
-    print(f"{'Time (s)':<20} {control.wall_time_seconds:>15.1f} {gabb.wall_time_seconds:>15.1f}")
+    # Success
+    c_rate = control_agg["success_rate"]
+    g_rate = gabb_agg["success_rate"]
+    if single_run:
+        c_status = "PASS" if c_rate == 1 else "FAIL"
+        g_status = "PASS" if g_rate == 1 else "FAIL"
+    else:
+        c_status = f"{c_rate * 100:.0f}%"
+        g_status = f"{g_rate * 100:.0f}%"
+    print(f"{'Success':<20} {c_status:>18} {g_status:>18}")
 
-    c_tokens = control.tokens_input + control.tokens_output
-    g_tokens = gabb.tokens_input + gabb.tokens_output
-    print(f"{'Total Tokens':<20} {c_tokens:>15,} {g_tokens:>15,}")
+    # Time
+    c_time = control_agg["wall_time_seconds"]
+    g_time = gabb_agg["wall_time_seconds"]
+    print(f"{'Time (s)':<20} {_format_stat(c_time, single_run):>18} {_format_stat(g_time, single_run):>18}")
 
-    c_calls = sum(control.tool_calls.values())
-    g_calls = sum(gabb.tool_calls.values())
-    print(f"{'Tool Calls':<20} {c_calls:>15} {g_calls:>15}")
+    # Tokens
+    c_tokens = control_agg["tokens_total"]
+    g_tokens = gabb_agg["tokens_total"]
+    if single_run:
+        print(f"{'Total Tokens':<20} {c_tokens['mean']:>18,.0f} {g_tokens['mean']:>18,.0f}")
+    else:
+        c_str = f"{c_tokens['mean']:,.0f} ± {c_tokens['std']:,.0f}"
+        g_str = f"{g_tokens['mean']:,.0f} ± {g_tokens['std']:,.0f}"
+        print(f"{'Total Tokens':<20} {c_str:>18} {g_str:>18}")
 
+    # Tool calls
+    c_calls = control_agg["tool_calls_total"]
+    g_calls = gabb_agg["tool_calls_total"]
+    print(f"{'Tool Calls':<20} {_format_stat(c_calls, single_run):>18} {_format_stat(g_calls, single_run):>18}")
+
+    # Tool breakdown
     print("\nTool Usage:")
-    for tool in sorted(set(control.tool_calls.keys()) | set(gabb.tool_calls.keys())):
-        c = control.tool_calls.get(tool, 0)
-        g = gabb.tool_calls.get(tool, 0)
-        if c > 0 or g > 0:
-            print(f"  {tool:<30} {c:>10} {g:>10}")
+    c_tools = control_agg.get("tool_calls", {})
+    g_tools = gabb_agg.get("tool_calls", {})
+    for tool in sorted(set(c_tools.keys()) | set(g_tools.keys())):
+        c = c_tools.get(tool, {"mean": 0, "std": 0})
+        g = g_tools.get(tool, {"mean": 0, "std": 0})
+        if c["mean"] > 0 or g["mean"] > 0:
+            print(f"  {tool:<30} {_format_stat(c, single_run):>12} {_format_stat(g, single_run):>12}")
 
 
-def save_results(results: list[RunMetrics], task_id: str, output_dir: Path) -> Path:
-    """Save results to JSON file."""
+def save_results(
+    results: dict[str, list[RunMetrics]],
+    task_id: str,
+    output_dir: Path,
+) -> Path:
+    """Save results to JSON file.
+
+    Args:
+        results: Dict mapping condition name to list of run metrics
+        task_id: Task identifier
+        output_dir: Directory to save results
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filepath = output_dir / f"results_{task_id}_{timestamp}.json"
 
-    data = {
+    # Determine run count from any condition
+    run_count = max(len(runs) for runs in results.values()) if results else 1
+    filepath = output_dir / f"results_{task_id}_n{run_count}_{timestamp}.json"
+
+    data: dict[str, Any] = {
         "task_id": task_id,
         "timestamp": timestamp,
-        "conditions": {r.condition: r.to_dict() for r in results},
+        "run_count": run_count,
+        "conditions": {},
     }
 
-    if len(results) == 2:
-        control = next((r for r in results if r.condition == "control"), None)
-        gabb = next((r for r in results if r.condition == "gabb"), None)
-        if control and gabb:
-            c_tokens = control.tokens_input + control.tokens_output
-            g_tokens = gabb.tokens_input + gabb.tokens_output
-            data["summary"] = {
-                "token_savings_pct": round((c_tokens - g_tokens) / max(1, c_tokens) * 100, 1),
-                "time_savings_pct": round(
-                    (control.wall_time_seconds - gabb.wall_time_seconds)
-                    / max(0.1, control.wall_time_seconds) * 100, 1
-                ),
-                "control_success": control.success,
-                "gabb_success": gabb.success,
-            }
+    # Build condition data with individual runs and aggregates
+    for condition, runs in results.items():
+        data["conditions"][condition] = {
+            "runs": [r.to_dict() for r in runs],
+            "aggregate": aggregate_runs(runs),
+        }
+
+    # Add comparison summary if both conditions present
+    if "control" in results and "gabb" in results:
+        control_agg = aggregate_runs(results["control"])
+        gabb_agg = aggregate_runs(results["gabb"])
+
+        c_tokens = control_agg["tokens_total"]["mean"]
+        g_tokens = gabb_agg["tokens_total"]["mean"]
+        c_time = control_agg["wall_time_seconds"]["mean"]
+        g_time = gabb_agg["wall_time_seconds"]["mean"]
+
+        data["summary"] = {
+            "token_savings_pct": {
+                "mean": round((c_tokens - g_tokens) / max(1, c_tokens) * 100, 1),
+            },
+            "time_savings_pct": {
+                "mean": round((c_time - g_time) / max(0.1, c_time) * 100, 1),
+            },
+            "control_success_rate": control_agg["success_rate"],
+            "gabb_success_rate": gabb_agg["success_rate"],
+        }
 
     with open(filepath, "w") as f:
         json.dump(data, f, indent=2)
@@ -794,51 +1008,85 @@ def save_results(results: list[RunMetrics], task_id: str, output_dir: Path) -> P
     return filepath
 
 
-def save_suite_results(all_results: list[tuple[RunMetrics, RunMetrics]], output_dir: Path) -> Path:
-    """Save results from a full suite run."""
+def save_suite_results(
+    all_results: list[tuple[list[RunMetrics], list[RunMetrics]]],
+    output_dir: Path,
+    run_count: int = 1,
+) -> Path:
+    """Save results from a full suite run.
+
+    Args:
+        all_results: List of (control_runs, gabb_runs) tuples, where each is a list of runs
+        output_dir: Directory to save results
+        run_count: Number of runs per condition
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filepath = output_dir / f"suite_results_{timestamp}.json"
+    filepath = output_dir / f"suite_results_n{run_count}_{timestamp}.json"
 
-    # Aggregate metrics
-    control_successes = sum(1 for c, g in all_results if c.success)
-    gabb_successes = sum(1 for c, g in all_results if g.success)
+    # Aggregate across all tasks and runs
+    all_control_runs: list[RunMetrics] = []
+    all_gabb_runs: list[RunMetrics] = []
+    for control_runs, gabb_runs in all_results:
+        all_control_runs.extend(control_runs)
+        all_gabb_runs.extend(gabb_runs)
 
-    total_control_tokens = sum(c.tokens_input + c.tokens_output for c, g in all_results)
-    total_gabb_tokens = sum(g.tokens_input + g.tokens_output for c, g in all_results)
+    control_agg = aggregate_runs(all_control_runs)
+    gabb_agg = aggregate_runs(all_gabb_runs)
 
     # Aggregate tool usage
     control_tools: dict[str, int] = {}
     gabb_tools: dict[str, int] = {}
-    for control, gabb in all_results:
-        for tool, count in control.tool_calls.items():
-            control_tools[tool] = control_tools.get(tool, 0) + count
-        for tool, count in gabb.tool_calls.items():
-            gabb_tools[tool] = gabb_tools.get(tool, 0) + count
+    for control_runs, gabb_runs in all_results:
+        for run in control_runs:
+            for tool, count in run.tool_calls.items():
+                control_tools[tool] = control_tools.get(tool, 0) + count
+        for run in gabb_runs:
+            for tool, count in run.tool_calls.items():
+                gabb_tools[tool] = gabb_tools.get(tool, 0) + count
 
-    data = {
+    data: dict[str, Any] = {
         "timestamp": timestamp,
         "task_count": len(all_results),
+        "run_count": run_count,
         "summary": {
-            "control_success_rate": control_successes / len(all_results) if all_results else 0,
-            "gabb_success_rate": gabb_successes / len(all_results) if all_results else 0,
-            "total_control_tokens": total_control_tokens,
-            "total_gabb_tokens": total_gabb_tokens,
-            "token_savings_pct": round(
-                (total_control_tokens - total_gabb_tokens) / max(1, total_control_tokens) * 100, 1
-            ),
+            "control": control_agg,
+            "gabb": gabb_agg,
+            "token_savings_pct": {
+                "mean": round(
+                    (control_agg["tokens_total"]["mean"] - gabb_agg["tokens_total"]["mean"])
+                    / max(1, control_agg["tokens_total"]["mean"]) * 100,
+                    1
+                ),
+            },
+            "time_savings_pct": {
+                "mean": round(
+                    (control_agg["wall_time_seconds"]["mean"] - gabb_agg["wall_time_seconds"]["mean"])
+                    / max(0.1, control_agg["wall_time_seconds"]["mean"]) * 100,
+                    1
+                ),
+            },
             "control_tool_usage": control_tools,
             "gabb_tool_usage": gabb_tools,
         },
-        "tasks": [
-            {
-                "task_id": c.task_id,
-                "control": c.to_dict(),
-                "gabb": g.to_dict(),
-            }
-            for c, g in all_results
-        ],
+        "tasks": [],
     }
+
+    # Add per-task results
+    for control_runs, gabb_runs in all_results:
+        task_id = control_runs[0].task_id if control_runs else "unknown"
+        task_data = {
+            "task_id": task_id,
+            "control": {
+                "runs": [r.to_dict() for r in control_runs],
+                "aggregate": aggregate_runs(control_runs),
+            },
+            "gabb": {
+                "runs": [r.to_dict() for r in gabb_runs],
+                "aggregate": aggregate_runs(gabb_runs),
+            },
+        }
+        data["tasks"].append(task_data)
 
     with open(filepath, "w") as f:
         json.dump(data, f, indent=2)
@@ -894,6 +1142,12 @@ Examples:
         choices=["control", "gabb", "both"],
         default="both",
         help="Which condition(s) to run",
+    )
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=1,
+        help="Number of times to run each condition (for statistical significance)",
     )
     parser.add_argument("--no-save", action="store_true", help="Don't save results")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
@@ -955,17 +1209,21 @@ Examples:
             tasks = [t for t in tasks if args.repo.lower() in t.repo.lower()][:args.limit]
 
         print_msg(f"Running {len(tasks)} SWE-bench tasks...", "bold")
+        if args.runs > 1:
+            print_msg(f"Runs per condition: {args.runs}", "dim")
 
-        all_results = []
+        all_results: list[tuple[list[RunMetrics], list[RunMetrics]]] = []
         for i, swe_task in enumerate(tasks):
             task = swe_bench_task_to_task(swe_task)
             print_msg(f"\n[{i+1}/{len(tasks)}] {task.id}", "bold")
 
             try:
                 workspace = workspace_manager.get_workspace(task.repo, task.base_commit)
-                control, gabb = run_comparison(task, workspace, gabb_binary, args.verbose)
-                all_results.append((control, gabb))
-                print_comparison(control, gabb)
+                control_runs, gabb_runs = run_comparison(
+                    task, workspace, gabb_binary, args.verbose, run_count=args.runs
+                )
+                all_results.append((control_runs, gabb_runs))
+                print_comparison(control_runs, gabb_runs)
             except Exception as e:
                 print_msg(f"  Error: {e}", "red")
                 continue
@@ -976,7 +1234,7 @@ Examples:
 
         # Save suite results
         if not args.no_save and all_results:
-            save_suite_results(all_results, RESULTS_DIR)
+            save_suite_results(all_results, RESULTS_DIR, run_count=args.runs)
 
         return 0
 
@@ -997,17 +1255,25 @@ Examples:
 
         try:
             if args.condition == "both":
-                control, gabb = run_comparison(task, workspace, gabb_binary, args.verbose)
-                print_comparison(control, gabb)
+                control_runs, gabb_runs = run_comparison(
+                    task, workspace, gabb_binary, args.verbose, run_count=args.runs
+                )
+                print_comparison(control_runs, gabb_runs)
                 if not args.no_save:
-                    save_results([control, gabb], task.id, RESULTS_DIR)
+                    save_results(
+                        {"control": control_runs, "gabb": gabb_runs},
+                        task.id, RESULTS_DIR
+                    )
             else:
-                metrics = run_single_condition(task, workspace, args.condition, gabb_binary, args.verbose)
-                print_msg(f"\nSuccess: {metrics.success}")
-                print_msg(f"Time: {metrics.wall_time_seconds:.1f}s")
-                print_msg(f"Tool calls: {metrics.tool_calls}")
+                runs = run_multiple(
+                    task, workspace, args.condition, args.runs, gabb_binary, args.verbose
+                )
+                agg = aggregate_runs(runs)
+                print_msg(f"\nSuccess rate: {agg['success_rate'] * 100:.0f}%")
+                print_msg(f"Time: {agg['wall_time_seconds']['mean']:.1f}s ± {agg['wall_time_seconds']['std']:.1f}s")
+                print_msg(f"Tool calls: {agg['tool_calls_total']['mean']:.1f} ± {agg['tool_calls_total']['std']:.1f}")
                 if not args.no_save:
-                    save_results([metrics], task.id, RESULTS_DIR)
+                    save_results({args.condition: runs}, task.id, RESULTS_DIR)
         finally:
             workspace_manager.cleanup_workspace(workspace)
 
@@ -1033,17 +1299,28 @@ Examples:
 
         print_msg(f"Running: {task.id}", "bold")
         print_msg(f"Workspace: {args.workspace}", "dim")
+        if args.runs > 1:
+            print_msg(f"Runs: {args.runs}", "dim")
 
         if args.condition == "both":
-            control, gabb = run_comparison(task, args.workspace, gabb_binary, args.verbose)
-            print_comparison(control, gabb)
+            control_runs, gabb_runs = run_comparison(
+                task, args.workspace, gabb_binary, args.verbose, run_count=args.runs
+            )
+            print_comparison(control_runs, gabb_runs)
             if not args.no_save:
-                save_results([control, gabb], task.id, RESULTS_DIR)
+                save_results(
+                    {"control": control_runs, "gabb": gabb_runs},
+                    task.id, RESULTS_DIR
+                )
         else:
-            metrics = run_single_condition(task, args.workspace, args.condition, gabb_binary, args.verbose)
-            print_msg(f"\nSuccess: {metrics.success}")
+            runs = run_multiple(
+                task, args.workspace, args.condition, args.runs, gabb_binary, args.verbose
+            )
+            agg = aggregate_runs(runs)
+            print_msg(f"\nSuccess rate: {agg['success_rate'] * 100:.0f}%")
+            print_msg(f"Time: {agg['wall_time_seconds']['mean']:.1f}s ± {agg['wall_time_seconds']['std']:.1f}s")
             if not args.no_save:
-                save_results([metrics], task.id, RESULTS_DIR)
+                save_results({args.condition: runs}, task.id, RESULTS_DIR)
 
         return 0
 

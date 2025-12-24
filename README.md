@@ -376,7 +376,8 @@ Gabb provides helper commands to simplify MCP setup:
 
 ```bash
 # Print MCP config JSON for manual setup
-gabb mcp config
+gabb mcp config                     # With setup instructions (default)
+gabb mcp config --output json       # Raw JSON only (for piping/scripting)
 
 # Auto-install into Claude Desktop/Code configuration
 gabb mcp install                    # Install to both Claude Desktop and Claude Code
@@ -384,7 +385,8 @@ gabb mcp install --claude-desktop   # Install to Claude Desktop only
 gabb mcp install --claude-code      # Install to Claude Code only (creates .claude/mcp.json)
 
 # Check current MCP configuration status
-gabb mcp status
+gabb mcp status                     # Show configuration status
+gabb mcp status --dry-run           # Also test MCP server startup
 
 # Remove gabb from MCP configuration
 gabb mcp uninstall

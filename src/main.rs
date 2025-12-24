@@ -559,7 +559,11 @@ enum Commands {
 #[derive(Subcommand, Debug)]
 enum McpCommands {
     /// Print MCP configuration JSON for manual setup
-    Config,
+    Config {
+        /// Output style: json (raw JSON only), snippet (with instructions)
+        #[arg(long, short = 'o', default_value = "snippet")]
+        output: McpConfigFormat,
+    },
     /// Install gabb MCP server into Claude Desktop/Code configuration
     Install {
         /// Only install for Claude Desktop
@@ -569,8 +573,12 @@ enum McpCommands {
         #[arg(long)]
         claude_code: bool,
     },
-    /// Check MCP configuration status
-    Status,
+    /// Check MCP configuration status and optionally test server startup
+    Status {
+        /// Test MCP server startup (dry run)
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Remove gabb from MCP configuration
     Uninstall {
         /// Only uninstall from Claude Desktop
@@ -582,6 +590,15 @@ enum McpCommands {
     },
     /// Generate a slash command for Claude Code
     Command,
+}
+
+#[derive(Clone, Debug, Default, clap::ValueEnum)]
+enum McpConfigFormat {
+    /// Raw JSON output only (for piping/scripting)
+    Json,
+    /// JSON with setup instructions (default)
+    #[default]
+    Snippet,
 }
 
 #[derive(Subcommand, Debug)]
@@ -795,12 +812,16 @@ fn main() -> std::process::ExitCode {
         }),
         Commands::McpServer => mcp::run_server(&workspace, &db).map(|_| ExitCode::Success),
         Commands::Mcp { command } => match command {
-            McpCommands::Config => mcp_config(&workspace).map(|_| ExitCode::Success),
+            McpCommands::Config { output } => {
+                mcp_config(&workspace, output).map(|_| ExitCode::Success)
+            }
             McpCommands::Install {
                 claude_desktop,
                 claude_code,
             } => mcp_install(&workspace, claude_desktop, claude_code).map(|_| ExitCode::Success),
-            McpCommands::Status => mcp_status().map(|_| ExitCode::Success),
+            McpCommands::Status { dry_run } => {
+                mcp_status(&workspace, &db, dry_run).map(|_| ExitCode::Success)
+            }
             McpCommands::Uninstall {
                 claude_desktop,
                 claude_code,
@@ -2621,29 +2642,43 @@ fn generate_mcp_config(root: &Path, use_absolute_path: bool) -> serde_json::Valu
 }
 
 /// Print MCP configuration JSON
-fn mcp_config(root: &Path) -> Result<()> {
+fn mcp_config(root: &Path, format: McpConfigFormat) -> Result<()> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let config = generate_mcp_config(&root, true);
 
-    println!("Add this to your Claude Desktop config:\n");
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&config).unwrap_or_default()
-    );
-    println!();
+    match format {
+        McpConfigFormat::Json => {
+            // Raw JSON only - suitable for piping/scripting
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&config).unwrap_or_default()
+            );
+        }
+        McpConfigFormat::Snippet => {
+            // Friendly output with instructions
+            println!("Add this to your Claude Desktop config:\n");
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&config).unwrap_or_default()
+            );
+            println!();
 
-    if let Some(config_path) = claude_desktop_config_path() {
-        println!("Config file location:");
-        println!("  {}", config_path.display());
-    } else {
-        println!("Config file locations:");
-        println!("  macOS:   ~/Library/Application Support/Claude/claude_desktop_config.json");
-        println!("  Windows: %APPDATA%\\Claude\\claude_desktop_config.json");
-        println!("  Linux:   ~/.config/Claude/claude_desktop_config.json");
+            if let Some(config_path) = claude_desktop_config_path() {
+                println!("Config file location:");
+                println!("  {}", config_path.display());
+            } else {
+                println!("Config file locations:");
+                println!(
+                    "  macOS:   ~/Library/Application Support/Claude/claude_desktop_config.json"
+                );
+                println!("  Windows: %APPDATA%\\Claude\\claude_desktop_config.json");
+                println!("  Linux:   ~/.config/Claude/claude_desktop_config.json");
+            }
+
+            println!();
+            println!("Or run `gabb mcp install` to install automatically.");
+        }
     }
-
-    println!();
-    println!("Or run `gabb mcp install` to install automatically.");
 
     Ok(())
 }
@@ -2761,7 +2796,7 @@ fn install_to_config_file(config_path: &Path, root: &Path, use_absolute: bool) -
 }
 
 /// Check MCP configuration status
-fn mcp_status() -> Result<()> {
+fn mcp_status(workspace: &Path, db: &Path, dry_run: bool) -> Result<()> {
     let mut found_any = false;
 
     // Check Claude Desktop
@@ -2825,12 +2860,134 @@ fn mcp_status() -> Result<()> {
         println!("⚠ Could not determine path");
     }
 
-    if !found_any {
+    // Dry-run: test MCP server startup
+    if dry_run {
+        println!();
+        print!("MCP server test: ");
+
+        match test_mcp_server_startup(workspace, db) {
+            Ok(()) => {
+                println!("✓ Server starts successfully");
+            }
+            Err(e) => {
+                println!("✗ Server startup failed");
+                println!("  Error: {}", e);
+                return Err(e);
+            }
+        }
+    }
+
+    if !found_any && !dry_run {
         println!();
         println!("Run `gabb mcp install` to configure MCP for Claude.");
     }
 
     Ok(())
+}
+
+/// Test MCP server startup (dry run)
+fn test_mcp_server_startup(workspace: &Path, db: &Path) -> Result<()> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let gabb_binary = find_gabb_binary();
+
+    // Spawn the MCP server process
+    let mut child = Command::new(&gabb_binary)
+        .args([
+            "mcp-server",
+            "--workspace",
+            workspace.to_string_lossy().as_ref(),
+            "--db",
+            db.to_string_lossy().as_ref(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("Failed to spawn MCP server: {}", gabb_binary))?;
+
+    // Send an initialize request to test the server responds correctly
+    let stdin = child.stdin.as_mut().context("Failed to get stdin")?;
+    let initialize_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {
+                "name": "gabb-dry-run",
+                "version": "1.0.0"
+            }
+        }
+    });
+
+    // Write the request as a single JSON line (gabb MCP server uses JSON lines protocol)
+    let request_str = serde_json::to_string(&initialize_request)?;
+    writeln!(stdin, "{}", request_str)?;
+    stdin.flush()?;
+
+    // Read response with timeout using a channel
+    let stdout = child.stdout.take().context("Failed to get stdout")?;
+    let (tx, rx) = mpsc::channel::<Result<serde_json::Value>>();
+
+    let reader_thread = std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+
+        // Read a single JSON line response
+        let mut response_line = String::new();
+        if reader.read_line(&mut response_line).is_err() {
+            let _ = tx.send(Err(anyhow!("Failed to read response")));
+            return;
+        }
+
+        if response_line.is_empty() {
+            let _ = tx.send(Err(anyhow!("Empty response from server")));
+            return;
+        }
+
+        match serde_json::from_str(&response_line) {
+            Ok(response) => {
+                let _ = tx.send(Ok(response));
+            }
+            Err(e) => {
+                let _ = tx.send(Err(anyhow!(
+                    "Failed to parse response JSON: {} (got: {})",
+                    e,
+                    response_line.trim()
+                )));
+            }
+        }
+    });
+
+    // Wait for response with 5 second timeout
+    let result = rx.recv_timeout(Duration::from_secs(5));
+
+    // Kill the server process
+    let _ = child.kill();
+    let _ = child.wait();
+
+    // Wait for reader thread to finish
+    let _ = reader_thread.join();
+
+    // Check result
+    match result {
+        Ok(Ok(response)) => {
+            // Verify it's a valid initialize response
+            if response.get("result").is_some() {
+                Ok(())
+            } else if let Some(error) = response.get("error") {
+                Err(anyhow!("Server returned error: {}", error))
+            } else {
+                Err(anyhow!("Unexpected response format"))
+            }
+        }
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(anyhow!("Server did not respond within 5 seconds")),
+    }
 }
 
 /// Check if gabb is configured in a config file

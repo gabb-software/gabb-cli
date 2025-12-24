@@ -6,3 +6,6 @@ PLAN.md
 TOOL_PLAN.md
 .gabb/
 .claude/
+benchmark/.env
+benchmark/bin/
+benchmark/results/

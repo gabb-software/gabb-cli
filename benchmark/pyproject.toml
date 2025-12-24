@@ -1,0 +1,33 @@
+[project]
+name = "gabb-benchmark"
+version = "0.1.0"
+description = "Benchmarking suite for gabb-cli semantic indexing tool"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.40.0",
+    "docker>=7.0.0",
+    "datasets>=3.0.0",
+    "pandas>=2.0.0",
+    "rich>=13.0.0",
+    "pydantic>=2.0.0",
+    "aiofiles>=24.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[project.scripts]
+gabb-bench = "run:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core*"]

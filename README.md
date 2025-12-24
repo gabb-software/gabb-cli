@@ -456,6 +456,35 @@ cargo build
 - More languages by swapping in new tree-sitter grammars
 - Richer queries (duplicates, unused code) atop the same index
 
+## Benchmarking
+
+The `benchmark/` directory contains a suite for evaluating gabb's performance against traditional tools (grep/find/read) for code navigation tasks.
+
+### Hypothesis
+
+Agents using gabb's semantic indexing will find relevant source code files **faster** and with **less token overhead** than agents using traditional text-search tools.
+
+### Running the Benchmark
+
+```bash
+cd benchmark
+
+# 1. Setup (builds gabb for Linux/Docker, installs deps)
+python setup.py
+
+# 2. Configure API key
+cp .env.example .env
+# Edit .env and set ANTHROPIC_API_KEY=your-key-here
+
+# 3. Run a single task
+python run.py --task scikit-learn__scikit-learn-10297
+
+# 4. Run multiple tasks in parallel
+python run.py --tasks 20 --concurrent 5
+```
+
+See [`benchmark/README.md`](benchmark/README.md) for detailed documentation.
+
 ## Contributing
 Issues and PRs are welcome. Please:
 - Keep commits focused and prefer Conventional Commits (`feat: ...`, `fix: ...`)

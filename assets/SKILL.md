@@ -65,6 +65,130 @@ gabb understands code structure and provides precise file:line:column locations.
 - Pattern matching in string content (not symbol names)
 - Files gabb doesn't index (non-supported languages)
 
+## Critical Anti-Patterns to AVOID
+
+These patterns waste tokens, slow you down, and ignore gabb's capabilities:
+
+### ❌ Anti-Pattern 1: Find Locations, Then Read
+
+```
+gabb_symbols name_contains="config" file="src/main.rs"
+→ Returns: mcp_config at line 2624, generate_mcp_config at line 2603
+→ Read file_path="src/main.rs" offset=2600 limit=100  ❌ WRONG!
+→ Read file_path="src/main.rs" offset=2700 limit=100  ❌ STILL WRONG!
+```
+
+**Why it's wrong:** You already asked gabb for the symbols. Just add `include_source=true`.
+
+**Correct:**
+```
+gabb_symbols name_contains="config" file="src/main.rs" include_source=true
+→ Returns: Full source code of both functions in ONE call ✓
+```
+
+### ❌ Anti-Pattern 2: Grep for Symbol Definitions
+
+```
+Grep pattern="fn mcp_config" path="src/"  ❌
+```
+
+**Why it's wrong:** Grep doesn't understand code. It might match comments, strings, or partial names.
+
+**Correct:**
+```
+gabb_symbol name="mcp_config" include_source=true ✓
+```
+
+### ❌ Anti-Pattern 3: Reading Large Files Incrementally
+
+```
+Read file_path="src/main.rs" offset=0 limit=200
+Read file_path="src/main.rs" offset=200 limit=200
+Read file_path="src/main.rs" offset=400 limit=200
+... (continues for 3000-line file) ❌
+```
+
+**Why it's wrong:** You're reading blindly. Use structure first.
+
+**Correct:**
+```
+gabb_structure file="src/main.rs"
+→ Shows exactly where each function/struct is located
+→ Read ONLY the specific 20-50 lines you need ✓
+```
+
+### ❌ Anti-Pattern 4: Not Using `include_source=true`
+
+Almost every gabb query benefits from `include_source=true`. If you find yourself
+following up a gabb call with Read, you probably forgot this parameter.
+
+| Call | Without include_source | With include_source |
+|------|----------------------|---------------------|
+| `gabb_symbol name="MyType"` | Location only, need Read | Full source, no Read needed |
+| `gabb_symbols kind="function"` | List of locations | List with full implementations |
+| `gabb_definition file=... line=...` | Jump location | Jump + see the code |
+| `gabb_usages` | Reference locations | References + surrounding code |
+
+**Rule: Default to `include_source=true` unless you explicitly only need locations.**
+
+## Optimal Workflows
+
+### Exploring Unfamiliar Code (The Right Way)
+
+```
+Step 1: gabb_structure file="src/large_file.rs"
+        → Hierarchical view: 50 functions, 10 structs, exact line ranges
+
+Step 2: Identify the 2-3 symbols you actually care about
+
+Step 3: gabb_symbols name="relevant_fn" include_source=true
+        → Get ONLY what you need, with full source
+
+TOTAL: 2 calls. NOT: structure → Read → Read → Read → Read...
+```
+
+### Finding and Understanding a Symbol
+
+```
+WRONG:
+  gabb_symbol name="UserService"  → line 150
+  Read file offset=145 limit=50   → get context
+  Read file offset=195 limit=50   → get more context
+
+RIGHT:
+  gabb_symbol name="UserService" include_source=true context_lines=5
+  → ONE call, full source with context, done.
+```
+
+### Before Refactoring
+
+```
+WRONG:
+  Grep pattern="UserService" → 47 matches (includes comments, strings, partials)
+  Manually review each...
+
+RIGHT:
+  gabb_usages file="src/user.rs" line=10 character=5 format="refactor"
+  → Semantic references only, edit-ready JSON
+  → Apply with Edit tool
+```
+
+## The `include_source=true` Principle
+
+**If you're about to call Read after a gabb tool, STOP.**
+
+Ask yourself: "Could I have gotten the source in my original gabb call?"
+
+The answer is almost always YES:
+- `gabb_symbol` → add `include_source=true`
+- `gabb_symbols` → add `include_source=true`
+- `gabb_definition` → already defaults to `include_source=true`
+- `gabb_structure` → add `include_source=true` for specific symbols
+- `gabb_usages` → works with include_source
+- `gabb_callers/callees` → add `include_source=true`
+
+**Cascade of Reads = Missed opportunity to use gabb properly.**
+
 ### After gabb_structure: Surgical Reads Only
 
 `gabb_structure` gives you exact line ranges for every symbol. **Use them.**

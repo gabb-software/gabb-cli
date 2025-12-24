@@ -85,7 +85,6 @@ class BenchmarkEnv:
         self._client: docker.DockerClient | None = None
         self._container: Container | None = None
         self._task: BenchmarkTask | None = None
-        self._gabb_initialized = False
 
     @property
     def client(self) -> docker.DockerClient:
@@ -126,9 +125,9 @@ class BenchmarkEnv:
         await self._clone_repo(task)
         await self._checkout_commit(task.base_commit)
 
-        # Initialize gabb if binary is available
-        if self.config.gabb_binary_path:
-            await self._init_gabb()
+        # Note: We don't manually start the gabb daemon here.
+        # Gabb CLI commands auto-start the daemon when needed,
+        # which matches how Claude Code uses gabb via MCP.
 
     async def _create_container(self, task: BenchmarkTask) -> None:
         """Create and start the Docker container."""
@@ -197,26 +196,6 @@ class BenchmarkEnv:
         if not result.success:
             raise RuntimeError(f"Failed to checkout commit: {result.stderr}")
 
-    async def _init_gabb(self) -> None:
-        """Initialize gabb indexing in the workspace."""
-        if not self.config.gabb_binary_path:
-            return
-
-        logger.info("Initializing gabb index")
-
-        # Start gabb daemon to index the workspace
-        result = await self.exec(
-            f"gabb daemon start --workspace {self.config.workspace_root} "
-            f"--db {self.config.gabb_db_path}",
-            timeout=self.config.index_timeout,
-        )
-
-        if result.success:
-            self._gabb_initialized = True
-            logger.info("Gabb indexing complete")
-        else:
-            logger.warning(f"Gabb init failed: {result.stderr}")
-
     async def exec(
         self,
         command: str,
@@ -277,7 +256,6 @@ class BenchmarkEnv:
                 logger.warning(f"Error during cleanup: {e}")
             finally:
                 self._container = None
-                self._gabb_initialized = False
 
     async def __aenter__(self) -> "BenchmarkEnv":
         """Async context manager entry."""

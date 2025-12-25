@@ -695,6 +695,36 @@ impl IndexStore {
         .unwrap_or(false)
     }
 
+    /// Get a metadata value from schema_meta table.
+    pub fn get_meta(&self, key: &str) -> Result<Option<String>> {
+        let conn = self.conn.borrow();
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(value)
+    }
+
+    /// Set a metadata value in schema_meta table.
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.conn.borrow();
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Delete a metadata key from schema_meta table.
+    pub fn delete_meta(&self, key: &str) -> Result<()> {
+        let conn = self.conn.borrow();
+        conn.execute("DELETE FROM schema_meta WHERE key = ?1", params![key])?;
+        Ok(())
+    }
+
     fn ensure_column(&self, table: &str, column: &str, ty: &str) -> Result<()> {
         let conn = self.conn.borrow();
         let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;

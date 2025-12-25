@@ -2,7 +2,7 @@ use crate::indexer::{
     build_full_index, index_one, is_indexed_file, remove_if_tracked, IndexPhase, IndexProgress,
     IndexSummary,
 };
-use crate::store::{DbOpenResult, IndexStore, RegenerationReason};
+use crate::store::{now_unix, DbOpenResult, IndexStore, RegenerationReason};
 use crate::OutputFormat;
 use anyhow::{bail, Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -168,9 +168,22 @@ pub fn start_daemon_and_wait(
         if db.exists() {
             // Try to open the database to verify it's ready
             match IndexStore::try_open(db) {
-                Ok(DbOpenResult::Ready(_)) => {
-                    info!("Index ready. Proceeding with query.");
-                    return Ok(());
+                Ok(DbOpenResult::Ready(store)) => {
+                    // Check if initial indexing has completed
+                    match store.get_meta("initial_index_complete") {
+                        Ok(Some(_)) => {
+                            info!("Index ready. Proceeding with query.");
+                            return Ok(());
+                        }
+                        Ok(None) => {
+                            // Database exists but initial indexing not complete, keep waiting
+                            debug!("Database exists but initial indexing not yet complete");
+                        }
+                        Err(e) => {
+                            // Error reading metadata, keep waiting
+                            debug!("Error checking index completion status: {}", e);
+                        }
+                    }
                 }
                 _ => {
                     // Database exists but not ready yet, keep waiting
@@ -726,6 +739,10 @@ fn run_foreground(root: &Path, db_path: &Path, rebuild: bool, quiet: bool) -> Re
 
     // Run indexing with progress reporting
     let _summary = run_indexing_with_progress(&root, &store, quiet)?;
+
+    // Mark initial indexing as complete so CLI/MCP can proceed with queries
+    store.set_meta("initial_index_complete", &now_unix().to_string())?;
+    info!("Initial indexing complete, ready for queries");
 
     let (tx, rx) = mpsc::channel();
     let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |res| {

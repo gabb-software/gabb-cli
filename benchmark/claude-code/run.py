@@ -822,7 +822,7 @@ def _print_comparison_rich(control_runs: list[RunMetrics], gabb_runs: list[RunMe
     # Time
     c_time = control_agg["wall_time_seconds"]
     g_time = gabb_agg["wall_time_seconds"]
-    time_diff = c_time["mean"] - g_time["mean"]
+    time_diff = g_time["mean"] - c_time["mean"]
     time_pct = (time_diff / c_time["mean"] * 100) if c_time["mean"] > 0 else 0
     table.add_row(
         "Time (s)",
@@ -834,7 +834,7 @@ def _print_comparison_rich(control_runs: list[RunMetrics], gabb_runs: list[RunMe
     # Tokens
     c_tokens = control_agg["tokens_total"]
     g_tokens = gabb_agg["tokens_total"]
-    token_diff = c_tokens["mean"] - g_tokens["mean"]
+    token_diff = g_tokens["mean"] - c_tokens["mean"]
     token_pct = (token_diff / c_tokens["mean"] * 100) if c_tokens["mean"] > 0 else 0
     if single_run:
         table.add_row(
@@ -854,11 +854,12 @@ def _print_comparison_rich(control_runs: list[RunMetrics], gabb_runs: list[RunMe
     # Tool calls
     c_calls = control_agg["tool_calls_total"]
     g_calls = gabb_agg["tool_calls_total"]
+    call_diff = g_calls["mean"] - c_calls["mean"]
     table.add_row(
         "Tool Calls",
         _format_stat(c_calls, single_run),
         _format_stat(g_calls, single_run),
-        f"{c_calls['mean'] - g_calls['mean']:+.1f}",
+        f"{call_diff:+.1f}",
     )
 
     console.print(table)

@@ -189,6 +189,12 @@ fn handle_class(
     symbol_by_name: &mut HashMap<String, String>,
 ) {
     if let Some(name) = find_name(node, source) {
+        let span = (node.start_byte(), node.end_byte());
+        // Check if already declared (e.g., from decorated_definition)
+        if declared_spans.contains(&span) {
+            return;
+        }
+
         // Detect special class types (Protocol, TypedDict, etc.)
         let kind = determine_class_kind(node, source);
 
@@ -201,7 +207,7 @@ fn handle_class(
             source.as_bytes(),
             false,
         );
-        declared_spans.insert((sym.start as usize, sym.end as usize));
+        declared_spans.insert(span);
         symbol_by_name.insert(name.clone(), sym.id.clone());
 
         // Record inheritance edges
@@ -390,6 +396,12 @@ fn handle_function(
             || name.starts_with("test")
             || (container.is_some() && name.starts_with("test"));
 
+        let span = (node.start_byte(), node.end_byte());
+        // Check if already declared (e.g., from decorated_definition)
+        if declared_spans.contains(&span) {
+            return;
+        }
+
         let sym = make_symbol(
             path,
             node,
@@ -399,7 +411,7 @@ fn handle_function(
             source.as_bytes(),
             is_test,
         );
-        declared_spans.insert((sym.start as usize, sym.end as usize));
+        declared_spans.insert(span);
         symbol_by_name.insert(name.clone(), sym.id.clone());
         symbols.push(sym);
     }
@@ -439,6 +451,12 @@ fn handle_assignment(
                 if left.kind() == "identifier" {
                     let name = slice(source, &left);
                     if !name.is_empty() {
+                        let span = (child.start_byte(), child.end_byte());
+                        // Check if already declared
+                        if declared_spans.contains(&span) {
+                            continue;
+                        }
+
                         // Determine if it's a constant (UPPER_CASE) or variable
                         let kind = if name.chars().all(|c| c.is_uppercase() || c == '_') {
                             "const"
@@ -448,7 +466,7 @@ fn handle_assignment(
 
                         let sym =
                             make_symbol(path, &child, &name, kind, None, source.as_bytes(), false);
-                        declared_spans.insert((sym.start as usize, sym.end as usize));
+                        declared_spans.insert(span);
                         symbol_by_name.insert(name.clone(), sym.id.clone());
                         symbols.push(sym);
                     }
@@ -471,6 +489,12 @@ fn handle_type_alias(
     if let Some(name_node) = node.child_by_field_name("name") {
         let name = slice(source, &name_node);
         if !name.is_empty() {
+            let span = (node.start_byte(), node.end_byte());
+            // Check if already declared
+            if declared_spans.contains(&span) {
+                return;
+            }
+
             let sym = make_symbol(
                 path,
                 node,
@@ -480,7 +504,7 @@ fn handle_type_alias(
                 source.as_bytes(),
                 false,
             );
-            declared_spans.insert((sym.start as usize, sym.end as usize));
+            declared_spans.insert(span);
             symbol_by_name.insert(name.clone(), sym.id.clone());
             symbols.push(sym);
         }
@@ -1301,6 +1325,57 @@ def function(x: int) -> str: ...
         assert!(
             names.contains(&"function"),
             "Should find function in stub file"
+        );
+    }
+
+    #[test]
+    fn no_duplicate_symbols_for_decorated_definitions() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("decorated.py");
+        let source = r#"
+@decorator
+def decorated_function():
+    pass
+
+@classmethod
+def decorated_classmethod(cls):
+    pass
+
+@dataclass
+class DecoratedClass:
+    x: int
+
+@decorator1
+@decorator2
+def multi_decorated():
+    pass
+"#;
+        fs::write(&path, source).unwrap();
+
+        let (symbols, _edges, _refs, _deps, _imports) = index_file(&path, source).unwrap();
+
+        // Count occurrences of each symbol name
+        let count = |name: &str| symbols.iter().filter(|s| s.name == name).count();
+
+        assert_eq!(
+            count("decorated_function"),
+            1,
+            "decorated_function should appear exactly once"
+        );
+        assert_eq!(
+            count("decorated_classmethod"),
+            1,
+            "decorated_classmethod should appear exactly once"
+        );
+        assert_eq!(
+            count("DecoratedClass"),
+            1,
+            "DecoratedClass should appear exactly once"
+        );
+        assert_eq!(
+            count("multi_decorated"),
+            1,
+            "multi_decorated should appear exactly once"
         );
     }
 }

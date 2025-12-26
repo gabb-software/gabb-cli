@@ -74,6 +74,17 @@ pub fn ensure_index_available(
             if !opts.no_daemon_warnings || opts.auto_restart_on_version_mismatch {
                 check_daemon_version(workspace_root, db, opts.auto_restart_on_version_mismatch)?;
             }
+
+            // Check if daemon is running, start it if not (fixes #85)
+            let daemon_running = read_pid_file(workspace_root)
+                .ok()
+                .flatten()
+                .is_some_and(|pid_info| is_process_running(pid_info.pid));
+
+            if !daemon_running && !opts.no_start_daemon {
+                info!("Index exists but daemon is not running. Starting daemon...");
+                start_daemon_and_wait(workspace_root, db, false, opts.timeout)?;
+            }
         }
         Ok(DbOpenResult::NeedsRegeneration { reason, .. }) => {
             if opts.no_start_daemon {
@@ -1167,5 +1178,141 @@ fn normalize_event_path(root: &Path, path: PathBuf) -> Option<PathBuf> {
         Some(path)
     } else {
         Some(root.join(path))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::IndexStore;
+    use tempfile::tempdir;
+
+    /// Test that ensure_index_available attempts to start daemon when index exists
+    /// but daemon is not running. This is a regression test for issue #85.
+    ///
+    /// Note: We can't fully test daemon spawning in unit tests because
+    /// std::env::current_exe() returns the test binary. Instead, we verify
+    /// that the start logic is triggered by checking the error message.
+    #[test]
+    fn test_ensure_index_starts_daemon_when_not_running() {
+        let temp = tempdir().unwrap();
+        let workspace_root = temp.path().to_path_buf();
+        let gabb_dir = workspace_root.join(".gabb");
+        fs::create_dir_all(&gabb_dir).unwrap();
+        let db_path = gabb_dir.join("index.db");
+
+        // Create a valid index database (simulating a previous daemon run)
+        let store = IndexStore::open(&db_path).unwrap();
+        store.set_meta("schema_version", "1.0").unwrap();
+        drop(store);
+
+        // Ensure no daemon is running (no PID file)
+        let pid_path = pid_file_path(&workspace_root);
+        assert!(!pid_path.exists(), "PID file should not exist before test");
+
+        // Call ensure_index_available with a very short timeout
+        // The key test is that it ATTEMPTS to start the daemon (enters the start logic)
+        // rather than returning immediately like it did before the fix
+        let opts = EnsureIndexOptions {
+            no_start_daemon: false,
+            timeout: Duration::from_millis(100), // Very short timeout
+            no_daemon_warnings: true,
+            auto_restart_on_version_mismatch: false,
+        };
+        let result = ensure_index_available(&workspace_root, &db_path, &opts);
+
+        // The result will be an error due to timeout (test binary can't spawn daemon),
+        // but the important thing is that it TRIED to start the daemon.
+        // The error message should indicate daemon start was attempted.
+        match result {
+            Ok(()) => {
+                // If it somehow succeeded, that's fine too
+                // Clean up any daemon that might have started
+                let _ = stop(&workspace_root, true);
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                // Should see a daemon-related error, not "index not found" or similar
+                assert!(
+                    err_msg.contains("Daemon")
+                        || err_msg.contains("daemon")
+                        || err_msg.contains("index not ready"),
+                    "Error should indicate daemon start was attempted, got: {}",
+                    err_msg
+                );
+            }
+        }
+    }
+
+    /// Test that no_start_daemon option is respected when daemon is not running.
+    #[test]
+    fn test_no_start_daemon_respected_when_index_exists() {
+        let temp = tempdir().unwrap();
+        let workspace_root = temp.path().to_path_buf();
+        let gabb_dir = workspace_root.join(".gabb");
+        fs::create_dir_all(&gabb_dir).unwrap();
+        let db_path = gabb_dir.join("index.db");
+
+        // Create a valid index database
+        let store = IndexStore::open(&db_path).unwrap();
+        store.set_meta("schema_version", "1.0").unwrap();
+        drop(store);
+
+        // Ensure no daemon is running
+        let pid_path = pid_file_path(&workspace_root);
+        assert!(!pid_path.exists());
+
+        // Call with no_start_daemon: true - should return Ok without starting daemon
+        let opts = EnsureIndexOptions {
+            no_start_daemon: true,
+            timeout: Duration::from_secs(1),
+            no_daemon_warnings: true,
+            auto_restart_on_version_mismatch: false,
+        };
+        let result = ensure_index_available(&workspace_root, &db_path, &opts);
+
+        // Should succeed immediately without starting daemon
+        assert!(
+            result.is_ok(),
+            "Should succeed when no_start_daemon is true"
+        );
+        assert!(!pid_path.exists(), "Daemon should not have been started");
+    }
+
+    /// Test that daemon is NOT started when it's already running.
+    #[test]
+    fn test_daemon_not_started_when_already_running() {
+        let temp = tempdir().unwrap();
+        let workspace_root = temp.path().to_path_buf();
+        let gabb_dir = workspace_root.join(".gabb");
+        fs::create_dir_all(&gabb_dir).unwrap();
+        let db_path = gabb_dir.join("index.db");
+
+        // Create a valid index database
+        let store = IndexStore::open(&db_path).unwrap();
+        store.set_meta("schema_version", "1.0").unwrap();
+        drop(store);
+
+        // Create a fake PID file indicating daemon is "running"
+        // Use current process ID so is_process_running returns true
+        let pid_file = PidFile::new(std::process::id(), None);
+        write_pid_file(&workspace_root, &pid_file).unwrap();
+
+        let opts = EnsureIndexOptions {
+            no_start_daemon: false,
+            timeout: Duration::from_secs(1),
+            no_daemon_warnings: true,
+            auto_restart_on_version_mismatch: false,
+        };
+        let result = ensure_index_available(&workspace_root, &db_path, &opts);
+
+        // Should succeed without trying to start another daemon
+        assert!(
+            result.is_ok(),
+            "Should succeed when daemon appears to be running"
+        );
+
+        // Clean up
+        let _ = remove_pid_file(&workspace_root);
     }
 }

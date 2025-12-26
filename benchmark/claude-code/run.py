@@ -948,6 +948,148 @@ def _print_comparison_plain(control_runs: list[RunMetrics], gabb_runs: list[RunM
             print(f"  {tool:<30} {_format_stat(c, single_run):>12} {_format_stat(g, single_run):>12}")
 
 
+def print_single_condition(runs: list[RunMetrics], condition: str) -> None:
+    """Print results for a single condition."""
+    if HAS_RICH and console:
+        _print_single_condition_rich(runs, condition)
+    else:
+        _print_single_condition_plain(runs, condition)
+
+
+def _print_single_condition_rich(runs: list[RunMetrics], condition: str) -> None:
+    """Print single condition results using rich."""
+    agg = aggregate_runs(runs)
+    single_run = len(runs) == 1
+
+    task_id = runs[0].task_id if runs else "Unknown"
+    title = f"Results: {task_id} ({condition})"
+    if not single_run:
+        title += f" - {len(runs)} runs"
+
+    table = Table(title=title)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right")
+
+    # Success rate
+    rate = agg["success_rate"]
+    if single_run:
+        success = "[green]PASS[/green]" if rate == 1 else "[red]FAIL[/red]"
+    else:
+        success = f"{rate * 100:.0f}%"
+    table.add_row("Success", success)
+
+    # Time
+    time_stats = agg["wall_time_seconds"]
+    table.add_row("Time (s)", _format_stat(time_stats, single_run))
+
+    # Tokens
+    tokens = agg["tokens_total"]
+    if single_run:
+        table.add_row("Total Tokens", f"{tokens['mean']:,.0f}")
+    else:
+        table.add_row("Total Tokens", f"{tokens['mean']:,.0f} ± {tokens['std']:,.0f}")
+
+    # Input/Output tokens
+    input_tokens = agg["tokens_input"]
+    output_tokens = agg["tokens_output"]
+    if single_run:
+        table.add_row("Input Tokens", f"{input_tokens['mean']:,.0f}")
+        table.add_row("Output Tokens", f"{output_tokens['mean']:,.0f}")
+    else:
+        table.add_row("Input Tokens", f"{input_tokens['mean']:,.0f} ± {input_tokens['std']:,.0f}")
+        table.add_row("Output Tokens", f"{output_tokens['mean']:,.0f} ± {output_tokens['std']:,.0f}")
+
+    # Tool calls
+    calls = agg["tool_calls_total"]
+    table.add_row("Tool Calls", _format_stat(calls, single_run))
+
+    # Turns
+    turns = agg["turns"]
+    table.add_row("Turns", _format_stat(turns, single_run))
+
+    console.print(table)
+
+    # Tool breakdown
+    console.print("\n[bold]Tool Usage:[/bold]")
+    tools = agg.get("tool_calls", {})
+
+    # Group tools by category
+    gabb_tools = sorted([t for t in tools if "gabb" in t.lower()])
+    search_tools = sorted([t for t in tools if t in ("Grep", "Glob", "Read")])
+    other_tools = sorted([t for t in tools if t not in gabb_tools and t not in search_tools])
+
+    tool_table = Table()
+    tool_table.add_column("Tool", style="cyan")
+    tool_table.add_column("Count", justify="right")
+
+    for tool in search_tools + gabb_tools + other_tools:
+        stats = tools.get(tool, {"mean": 0, "std": 0})
+        if stats["mean"] > 0:
+            tool_table.add_row(tool, _format_stat(stats, single_run))
+
+    console.print(tool_table)
+
+
+def _print_single_condition_plain(runs: list[RunMetrics], condition: str) -> None:
+    """Print single condition results in plain text."""
+    agg = aggregate_runs(runs)
+    single_run = len(runs) == 1
+
+    task_id = runs[0].task_id if runs else "Unknown"
+    print(f"\n{'=' * 50}")
+    title = f"Results: {task_id} ({condition})"
+    if not single_run:
+        title += f" - {len(runs)} runs"
+    print(title)
+    print('=' * 50)
+    print(f"{'Metric':<20} {'Value':>25}")
+    print('-' * 50)
+
+    # Success
+    rate = agg["success_rate"]
+    if single_run:
+        status = "PASS" if rate == 1 else "FAIL"
+    else:
+        status = f"{rate * 100:.0f}%"
+    print(f"{'Success':<20} {status:>25}")
+
+    # Time
+    time_stats = agg["wall_time_seconds"]
+    print(f"{'Time (s)':<20} {_format_stat(time_stats, single_run):>25}")
+
+    # Tokens
+    tokens = agg["tokens_total"]
+    if single_run:
+        print(f"{'Total Tokens':<20} {tokens['mean']:>25,.0f}")
+    else:
+        print(f"{'Total Tokens':<20} {tokens['mean']:,.0f} ± {tokens['std']:,.0f}")
+
+    input_tokens = agg["tokens_input"]
+    output_tokens = agg["tokens_output"]
+    if single_run:
+        print(f"{'Input Tokens':<20} {input_tokens['mean']:>25,.0f}")
+        print(f"{'Output Tokens':<20} {output_tokens['mean']:>25,.0f}")
+    else:
+        print(f"{'Input Tokens':<20} {input_tokens['mean']:,.0f} ± {input_tokens['std']:,.0f}")
+        print(f"{'Output Tokens':<20} {output_tokens['mean']:,.0f} ± {output_tokens['std']:,.0f}")
+
+    # Tool calls
+    calls = agg["tool_calls_total"]
+    print(f"{'Tool Calls':<20} {_format_stat(calls, single_run):>25}")
+
+    # Turns
+    turns = agg["turns"]
+    print(f"{'Turns':<20} {_format_stat(turns, single_run):>25}")
+
+    # Tool breakdown
+    print("\nTool Usage:")
+    tools = agg.get("tool_calls", {})
+    for tool in sorted(tools.keys()):
+        stats = tools.get(tool, {"mean": 0, "std": 0})
+        if stats["mean"] > 0:
+            print(f"  {tool:<35} {_format_stat(stats, single_run):>10}")
+
+
 def save_results(
     results: dict[str, list[RunMetrics]],
     task_id: str,
@@ -1269,10 +1411,7 @@ Examples:
                 runs = run_multiple(
                     task, workspace, args.condition, args.runs, gabb_binary, args.verbose
                 )
-                agg = aggregate_runs(runs)
-                print_msg(f"\nSuccess rate: {agg['success_rate'] * 100:.0f}%")
-                print_msg(f"Time: {agg['wall_time_seconds']['mean']:.1f}s ± {agg['wall_time_seconds']['std']:.1f}s")
-                print_msg(f"Tool calls: {agg['tool_calls_total']['mean']:.1f} ± {agg['tool_calls_total']['std']:.1f}")
+                print_single_condition(runs, args.condition)
                 if not args.no_save:
                     save_results({args.condition: runs}, task.id, RESULTS_DIR)
         finally:
@@ -1317,9 +1456,7 @@ Examples:
             runs = run_multiple(
                 task, args.workspace, args.condition, args.runs, gabb_binary, args.verbose
             )
-            agg = aggregate_runs(runs)
-            print_msg(f"\nSuccess rate: {agg['success_rate'] * 100:.0f}%")
-            print_msg(f"Time: {agg['wall_time_seconds']['mean']:.1f}s ± {agg['wall_time_seconds']['std']:.1f}s")
+            print_single_condition(runs, args.condition)
             if not args.no_save:
                 save_results({args.condition: runs}, task.id, RESULTS_DIR)
 

@@ -468,13 +468,14 @@ class ClaudeCodeRunner:
             json.dumps(settings, indent=2)
         )
 
-        # Copy SKILL.md for gabb condition
+        # Copy skill files for gabb condition (SKILL.md + tool reference files)
         if self.condition == "gabb":
-            skill_src = CONFIGS_DIR / "gabb" / "skills" / "gabb" / "SKILL.md"
-            if skill_src.exists():
+            skill_src_dir = CONFIGS_DIR / "gabb" / "skills" / "gabb"
+            if skill_src_dir.exists():
                 skill_dst = self.workspace_claude_dir / "skills" / "gabb"
-                skill_dst.mkdir(parents=True, exist_ok=True)
-                shutil.copy(skill_src, skill_dst / "SKILL.md")
+                if skill_dst.exists():
+                    shutil.rmtree(skill_dst)
+                shutil.copytree(skill_src_dir, skill_dst)
 
         # Initialize gabb for gabb condition
         if self.condition == "gabb" and self.gabb_binary:

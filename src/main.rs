@@ -3317,29 +3317,55 @@ fn init_skill(root: &Path) -> Result<()> {
         println!("  Created .claude/skills/gabb/");
     }
 
-    let skill_file = skills_dir.join("SKILL.md");
-
-    // The SKILL.md template - embedded at compile time from assets/SKILL.md
-    // This teaches Claude when and how to use gabb's MCP tools
-    let content = include_str!("../assets/SKILL.md");
-
-    if skill_file.exists() {
-        // Check if content differs from template
-        let existing = fs::read_to_string(&skill_file)?;
-        if existing == content {
-            println!("  .claude/skills/gabb/SKILL.md is up to date");
-            return Ok(());
-        }
-        // Update the file
-        fs::write(&skill_file, content)?;
-        println!("  Updated .claude/skills/gabb/SKILL.md");
-        return Ok(());
+    // Create tools subdirectory
+    let tools_dir = skills_dir.join("tools");
+    if !tools_dir.exists() {
+        fs::create_dir_all(&tools_dir)?;
     }
 
-    fs::write(&skill_file, content)?;
-    println!("  Created .claude/skills/gabb/SKILL.md");
-    println!("  Claude will auto-discover this skill for code navigation tasks");
+    // Write SKILL.md (main skill file - decision logic)
+    let skill_file = skills_dir.join("SKILL.md");
+    let skill_content = include_str!("../assets/SKILL.md");
+    write_skill_file(&skill_file, skill_content, "SKILL.md")?;
 
+    // Write individual tool reference files (progressive disclosure)
+    let tool_files: &[(&str, &str)] = &[
+        ("tools/symbols.md", include_str!("../assets/tools/symbols.md")),
+        ("tools/structure.md", include_str!("../assets/tools/structure.md")),
+        ("tools/definition.md", include_str!("../assets/tools/definition.md")),
+        ("tools/usages.md", include_str!("../assets/tools/usages.md")),
+        ("tools/callers.md", include_str!("../assets/tools/callers.md")),
+        ("tools/callees.md", include_str!("../assets/tools/callees.md")),
+        ("tools/rename.md", include_str!("../assets/tools/rename.md")),
+        ("tools/implementations.md", include_str!("../assets/tools/implementations.md")),
+        ("tools/hierarchy.md", include_str!("../assets/tools/hierarchy.md")),
+    ];
+
+    for (name, content) in tool_files {
+        let file_path = skills_dir.join(name);
+        write_skill_file(&file_path, content, name)?;
+    }
+
+    Ok(())
+}
+
+/// Helper to write a skill file, checking if it needs updating
+fn write_skill_file(path: &Path, content: &str, name: &str) -> Result<()> {
+    if path.exists() {
+        let existing = fs::read_to_string(path)?;
+        if existing == content {
+            println!("  .claude/skills/gabb/{} is up to date", name);
+            return Ok(());
+        }
+        fs::write(path, content)?;
+        println!("  Updated .claude/skills/gabb/{}", name);
+    } else {
+        fs::write(path, content)?;
+        println!("  Created .claude/skills/gabb/{}", name);
+        if name == "SKILL.md" {
+            println!("  Claude will auto-discover this skill for code navigation tasks");
+        }
+    }
     Ok(())
 }
 

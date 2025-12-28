@@ -3330,15 +3330,36 @@ fn init_skill(root: &Path) -> Result<()> {
 
     // Write individual tool reference files (progressive disclosure)
     let tool_files: &[(&str, &str)] = &[
-        ("tools/symbols.md", include_str!("../assets/tools/symbols.md")),
-        ("tools/structure.md", include_str!("../assets/tools/structure.md")),
-        ("tools/definition.md", include_str!("../assets/tools/definition.md")),
+        (
+            "tools/symbols.md",
+            include_str!("../assets/tools/symbols.md"),
+        ),
+        (
+            "tools/structure.md",
+            include_str!("../assets/tools/structure.md"),
+        ),
+        (
+            "tools/definition.md",
+            include_str!("../assets/tools/definition.md"),
+        ),
         ("tools/usages.md", include_str!("../assets/tools/usages.md")),
-        ("tools/callers.md", include_str!("../assets/tools/callers.md")),
-        ("tools/callees.md", include_str!("../assets/tools/callees.md")),
+        (
+            "tools/callers.md",
+            include_str!("../assets/tools/callers.md"),
+        ),
+        (
+            "tools/callees.md",
+            include_str!("../assets/tools/callees.md"),
+        ),
         ("tools/rename.md", include_str!("../assets/tools/rename.md")),
-        ("tools/implementations.md", include_str!("../assets/tools/implementations.md")),
-        ("tools/hierarchy.md", include_str!("../assets/tools/hierarchy.md")),
+        (
+            "tools/implementations.md",
+            include_str!("../assets/tools/implementations.md"),
+        ),
+        (
+            "tools/hierarchy.md",
+            include_str!("../assets/tools/hierarchy.md"),
+        ),
     ];
 
     for (name, content) in tool_files {

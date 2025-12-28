@@ -789,6 +789,20 @@ def run_all_conditions(
     }
 
 
+def run_gabb_conditions(
+    task: Task,
+    workspace: Path,
+    gabb_binary: Path | None = None,
+    verbose: bool = False,
+    run_count: int = 1,
+) -> dict[str, list[RunMetrics]]:
+    """Run gabb and gabb-prompt conditions (skip control)."""
+    return {
+        "gabb": run_multiple(task, workspace, "gabb", run_count, gabb_binary, verbose),
+        "gabb-prompt": run_multiple(task, workspace, "gabb-prompt", run_count, gabb_binary, verbose),
+    }
+
+
 # =============================================================================
 # Output / Reporting
 # =============================================================================
@@ -815,6 +829,152 @@ def print_all_conditions(results: dict[str, list[RunMetrics]]) -> None:
         _print_all_conditions_rich(results)
     else:
         _print_all_conditions_plain(results)
+
+
+def print_gabb_conditions(results: dict[str, list[RunMetrics]]) -> None:
+    """Print comparison of gabb vs gabb-prompt."""
+    if HAS_RICH and console:
+        _print_gabb_conditions_rich(results)
+    else:
+        _print_gabb_conditions_plain(results)
+
+
+def _print_gabb_conditions_rich(results: dict[str, list[RunMetrics]]) -> None:
+    """Print gabb vs gabb-prompt comparison using rich."""
+    gabb_agg = aggregate_runs(results.get("gabb", []))
+    prompt_agg = aggregate_runs(results.get("gabb-prompt", []))
+
+    any_runs = results.get("gabb", results.get("gabb-prompt", []))
+    single_run = len(any_runs) == 1 if any_runs else True
+    task_id = any_runs[0].task_id if any_runs else "Unknown"
+
+    title = f"Results: {task_id} (gabb vs gabb-prompt)"
+    if not single_run:
+        title += f" - {len(any_runs)} runs"
+
+    table = Table(title=title)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Gabb", justify="right")
+    table.add_column("Gabb+Prompt", justify="right")
+    table.add_column("Diff", justify="right")
+
+    def fmt(agg: dict, key: str) -> float:
+        if not agg:
+            return 0
+        val = agg.get(key, {})
+        return val.get("mean", 0) if isinstance(val, dict) else 0
+
+    def fmt_str(agg: dict, key: str) -> str:
+        if not agg:
+            return "-"
+        val = agg.get(key, {})
+        if isinstance(val, dict):
+            if single_run:
+                return f"{val.get('mean', 0):.1f}"
+            return f"{val.get('mean', 0):.1f} ± {val.get('std', 0):.1f}"
+        return str(val)
+
+    def fmt_success(agg: dict) -> str:
+        if not agg:
+            return "-"
+        rate = agg.get("success_rate", 0)
+        if single_run:
+            return "[green]PASS[/green]" if rate == 1 else "[red]FAIL[/red]"
+        return f"{rate * 100:.0f}%"
+
+    # Success
+    table.add_row("Success", fmt_success(gabb_agg), fmt_success(prompt_agg), "")
+
+    # Time
+    g_time = fmt(gabb_agg, "wall_time_seconds")
+    p_time = fmt(prompt_agg, "wall_time_seconds")
+    diff = p_time - g_time
+    pct = (diff / g_time * 100) if g_time > 0 else 0
+    table.add_row("Time (s)", fmt_str(gabb_agg, "wall_time_seconds"), fmt_str(prompt_agg, "wall_time_seconds"), f"{diff:+.1f} ({pct:+.0f}%)")
+
+    # Tokens
+    g_tokens = fmt(gabb_agg, "tokens_total")
+    p_tokens = fmt(prompt_agg, "tokens_total")
+    diff = p_tokens - g_tokens
+    pct = (diff / g_tokens * 100) if g_tokens > 0 else 0
+    table.add_row("Tokens", f"{g_tokens:,.0f}", f"{p_tokens:,.0f}", f"{diff:+,.0f} ({pct:+.0f}%)")
+
+    # Tool calls
+    table.add_row("Tool Calls", fmt_str(gabb_agg, "tool_calls_total"), fmt_str(prompt_agg, "tool_calls_total"), "")
+
+    console.print(table)
+
+    # Tool breakdown
+    console.print("\n[bold]Tool Usage:[/bold]")
+    all_tools: set[str] = set()
+    for agg in [gabb_agg, prompt_agg]:
+        if agg:
+            all_tools.update(agg.get("tool_calls", {}).keys())
+
+    gabb_tool_names = sorted([t for t in all_tools if "gabb" in t.lower()])
+    search_tools = sorted([t for t in all_tools if t in ("Grep", "Glob", "Read")])
+    other_tools = sorted([t for t in all_tools if t not in gabb_tool_names and t not in search_tools])
+
+    tool_table = Table()
+    tool_table.add_column("Tool", style="cyan")
+    tool_table.add_column("Gabb", justify="right")
+    tool_table.add_column("Gabb+Prompt", justify="right")
+
+    def get_tool_stat(agg: dict, tool: str) -> str:
+        if not agg:
+            return "-"
+        tools = agg.get("tool_calls", {})
+        t = tools.get(tool, {"mean": 0})
+        if single_run:
+            return f"{t.get('mean', 0):.0f}"
+        return f"{t.get('mean', 0):.1f}"
+
+    for tool in search_tools + gabb_tool_names + other_tools:
+        g = get_tool_stat(gabb_agg, tool)
+        p = get_tool_stat(prompt_agg, tool)
+        if g != "0" or p != "0":
+            tool_table.add_row(tool, g, p)
+
+    console.print(tool_table)
+
+
+def _print_gabb_conditions_plain(results: dict[str, list[RunMetrics]]) -> None:
+    """Print gabb vs gabb-prompt comparison in plain text."""
+    gabb_agg = aggregate_runs(results.get("gabb", []))
+    prompt_agg = aggregate_runs(results.get("gabb-prompt", []))
+
+    any_runs = results.get("gabb", results.get("gabb-prompt", []))
+    single_run = len(any_runs) == 1 if any_runs else True
+    task_id = any_runs[0].task_id if any_runs else "Unknown"
+
+    print(f"\n{'=' * 60}")
+    title = f"Results: {task_id} (gabb vs gabb-prompt)"
+    if not single_run:
+        title += f" - {len(any_runs)} runs"
+    print(title)
+    print('=' * 60)
+    print(f"{'Metric':<15} {'Gabb':>20} {'Gabb+Prompt':>20}")
+    print('-' * 60)
+
+    def fmt(agg: dict, key: str) -> str:
+        if not agg:
+            return "-"
+        val = agg.get(key, {})
+        if isinstance(val, dict):
+            return f"{val.get('mean', 0):.1f}"
+        return str(val)
+
+    def fmt_success(agg: dict) -> str:
+        if not agg:
+            return "-"
+        rate = agg.get("success_rate", 0)
+        if single_run:
+            return "PASS" if rate == 1 else "FAIL"
+        return f"{rate * 100:.0f}%"
+
+    print(f"{'Success':<15} {fmt_success(gabb_agg):>20} {fmt_success(prompt_agg):>20}")
+    print(f"{'Time (s)':<15} {fmt(gabb_agg, 'wall_time_seconds'):>20} {fmt(prompt_agg, 'wall_time_seconds'):>20}")
+    print(f"{'Tool Calls':<15} {fmt(gabb_agg, 'tool_calls_total'):>20} {fmt(prompt_agg, 'tool_calls_total'):>20}")
 
 
 def _print_all_conditions_rich(results: dict[str, list[RunMetrics]]) -> None:
@@ -1444,9 +1604,9 @@ Examples:
     parser.add_argument("--gabb-binary", type=Path, help="Path to gabb binary")
     parser.add_argument(
         "--condition",
-        choices=["control", "gabb", "gabb-prompt", "both", "all"],
+        choices=["control", "gabb", "gabb-prompt", "both", "gabb-all", "all"],
         default="both",
-        help="Which condition(s) to run (all includes gabb-prompt diagnostic)",
+        help="Which condition(s) to run (gabb-all=gabb+gabb-prompt, all=all 3)",
     )
     parser.add_argument(
         "--runs",
@@ -1498,7 +1658,7 @@ Examples:
 
     # Check for gabb binary
     gabb_binary = args.gabb_binary or shutil.which("gabb")
-    if args.condition in ("gabb", "gabb-prompt", "both", "all") and not gabb_binary:
+    if args.condition in ("gabb", "gabb-prompt", "both", "gabb-all", "all") and not gabb_binary:
         print_msg("Warning: gabb binary not found.", "yellow")
 
     workspace_manager = WorkspaceManager(cache_dir=args.cache_dir)
@@ -1566,6 +1726,13 @@ Examples:
                 print_all_conditions(results)
                 if not args.no_save:
                     save_results(results, task.id, RESULTS_DIR)
+            elif args.condition == "gabb-all":
+                results = run_gabb_conditions(
+                    task, workspace, gabb_binary, args.verbose, run_count=args.runs
+                )
+                print_gabb_conditions(results)
+                if not args.no_save:
+                    save_results(results, task.id, RESULTS_DIR)
             elif args.condition == "both":
                 control_runs, gabb_runs = run_comparison(
                     task, workspace, gabb_binary, args.verbose, run_count=args.runs
@@ -1616,6 +1783,13 @@ Examples:
                 task, args.workspace, gabb_binary, args.verbose, run_count=args.runs
             )
             print_all_conditions(results)
+            if not args.no_save:
+                save_results(results, task.id, RESULTS_DIR)
+        elif args.condition == "gabb-all":
+            results = run_gabb_conditions(
+                task, args.workspace, gabb_binary, args.verbose, run_count=args.runs
+            )
+            print_gabb_conditions(results)
             if not args.no_save:
                 save_results(results, task.id, RESULTS_DIR)
         elif args.condition == "both":

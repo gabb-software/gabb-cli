@@ -521,6 +521,9 @@ enum Commands {
         /// Show what would happen without making changes
         #[arg(long)]
         dry_run: bool,
+        /// Skip the initial indexing step (only create config files)
+        #[arg(long)]
+        no_index: bool,
     },
     /// Find all files that #include this header (reverse dependency lookup)
     Includers {
@@ -837,9 +840,11 @@ fn main() -> std::process::ExitCode {
             skill,
             claudemd,
         } => init_project(&workspace, mcp, gitignore, skill, claudemd).map(|_| ExitCode::Success),
-        Commands::Setup { yes, dry_run } => {
-            setup_wizard(&workspace, &db, yes, dry_run).map(|_| ExitCode::Success)
-        }
+        Commands::Setup {
+            yes,
+            dry_run,
+            no_index,
+        } => setup_wizard(&workspace, &db, yes, dry_run, no_index).map(|_| ExitCode::Success),
         Commands::Includers {
             file,
             transitive,
@@ -3476,8 +3481,99 @@ fn prompt_yes_no(prompt: &str, default_yes: bool) -> Result<bool> {
     Ok(input == "y" || input == "yes")
 }
 
+/// Display index statistics in a formatted table for setup wizard
+fn display_index_stats_table(stats: &store::IndexStats) {
+    println!();
+    println!("Index Statistics:");
+
+    // Collect language stats
+    let mut lang_stats: Vec<(&str, i64)> = Vec::new();
+
+    // For each language, get file count
+    for (lang, file_count) in &stats.files.by_language {
+        lang_stats.push((lang.as_str(), *file_count));
+    }
+
+    let total_symbols = stats.symbols.total;
+
+    // Sort by file count descending
+    lang_stats.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Calculate column widths
+    let lang_width = lang_stats
+        .iter()
+        .map(|(l, _)| l.len())
+        .max()
+        .unwrap_or(8)
+        .max(8);
+
+    // Print header
+    println!(
+        "   {:lang_width$}   {:>8}",
+        "Language",
+        "Files",
+        lang_width = lang_width
+    );
+    println!("   {}   {}", "-".repeat(lang_width), "-".repeat(8));
+
+    // Print each language
+    for (lang, files) in &lang_stats {
+        let display_lang = capitalize_language(lang);
+        println!(
+            "   {:lang_width$}   {:>8}",
+            display_lang,
+            format_number(*files),
+            lang_width = lang_width
+        );
+    }
+
+    // Print totals
+    println!("   {}   {}", "-".repeat(lang_width), "-".repeat(8));
+    println!(
+        "   {:lang_width$}   {:>8}",
+        "Total",
+        format_number(stats.files.total),
+        lang_width = lang_width
+    );
+    println!();
+    println!("   Symbols: {}", format_number(total_symbols));
+}
+
+/// Capitalize language name for display
+fn capitalize_language(lang: &str) -> String {
+    match lang.to_lowercase().as_str() {
+        "typescript" => "TypeScript".to_string(),
+        "javascript" => "JavaScript".to_string(),
+        "python" => "Python".to_string(),
+        "rust" => "Rust".to_string(),
+        "kotlin" => "Kotlin".to_string(),
+        "cpp" | "c++" => "C++".to_string(),
+        "c" => "C".to_string(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        }
+    }
+}
+
+/// Format a number with thousands separators
+fn format_number(n: i64) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result.chars().rev().collect()
+}
+
 /// Interactive setup wizard for one-command onboarding
-fn setup_wizard(root: &Path, db: &Path, yes: bool, dry_run: bool) -> Result<()> {
+fn setup_wizard(root: &Path, db: &Path, yes: bool, dry_run: bool, no_index: bool) -> Result<()> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let gabb_dir = root.join(".gabb");
 
@@ -3621,43 +3717,51 @@ fn setup_wizard(root: &Path, db: &Path, yes: bool, dry_run: bool) -> Result<()> 
         }
     }
 
-    // Step 7: Run initial index with progress, then start daemon in background
-    if dry_run {
-        println!("🚀 Would run initial index and start daemon");
+    // Step 7: Run initial index (unless --no-index or dry-run)
+    let stats = if no_index {
+        println!("⏭️  Skipping initial index (--no-index)");
+        None
+    } else if dry_run {
+        println!("🚀 Would run initial index");
+        None
     } else {
-        // Check if daemon is already running
+        // Check if daemon is already running - if so, index is already available
         if let Ok(Some(pid_info)) = daemon::read_pid_file(&root) {
             if daemon::is_process_running(pid_info.pid) {
-                println!("🚀 Daemon already running (PID {})", pid_info.pid);
+                println!(
+                    "🚀 Daemon already running (PID {}), index available",
+                    pid_info.pid
+                );
+                None
             } else {
-                // Run initial indexing with progress (returns after indexing)
+                // Run initial indexing with progress
                 println!("🚀 Running initial index...");
-                daemon::run_initial_index(&root, db, false, false)?;
-
-                // Start daemon in background to watch for changes
-                println!("🚀 Starting background daemon...");
-                daemon::start(&root, db, false, true, None, false)?;
+                Some(daemon::run_initial_index(&root, db, false, false)?)
             }
         } else {
-            // Run initial indexing with progress (returns after indexing)
+            // Run initial indexing with progress
             println!("🚀 Running initial index...");
-            daemon::run_initial_index(&root, db, false, false)?;
-
-            // Start daemon in background to watch for changes
-            println!("🚀 Starting background daemon...");
-            daemon::start(&root, db, false, true, None, false)?;
+            Some(daemon::run_initial_index(&root, db, false, false)?)
         }
+    };
+
+    // Display stats if we indexed
+    if let Some(ref stats) = stats {
+        display_index_stats_table(stats);
     }
 
-    // Step 8: Print success message
+    // Step 8: Print success message and instructions
     println!();
     if dry_run {
         println!("Dry run complete. No changes were made.");
     } else {
-        println!("Setup complete! Claude can now use gabb tools in this project.");
+        println!("Setup complete! Claude can now use gabb tools.");
         if install_mcp || install_skill || install_claudemd {
             println!("Restart Claude Code to load the new configuration.");
         }
+        println!();
+        println!("To keep the index updated as you work, run:");
+        println!("   gabb daemon start --background");
     }
 
     Ok(())

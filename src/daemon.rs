@@ -2,7 +2,7 @@ use crate::indexer::{
     build_full_index, index_one, is_indexed_file, remove_if_tracked, IndexPhase, IndexProgress,
     IndexSummary,
 };
-use crate::store::{now_unix, DbOpenResult, IndexStore, RegenerationReason};
+use crate::store::{now_unix, DbOpenResult, IndexStats, IndexStore, RegenerationReason};
 use crate::OutputFormat;
 use anyhow::{bail, Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -677,7 +677,13 @@ fn run_indexing_with_progress(
 /// Run initial indexing only (no watch loop, no PID file).
 /// This is intended for setup scenarios where we want to show progress
 /// to the user, then start the daemon in the background.
-pub fn run_initial_index(root: &Path, db_path: &Path, rebuild: bool, quiet: bool) -> Result<()> {
+/// Returns IndexStats for displaying to the user.
+pub fn run_initial_index(
+    root: &Path,
+    db_path: &Path,
+    rebuild: bool,
+    quiet: bool,
+) -> Result<IndexStats> {
     let root = root
         .canonicalize()
         .with_context(|| format!("failed to canonicalize root {}", root.display()))?;
@@ -715,7 +721,9 @@ pub fn run_initial_index(root: &Path, db_path: &Path, rebuild: bool, quiet: bool
     store.set_meta("initial_index_complete", &now_unix().to_string())?;
     info!("Initial indexing complete");
 
-    Ok(())
+    // Get comprehensive stats for display
+    let stats = store.get_index_stats()?;
+    Ok(stats)
 }
 
 /// Run the daemon in the foreground

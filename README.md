@@ -28,11 +28,16 @@ The `gabb setup` command is an interactive wizard that:
 3. Offers to install MCP config (`.claude/mcp.json`) for Claude Code
 4. Offers to create an agent skill (`.claude/skills/gabb/SKILL.md`)
 5. Updates `.gitignore` to exclude generated files
-6. Starts the daemon and runs the initial index
+6. Runs the initial index and displays statistics
 
-Use `gabb setup --yes` for non-interactive mode, or `gabb setup --dry-run` to preview what would happen.
+Use `gabb setup --yes` for non-interactive mode, `gabb setup --dry-run` to preview what would happen, or `gabb setup --no-index` to only create config files without indexing.
 
-The daemon will crawl your workspace, index all supported files, and keep the SQLite database up to date as files change. Use `-v`/`-vv` to increase logging.
+To keep the index updated as files change, start the daemon in background mode:
+```bash
+gabb daemon start --background
+```
+
+The daemon will watch your workspace and keep the SQLite database up to date. Use `-v`/`-vv` to increase logging.
 
 Query commands (symbols, usages, etc.) will auto-start the daemon if it's not running.
 
@@ -157,7 +162,7 @@ Requires Rust 1.70+. The `cargo binstall` option downloads pre-built binaries in
 ## Usage
 ```bash
 # Workspace is auto-detected from .gabb/, .git/, Cargo.toml, package.json, etc.
-gabb setup [--yes] [--dry-run]
+gabb setup [--yes] [--dry-run] [--no-index]
 gabb init [--mcp] [--skill] [--gitignore]
 gabb daemon start [--rebuild] [--background] [-v|-vv]
 gabb daemon stop [--force]

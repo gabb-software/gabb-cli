@@ -2246,12 +2246,22 @@ impl McpServer {
 
     // ==================== Helper Methods ====================
 
-    fn resolve_path_for_workspace(&self, path: &str, workspace: &Path) -> PathBuf {
+    /// Resolve a file path to an absolute path.
+    ///
+    /// Relative paths are always resolved against `default_workspace` (the CWD),
+    /// NOT the inferred workspace. This is because user-provided relative paths
+    /// are relative to their current directory, not to whatever workspace root
+    /// gabb discovers.
+    ///
+    /// The `_workspace` parameter is kept for API consistency but is unused -
+    /// the workspace is only used for determining which store to query, not
+    /// for path resolution.
+    fn resolve_path_for_workspace(&self, path: &str, _workspace: &Path) -> PathBuf {
         let p = PathBuf::from(path);
         if p.is_absolute() {
             p
         } else {
-            workspace.join(p)
+            self.default_workspace.join(p)
         }
     }
 

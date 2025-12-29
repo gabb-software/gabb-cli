@@ -417,6 +417,9 @@ class ClaudeCodeRunner:
         self.workspace_claude_dir: Path | None = None
         self.mcp_config_file: Path | None = None
         self.skill_content: str | None = None  # Skill content to inject via system prompt
+        # Track original CLAUDE.md state for cleanup
+        self.original_claudemd: str | None = None  # Original content or None if didn't exist
+        self.claudemd_existed: bool = False
 
     def setup(self) -> None:
         """Set up workspace-local config for Claude Code.
@@ -426,6 +429,36 @@ class ClaudeCodeRunner:
         """
         self.temp_dir = Path(tempfile.mkdtemp(prefix="claude_bench_"))
         self.tool_log = self.temp_dir / "tool_calls.jsonl"
+
+        # Track original CLAUDE.md state for cleanup
+        claudemd_path = self.workspace / "CLAUDE.md"
+        self.claudemd_existed = claudemd_path.exists()
+        if self.claudemd_existed:
+            self.original_claudemd = claudemd_path.read_text()
+        else:
+            self.original_claudemd = None
+
+        # For conditions that shouldn't have gabb CLAUDE.md guidance, ensure it's clean
+        # This prevents interference from previous runs
+        gabb_marker = "## Tool Selection: Use gabb"
+        if self.condition in ("control", "gabb", "gabb-prompt") and self.claudemd_existed:
+            if gabb_marker in self.original_claudemd:
+                # Remove the gabb section from CLAUDE.md
+                lines = self.original_claudemd.split("\n")
+                new_lines = []
+                skip_until_next_h2 = False
+                for line in lines:
+                    if line.startswith(gabb_marker):
+                        skip_until_next_h2 = True
+                        continue
+                    if skip_until_next_h2 and line.startswith("## "):
+                        skip_until_next_h2 = False
+                    if not skip_until_next_h2:
+                        new_lines.append(line)
+                cleaned = "\n".join(new_lines).rstrip() + "\n"
+                claudemd_path.write_text(cleaned)
+                if self.verbose:
+                    print_msg("  Removed gabb section from CLAUDE.md for clean run", "dim")
 
         # Use workspace-local .claude directory for project-specific settings
         self.workspace_claude_dir = self.workspace / ".claude"
@@ -450,8 +483,8 @@ class ClaudeCodeRunner:
             ]
         }
 
-        # Configure gabb MCP server for gabb/gabb-prompt conditions
-        if self.condition in ("gabb", "gabb-prompt") and self.gabb_binary:
+        # Configure gabb MCP server for gabb/gabb-prompt/gabb-claudemd conditions
+        if self.condition in ("gabb", "gabb-prompt", "gabb-claudemd") and self.gabb_binary:
             settings["mcpServers"] = {
                 "gabb": {
                     "command": str(self.gabb_binary),
@@ -469,8 +502,9 @@ class ClaudeCodeRunner:
             json.dumps(settings, indent=2)
         )
 
-        # Load skill content for gabb/gabb-prompt conditions
+        # Load skill content for gabb/gabb-prompt conditions (NOT gabb-claudemd)
         # NOTE: Skills don't work in -p (print) mode, so we inject via --append-system-prompt
+        # gabb-claudemd uses CLAUDE.md instead of system prompt injection
         if self.condition in ("gabb", "gabb-prompt"):
             skill_file = CONFIGS_DIR / "gabb" / "skills" / "gabb" / "SKILL.md"
             if skill_file.exists():
@@ -485,9 +519,13 @@ class ClaudeCodeRunner:
                 if self.verbose:
                     print_msg(f"Loaded skill content ({len(self.skill_content)} chars)", "dim")
 
-        # Initialize gabb for gabb/gabb-prompt conditions
-        if self.condition in ("gabb", "gabb-prompt") and self.gabb_binary:
+        # Initialize gabb for gabb/gabb-prompt/gabb-claudemd conditions
+        if self.condition in ("gabb", "gabb-prompt", "gabb-claudemd") and self.gabb_binary:
             self._setup_gabb()
+
+        # For gabb-claudemd, add gabb guidance to CLAUDE.md
+        if self.condition == "gabb-claudemd" and self.gabb_binary:
+            self._setup_claudemd()
 
     def _setup_gabb(self) -> None:
         """Initialize gabb index in workspace."""
@@ -551,6 +589,24 @@ class ClaudeCodeRunner:
 
         if self.verbose:
             print_msg(f"gabb warning: timeout waiting for index after {max_wait}s", "yellow")
+
+    def _setup_claudemd(self) -> None:
+        """Add gabb guidance to CLAUDE.md using gabb init --claudemd."""
+        if self.verbose:
+            print_msg("  Adding gabb guidance to CLAUDE.md...", "dim")
+
+        result = subprocess.run(
+            [str(self.gabb_binary), "init", "--claudemd"],
+            cwd=self.workspace,
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode != 0:
+            if self.verbose:
+                print_msg(f"  gabb init --claudemd warning: {result.stderr[:200]}", "yellow")
+        elif self.verbose:
+            print_msg("  CLAUDE.md configured with gabb guidance", "green")
 
     def run(self, prompt: str, timeout: int = 300) -> RunMetrics:
         """Run Claude Code with the given prompt."""
@@ -669,7 +725,7 @@ FINAL_ANSWER: path/to/file2.py"""
 
     def cleanup(self) -> None:
         """Clean up temporary resources."""
-        if self.condition in ("gabb", "gabb-prompt") and self.gabb_binary:
+        if self.condition in ("gabb", "gabb-prompt", "gabb-claudemd") and self.gabb_binary:
             subprocess.run(
                 [str(self.gabb_binary), "daemon", "stop"],
                 cwd=self.workspace,
@@ -678,6 +734,17 @@ FINAL_ANSWER: path/to/file2.py"""
 
         if self.temp_dir and self.temp_dir.exists():
             shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+        # Restore original CLAUDE.md state
+        claudemd_path = self.workspace / "CLAUDE.md"
+        if self.claudemd_existed:
+            # Restore original content
+            if self.original_claudemd is not None:
+                claudemd_path.write_text(self.original_claudemd)
+        else:
+            # CLAUDE.md didn't exist before, remove if we created it
+            if claudemd_path.exists():
+                claudemd_path.unlink()
 
         # Clean up workspace-local settings we created
         if self.workspace_claude_dir and self.workspace_claude_dir.exists():
@@ -1616,9 +1683,10 @@ Examples:
     parser.add_argument("--gabb-binary", type=Path, help="Path to gabb binary")
     parser.add_argument(
         "--condition",
-        choices=["control", "gabb", "gabb-prompt", "both", "gabb-all", "all"],
+        choices=["control", "gabb", "gabb-prompt", "gabb-claudemd", "both", "gabb-all", "all"],
         default="both",
-        help="Which condition(s) to run (gabb-all=gabb+gabb-prompt, all=all 3)",
+        help="Which condition(s) to run: control, gabb, gabb-prompt (skill via system prompt), "
+             "gabb-claudemd (guidance in CLAUDE.md), both=control+gabb, gabb-all=gabb+gabb-prompt, all=all 3",
     )
     parser.add_argument(
         "--runs",
@@ -1670,7 +1738,7 @@ Examples:
 
     # Check for gabb binary
     gabb_binary = args.gabb_binary or shutil.which("gabb")
-    if args.condition in ("gabb", "gabb-prompt", "both", "gabb-all", "all") and not gabb_binary:
+    if args.condition in ("gabb", "gabb-prompt", "gabb-claudemd", "both", "gabb-all", "all") and not gabb_binary:
         print_msg("Warning: gabb binary not found.", "yellow")
 
     workspace_manager = WorkspaceManager(cache_dir=args.cache_dir)

@@ -1093,6 +1093,17 @@ def _print_comparison_rich(control_runs: list[RunMetrics], gabb_runs: list[RunMe
         f"{call_diff:+.1f}",
     )
 
+    # Turns
+    c_turns = control_agg["turns"]
+    g_turns = gabb_agg["turns"]
+    turn_diff = g_turns["mean"] - c_turns["mean"]
+    table.add_row(
+        "Turns",
+        _format_stat(c_turns, single_run),
+        _format_stat(g_turns, single_run),
+        f"{turn_diff:+.1f}",
+    )
+
     console.print(table)
 
     # Tool breakdown
@@ -1167,6 +1178,11 @@ def _print_comparison_plain(control_runs: list[RunMetrics], gabb_runs: list[RunM
     c_calls = control_agg["tool_calls_total"]
     g_calls = gabb_agg["tool_calls_total"]
     print(f"{'Tool Calls':<20} {_format_stat(c_calls, single_run):>18} {_format_stat(g_calls, single_run):>18}")
+
+    # Turns
+    c_turns = control_agg["turns"]
+    g_turns = gabb_agg["turns"]
+    print(f"{'Turns':<20} {_format_stat(c_turns, single_run):>18} {_format_stat(g_turns, single_run):>18}")
 
     # Tool breakdown
     print("\nTool Usage:")

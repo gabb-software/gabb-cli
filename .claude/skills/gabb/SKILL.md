@@ -31,17 +31,27 @@ allowed-tools: mcp__gabb__*, Edit, Write, Bash, Read, Glob
 
 **For .js, .jsx, .go, .java, .c, .h → Use Grep/Read**
 
-## Start Here
+## Start Here: The Two-Step Pattern
 
-These three tools cover 80% of code navigation:
+**Step 1: Get cheap overview** (no source code, just structure)
+```
+gabb_structure file="path/to/file.py"
+```
+Returns symbol names, kinds, line numbers. Use for any file >100 lines.
+
+**Step 2: Get specific code** (one of these based on what you need)
+- `gabb_symbols name="FunctionName" include_source=true` - get a specific symbol's code
+- `Read file="path" offset=150 limit=50` - read specific line range from structure output
+
+## Quick Reference
 
 | Goal | Tool |
 |------|------|
-| Find code by keyword | `gabb_symbols name_contains="X" include_source=true` → [details](./tools/symbols.md) |
-| Preview file structure | `gabb_structure file="path"` → [details](./tools/structure.md) |
+| Preview file structure (cheap) | `gabb_structure file="path"` → [details](./tools/structure.md) |
+| Find and read code by keyword | `gabb_symbols name_contains="X" include_source=true` → [details](./tools/symbols.md) |
 | Find usages before refactoring | `gabb_usages file="X" line=N character=M` → [details](./tools/usages.md) |
 
-**Always use `include_source=true`** to get code inline.
+**Use `include_source=true`** on `gabb_symbols`, `gabb_symbol`, `gabb_definition` - NOT on `gabb_structure`.
 
 ## Specialized Tools
 

@@ -605,10 +605,11 @@ impl McpServer {
             Tool {
                 name: "gabb_structure".to_string(),
                 description: concat!(
-                    "Get the structure of a file showing all symbols with hierarchy and positions. ",
-                    "USE THIS to understand a file's organization before reading it in full. ",
-                    "Returns symbols grouped hierarchically (e.g., methods inside classes) with ",
-                    "start/end positions. Also indicates if file is test or production code."
+                    "Get a CHEAP, LIGHTWEIGHT overview of a file's symbols before reading it. ",
+                    "USE THIS FIRST for any file >100 lines to see what's inside without token cost. ",
+                    "Returns symbol names, kinds, and line numbers - NOT source code. ",
+                    "After seeing structure, use Read with offset/limit to read specific sections, ",
+                    "or use gabb_symbols with include_source=true to get specific symbol code."
                 ).to_string(),
                 input_schema: json!({
                     "type": "object",
@@ -616,14 +617,6 @@ impl McpServer {
                         "file": {
                             "type": "string",
                             "description": "Path to the file to analyze"
-                        },
-                        "include_source": {
-                            "type": "boolean",
-                            "description": "Include source code snippets in the output"
-                        },
-                        "context_lines": {
-                            "type": "integer",
-                            "description": "Lines of context around each symbol (requires include_source)"
                         }
                     },
                     "required": ["file"]
@@ -1778,14 +1771,6 @@ impl McpServer {
             .get("file")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'file' argument"))?;
-        let include_source = args
-            .get("include_source")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let context_lines = args
-            .get("context_lines")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as usize);
 
         // Infer workspace from file path
         let file_path = PathBuf::from(file);
@@ -1826,7 +1811,7 @@ impl McpServer {
         };
 
         // Build hierarchical structure
-        let tree = build_structure_tree(&symbols, include_source, context_lines, &file_str)?;
+        let tree = build_structure_tree(&symbols, &file_str)?;
 
         // Build JSON output
         let output = json!({
@@ -2583,12 +2568,7 @@ fn get_line_at_offset(file_path: &str, offset: usize) -> Option<String> {
 }
 
 /// Build a hierarchical tree of symbols for the structure command
-fn build_structure_tree(
-    symbols: &[SymbolRecord],
-    include_source: bool,
-    context_lines: Option<usize>,
-    file_path: &str,
-) -> Result<Vec<Value>> {
+fn build_structure_tree(symbols: &[SymbolRecord], file_path: &str) -> Result<Vec<Value>> {
     use std::collections::HashMap;
 
     // Convert each symbol to a JSON node with resolved positions
@@ -2615,12 +2595,6 @@ fn build_structure_tree(
 
         if let Some(vis) = &sym.visibility {
             node["visibility"] = json!(vis);
-        }
-
-        if include_source {
-            if let Some(src) = extract_source(&sym.file, sym.start, sym.end, context_lines) {
-                node["source"] = json!(src);
-            }
         }
 
         nodes.push((sym.container.clone(), node));

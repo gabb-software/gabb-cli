@@ -243,7 +243,7 @@ Gabb includes an MCP (Model Context Protocol) server that exposes code indexing 
 | `gabb_callees` | Find all functions/methods called by a given function (call graph: what do I call?) |
 | `gabb_rename` | Get all locations to update when renaming a symbol (edit-ready output) |
 | `gabb_duplicates` | Find duplicate symbol definitions |
-| `gabb_structure` | Get hierarchical file structure showing symbols with positions |
+| `gabb_structure` | Cheap file overview: symbol names, kinds, and positions (no source code) |
 | `gabb_includers` | Find all files that #include a header (reverse dependency lookup) |
 | `gabb_includes` | Find all headers included by a file (forward dependency lookup) |
 | `gabb_daemon_status` | Check the status of the gabb indexing daemon |

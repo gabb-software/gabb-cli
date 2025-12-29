@@ -1,16 +1,21 @@
 # gabb_structure
 
-See what's in a file before reading it.
+**Cheap overview of a file before reading it.**
 
 ```
 gabb_structure file="src/payments.py"
 ```
 
-**Use this BEFORE Read** for any file >100 lines. Shows:
-- All functions, classes, methods
+**USE THIS FIRST** for any file >100 lines. It's a lightweight table of contents - shows what's in the file without returning source code:
+
+- Symbol names, kinds (function, class, method)
 - Line numbers and positions
 - Hierarchy (methods inside classes)
+- Test vs production context
+
+**After seeing structure:**
+- Use `Read` with `offset`/`limit` to read specific line ranges
+- Use `gabb_symbols name="FunctionName" include_source=true` to get a specific symbol's code
 
 **Parameters:**
-- `file` - Path to analyze
-- `include_source=true` - Also show source code snippets
+- `file` - Path to analyze (required)

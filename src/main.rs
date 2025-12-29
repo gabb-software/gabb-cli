@@ -509,6 +509,9 @@ enum Commands {
         /// Create .claude/skills/gabb/ agent skill for discoverability
         #[arg(long)]
         skill: bool,
+        /// Add gabb tool guidance section to CLAUDE.md
+        #[arg(long)]
+        claudemd: bool,
     },
     /// Interactive setup wizard for one-command onboarding
     Setup {
@@ -832,7 +835,8 @@ fn main() -> std::process::ExitCode {
             mcp,
             gitignore,
             skill,
-        } => init_project(&workspace, mcp, gitignore, skill).map(|_| ExitCode::Success),
+            claudemd,
+        } => init_project(&workspace, mcp, gitignore, skill, claudemd).map(|_| ExitCode::Success),
         Commands::Setup { yes, dry_run } => {
             setup_wizard(&workspace, &db, yes, dry_run).map(|_| ExitCode::Success)
         }
@@ -3144,6 +3148,7 @@ fn init_project(
     setup_mcp: bool,
     setup_gitignore: bool,
     setup_skill: bool,
+    setup_claudemd: bool,
 ) -> Result<()> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
 
@@ -3173,6 +3178,11 @@ fn init_project(
         init_skill(&root)?;
     }
 
+    // Setup CLAUDE.md if requested
+    if setup_claudemd {
+        init_claudemd(&root)?;
+    }
+
     println!();
     println!("Next steps:");
     println!("  1. Start the daemon:    gabb daemon start");
@@ -3180,8 +3190,10 @@ fn init_project(
         println!("  2. Restart Claude Code to load the MCP server");
     } else if setup_skill {
         println!("  2. The skill will auto-activate when Claude Code sees relevant requests");
+    } else if setup_claudemd {
+        println!("  2. The CLAUDE.md guidance is now active for Claude Code");
     } else {
-        println!("  2. For AI integration: gabb init --mcp --skill");
+        println!("  2. For AI integration: gabb init --mcp --claudemd");
     }
 
     Ok(())
@@ -3387,6 +3399,39 @@ fn write_skill_file(path: &Path, content: &str, name: &str) -> Result<()> {
             println!("  Claude will auto-discover this skill for code navigation tasks");
         }
     }
+    Ok(())
+}
+
+/// Marker to detect if CLAUDE.md already has gabb section
+const CLAUDEMD_SECTION_MARKER: &str = "## Tool Selection: Use gabb";
+
+/// Add gabb tool guidance section to CLAUDE.md
+fn init_claudemd(root: &Path) -> Result<()> {
+    let claudemd_path = root.join("CLAUDE.md");
+    let section_content = include_str!("../assets/CLAUDE_SECTION.md");
+
+    if claudemd_path.exists() {
+        // Read existing content
+        let existing = fs::read_to_string(&claudemd_path)?;
+
+        // Check if section already exists
+        if existing.contains(CLAUDEMD_SECTION_MARKER) {
+            println!("  CLAUDE.md already has gabb section");
+            return Ok(());
+        }
+
+        // Append section to existing file
+        let new_content = format!("{}\n\n{}", existing.trim_end(), section_content);
+        fs::write(&claudemd_path, new_content)?;
+        println!("  Added gabb section to CLAUDE.md");
+    } else {
+        // Create new CLAUDE.md with section
+        let header = "# Project Instructions\n\nThis file provides guidance to Claude Code.\n\n";
+        let new_content = format!("{}{}", header, section_content);
+        fs::write(&claudemd_path, new_content)?;
+        println!("  Created CLAUDE.md with gabb tool guidance");
+    }
+
     Ok(())
 }
 

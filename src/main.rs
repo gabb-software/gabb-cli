@@ -3552,7 +3552,40 @@ fn setup_wizard(root: &Path, db: &Path, yes: bool, dry_run: bool) -> Result<()> 
         should_install
     };
 
-    // Step 5: Offer to update .gitignore
+    // Step 5: Offer to add CLAUDE.md section
+    let claudemd_path = root.join("CLAUDE.md");
+    let claudemd_has_gabb = if claudemd_path.exists() {
+        let content = fs::read_to_string(&claudemd_path).unwrap_or_default();
+        content.contains(CLAUDEMD_SECTION_MARKER)
+    } else {
+        false
+    };
+
+    let install_claudemd = if claudemd_has_gabb {
+        println!("📖 CLAUDE.md already has gabb section");
+        false
+    } else {
+        let prompt_msg = if claudemd_path.exists() {
+            "📖 Add gabb guidance to CLAUDE.md?"
+        } else {
+            "📖 Create CLAUDE.md with gabb guidance?"
+        };
+        let should_install = yes || prompt_yes_no(prompt_msg, true)?;
+        if should_install {
+            if dry_run {
+                if claudemd_path.exists() {
+                    println!("   Would add gabb section to CLAUDE.md");
+                } else {
+                    println!("   Would create CLAUDE.md with gabb guidance");
+                }
+            } else {
+                init_claudemd(&root)?;
+            }
+        }
+        should_install
+    };
+
+    // Step 6: Offer to update .gitignore
     let gitignore_path = root.join(".gitignore");
     let gitignore_content = if gitignore_path.exists() {
         fs::read_to_string(&gitignore_path).unwrap_or_default()
@@ -3588,7 +3621,7 @@ fn setup_wizard(root: &Path, db: &Path, yes: bool, dry_run: bool) -> Result<()> 
         }
     }
 
-    // Step 6: Start daemon and run initial index
+    // Step 7: Start daemon and run initial index
     if dry_run {
         println!("🚀 Would start daemon and run initial index");
     } else {
@@ -3608,14 +3641,14 @@ fn setup_wizard(root: &Path, db: &Path, yes: bool, dry_run: bool) -> Result<()> 
         }
     }
 
-    // Step 7: Print success message
+    // Step 8: Print success message
     println!();
     if dry_run {
         println!("Dry run complete. No changes were made.");
     } else {
         println!("Setup complete! Claude can now use gabb tools in this project.");
-        if install_mcp || install_skill {
-            println!("Restart Claude Code to load the new MCP server.");
+        if install_mcp || install_skill || install_claudemd {
+            println!("Restart Claude Code to load the new configuration.");
         }
     }
 

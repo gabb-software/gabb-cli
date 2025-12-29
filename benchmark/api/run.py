@@ -469,8 +469,9 @@ async def main_async(args: argparse.Namespace) -> int:
         console.print("[yellow]Will run control agent only.[/yellow]")
 
     # Load dataset
-    console.print("Loading SWE-bench dataset...")
-    dataset = load_swebench(split="test")
+    dataset_name = "SWE-bench_Lite" if args.lite else "SWE-bench_Verified"
+    console.print(f"Loading {dataset_name} dataset...")
+    dataset = load_swebench(split="test", lite=args.lite)
     console.print(f"Loaded {dataset.task_count} tasks")
 
     # Select tasks
@@ -543,6 +544,9 @@ Examples:
     # Phase 2: Run on 20 tasks with 5 concurrent containers
     python run.py --tasks 20 --concurrent 5
 
+    # Run SWE-bench Lite (smaller 300-task dataset)
+    python run.py --lite --tasks 20 --concurrent 5
+
     # Run with different model
     python run.py --task django__django-11099 --model claude-3-haiku-20240307
         """,
@@ -558,6 +562,11 @@ Examples:
         type=int,
         default=1,
         help="Number of tasks to run (Phase 2 mode)",
+    )
+    parser.add_argument(
+        "--lite",
+        action="store_true",
+        help="Use SWE-bench_Lite (300 tasks) instead of SWE-bench_Verified (500 tasks)",
     )
     parser.add_argument(
         "--concurrent",

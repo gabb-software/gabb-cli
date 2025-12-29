@@ -69,24 +69,28 @@ def parse_gold_files(patch_text: str) -> list[str]:
 
 
 class SWEBenchDataset:
-    """Loader for the SWE-bench_Verified dataset."""
+    """Loader for SWE-bench datasets (Verified or Lite)."""
 
-    DATASET_NAME = "princeton-nlp/SWE-bench_Verified"
+    DATASET_VERIFIED = "princeton-nlp/SWE-bench_Verified"
+    DATASET_LITE = "princeton-nlp/SWE-bench_Lite"
 
-    def __init__(self, split: str = "test"):
+    def __init__(self, split: str = "test", lite: bool = False):
         """
         Initialize the dataset loader.
 
         Args:
             split: Dataset split to load ('test' or 'train').
+            lite: If True, use SWE-bench_Lite instead of SWE-bench_Verified.
         """
         self.split = split
+        self.lite = lite
+        self.dataset_name = self.DATASET_LITE if lite else self.DATASET_VERIFIED
         self._dataset = None
         self._tasks_by_id: dict[str, BenchmarkTask] = {}
 
     def load(self) -> None:
         """Load the dataset from HuggingFace."""
-        self._dataset = load_dataset(self.DATASET_NAME, split=self.split)
+        self._dataset = load_dataset(self.dataset_name, split=self.split)
         self._build_task_index()
 
     def _build_task_index(self) -> None:
@@ -180,16 +184,18 @@ class SWEBenchDataset:
 
 
 # Convenience function for quick access
-def load_swebench(split: str = "test") -> SWEBenchDataset:
+def load_swebench(split: str = "test", lite: bool = False) -> SWEBenchDataset:
     """
-    Load the SWE-bench_Verified dataset.
+    Load a SWE-bench dataset.
 
     Args:
         split: Dataset split to load.
+        lite: If True, use SWE-bench_Lite (300 tasks) instead of
+              SWE-bench_Verified (500 tasks).
 
     Returns:
         Loaded SWEBenchDataset instance.
     """
-    dataset = SWEBenchDataset(split=split)
+    dataset = SWEBenchDataset(split=split, lite=lite)
     dataset.load()
     return dataset

@@ -21,9 +21,13 @@ Usage:
     # Run multiple SWE-bench tasks
     python run.py --swe-bench-suite --limit 10
 
+    # Run SWE-bench Lite (smaller 300-task dataset)
+    python run.py --swe-bench-suite --lite --limit 10
+
     # List available tasks
     python run.py --list-tasks
     python run.py --list-swe-bench --repo scikit-learn
+    python run.py --list-swe-bench --lite
 """
 
 from __future__ import annotations
@@ -252,11 +256,16 @@ def get_manual_task(task_id: str) -> Task | None:
     return None
 
 
-def load_swe_bench() -> Any:
-    """Load the SWE-bench dataset."""
+def load_swe_bench(lite: bool = False) -> Any:
+    """Load the SWE-bench dataset.
+
+    Args:
+        lite: If True, use SWE-bench_Lite (300 tasks) instead of
+              SWE-bench_Verified (500 tasks).
+    """
     try:
         from core.dataset import load_swebench
-        return load_swebench()
+        return load_swebench(lite=lite)
     except ImportError:
         print_msg("Error: Could not import SWE-bench dataset loader.", "red")
         print_msg("Make sure you're in the benchmark directory and dependencies are installed.", "dim")
@@ -1370,9 +1379,13 @@ Examples:
     # Run SWE-bench suite
     python run.py --swe-bench-suite --limit 10 --repo scikit-learn
 
+    # Run SWE-bench Lite (smaller 300-task dataset)
+    python run.py --swe-bench-suite --lite --limit 10
+
     # List tasks
     python run.py --list-tasks
     python run.py --list-swe-bench
+    python run.py --list-swe-bench --lite
 """,
     )
 
@@ -1389,6 +1402,11 @@ Examples:
     # Filtering (for suite mode)
     parser.add_argument("--limit", type=int, default=10, help="Max tasks to run in suite mode")
     parser.add_argument("--repo", type=str, help="Filter SWE-bench by repo name")
+    parser.add_argument(
+        "--lite",
+        action="store_true",
+        help="Use SWE-bench_Lite (300 tasks) instead of SWE-bench_Verified (500 tasks)",
+    )
 
     # Execution options
     parser.add_argument("--gabb-binary", type=Path, help="Path to gabb binary")
@@ -1431,7 +1449,7 @@ Examples:
 
     # List SWE-bench tasks
     if args.list_swe_bench:
-        dataset = load_swe_bench()
+        dataset = load_swe_bench(lite=args.lite)
         if not dataset:
             return 1
 
@@ -1439,7 +1457,8 @@ Examples:
         if args.repo:
             tasks = [t for t in tasks if args.repo.lower() in t.repo.lower()]
 
-        print_msg(f"SWE-bench tasks ({len(tasks)} shown):", "bold")
+        dataset_label = "SWE-bench_Lite" if args.lite else "SWE-bench_Verified"
+        print_msg(f"{dataset_label} tasks ({len(tasks)} shown):", "bold")
         for task in tasks[:20]:
             print(f"  {task.instance_id}")
             print(f"    Repo: {task.repo}, Files: {task.gold_files[:2]}")
@@ -1456,7 +1475,7 @@ Examples:
 
     # Run SWE-bench suite
     if args.swe_bench_suite:
-        dataset = load_swe_bench()
+        dataset = load_swe_bench(lite=args.lite)
         if not dataset:
             return 1
 
@@ -1464,7 +1483,8 @@ Examples:
         if args.repo:
             tasks = [t for t in tasks if args.repo.lower() in t.repo.lower()][:args.limit]
 
-        print_msg(f"Running {len(tasks)} SWE-bench tasks...", "bold")
+        dataset_label = "SWE-bench_Lite" if args.lite else "SWE-bench_Verified"
+        print_msg(f"Running {len(tasks)} {dataset_label} tasks...", "bold")
         if args.runs > 1:
             print_msg(f"Runs per condition: {args.runs}", "dim")
 
@@ -1496,7 +1516,7 @@ Examples:
 
     # Run single SWE-bench task
     if args.swe_bench:
-        dataset = load_swe_bench()
+        dataset = load_swe_bench(lite=args.lite)
         if not dataset:
             return 1
 

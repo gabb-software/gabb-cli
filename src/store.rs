@@ -765,7 +765,7 @@ impl IndexStore {
             params![path_str.clone()],
         )?;
         self.conn.borrow().execute(
-            "DELETE FROM edges WHERE src IN (SELECT id FROM symbols WHERE file = ?1)",
+            "DELETE FROM edges WHERE src LIKE ?1 || '#%'",
             params![path_str.clone()],
         )?;
         self.conn.borrow().execute(
@@ -810,7 +810,7 @@ impl IndexStore {
             params![file_record.path.clone()],
         )?;
         tx.execute(
-            "DELETE FROM edges WHERE src IN (SELECT id FROM symbols WHERE file = ?1)",
+            "DELETE FROM edges WHERE src LIKE ?1 || '#%'",
             params![file_record.path.clone()],
         )?;
         tx.execute(
@@ -913,7 +913,7 @@ impl IndexStore {
             params![file_record.path.clone()],
         )?;
         tx.execute(
-            "DELETE FROM edges WHERE src IN (SELECT id FROM symbols WHERE file = ?1)",
+            "DELETE FROM edges WHERE src LIKE ?1 || '#%'",
             params![file_record.path.clone()],
         )?;
         tx.execute(

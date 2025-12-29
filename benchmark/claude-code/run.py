@@ -21,6 +21,9 @@ Usage:
     # Run multiple SWE-bench tasks
     python run.py --swe-bench-suite --limit 10
 
+    # Run tasks in parallel (faster, watch for rate limits)
+    python run.py --swe-bench-suite --limit 10 --concurrent 3
+
     # Run SWE-bench Lite (smaller 300-task dataset)
     python run.py --swe-bench-suite --lite --limit 10
 
@@ -28,11 +31,23 @@ Usage:
     python run.py --list-tasks
     python run.py --list-swe-bench --repo scikit-learn
     python run.py --list-swe-bench --lite
+
+Concurrency Notes:
+    The --concurrent flag enables parallel task execution. Each task runs
+    its own Claude Code process and gabb daemon in isolated workspaces.
+
+    Constraints:
+    - API rate limits are the primary bottleneck. Start with --concurrent 3
+      and increase gradually while monitoring for rate limit errors.
+    - Each concurrent task adds memory/CPU overhead for Claude Code + gabb.
+    - The --runs flag (multiple runs per condition) still runs sequentially
+      within each task to avoid workspace conflicts.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import os
@@ -880,6 +895,101 @@ def run_comparison(
     return control_runs, gabb_runs
 
 
+@dataclass
+class SuiteTaskResult:
+    """Result wrapper for async suite execution."""
+    task: Task
+    workspace: Path
+    control_runs: list[RunMetrics]
+    gabb_runs: list[RunMetrics]
+    error: str | None = None
+
+
+async def run_suite_task(
+    task: Task,
+    workspace_manager: "WorkspaceManager",
+    gabb_binary: Path | None,
+    verbose: bool,
+    run_count: int,
+) -> SuiteTaskResult:
+    """Run a single task in the suite (runs both conditions sequentially).
+
+    This is designed to be called concurrently for different tasks.
+    The actual Claude Code runs happen in a thread pool to avoid blocking.
+    """
+    try:
+        workspace = workspace_manager.get_workspace(task.repo, task.base_commit)
+
+        # Run the comparison in a thread pool since it's CPU/IO bound
+        control_runs, gabb_runs = await asyncio.to_thread(
+            run_comparison,
+            task,
+            workspace,
+            gabb_binary,
+            verbose,
+            run_count,
+        )
+
+        return SuiteTaskResult(
+            task=task,
+            workspace=workspace,
+            control_runs=control_runs,
+            gabb_runs=gabb_runs,
+        )
+    except Exception as e:
+        # Return error result instead of propagating exception
+        return SuiteTaskResult(
+            task=task,
+            workspace=Path("."),  # Placeholder
+            control_runs=[],
+            gabb_runs=[],
+            error=str(e),
+        )
+
+
+async def run_suite_async(
+    tasks: list[Task],
+    workspace_manager: "WorkspaceManager",
+    gabb_binary: Path | None,
+    verbose: bool,
+    run_count: int,
+    concurrent: int,
+    progress_callback=None,
+) -> list[SuiteTaskResult]:
+    """Run benchmark suite with concurrent task execution.
+
+    Args:
+        tasks: List of tasks to run.
+        workspace_manager: Manages repository workspaces.
+        gabb_binary: Path to gabb binary.
+        verbose: Enable verbose output.
+        run_count: Number of runs per condition.
+        concurrent: Max concurrent tasks.
+        progress_callback: Optional callback(completed, total, result).
+
+    Returns:
+        List of SuiteTaskResult in completion order.
+    """
+    results: list[SuiteTaskResult] = []
+    semaphore = asyncio.Semaphore(concurrent)
+
+    async def run_with_limit(task: Task) -> SuiteTaskResult:
+        async with semaphore:
+            return await run_suite_task(
+                task, workspace_manager, gabb_binary, verbose, run_count
+            )
+
+    # Create all coroutines
+    coros = [run_with_limit(t) for t in tasks]
+
+    # Process as they complete
+    for i, coro in enumerate(asyncio.as_completed(coros)):
+        result = await coro
+        results.append(result)
+        if progress_callback:
+            progress_callback(i + 1, len(tasks), result)
+
+    return results
 
 
 # =============================================================================
@@ -1379,6 +1489,9 @@ Examples:
     # Run SWE-bench suite
     python run.py --swe-bench-suite --limit 10 --repo scikit-learn
 
+    # Run suite in parallel (3 concurrent tasks)
+    python run.py --swe-bench-suite --limit 10 --concurrent 3
+
     # Run SWE-bench Lite (smaller 300-task dataset)
     python run.py --swe-bench-suite --lite --limit 10
 
@@ -1386,6 +1499,11 @@ Examples:
     python run.py --list-tasks
     python run.py --list-swe-bench
     python run.py --list-swe-bench --lite
+
+Concurrency:
+    --concurrent N runs up to N tasks in parallel. Start with 3 and
+    increase while monitoring for API rate limit errors. Each task
+    uses its own workspace, Claude Code process, and gabb daemon.
 """,
     )
 
@@ -1422,6 +1540,14 @@ Examples:
         type=int,
         default=1,
         help="Number of times to run each condition (for statistical significance)",
+    )
+    parser.add_argument(
+        "--concurrent",
+        type=int,
+        default=1,
+        help="Number of tasks to run in parallel (suite mode only). "
+             "Start with 3 and monitor for rate limit errors. "
+             "Each task runs its own Claude Code process and gabb daemon.",
     )
     parser.add_argument("--no-save", action="store_true", help="Don't save results")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
@@ -1479,34 +1605,72 @@ Examples:
         if not dataset:
             return 1
 
-        tasks = list(dataset.iter_tasks(limit=args.limit))
+        swe_tasks = list(dataset.iter_tasks(limit=args.limit))
         if args.repo:
-            tasks = [t for t in tasks if args.repo.lower() in t.repo.lower()][:args.limit]
+            swe_tasks = [t for t in swe_tasks if args.repo.lower() in t.repo.lower()][:args.limit]
+
+        # Convert to our Task format
+        tasks = [swe_bench_task_to_task(t) for t in swe_tasks]
 
         dataset_label = "SWE-bench_Lite" if args.lite else "SWE-bench_Verified"
         print_msg(f"Running {len(tasks)} {dataset_label} tasks...", "bold")
         if args.runs > 1:
             print_msg(f"Runs per condition: {args.runs}", "dim")
+        if args.concurrent > 1:
+            print_msg(f"Concurrent tasks: {args.concurrent}", "dim")
+            print_msg("Note: Monitor for rate limit errors. Reduce --concurrent if needed.", "yellow")
 
         all_results: list[tuple[list[RunMetrics], list[RunMetrics]]] = []
-        for i, swe_task in enumerate(tasks):
-            task = swe_bench_task_to_task(swe_task)
-            print_msg(f"\n[{i+1}/{len(tasks)}] {task.id}", "bold")
 
-            try:
-                workspace = workspace_manager.get_workspace(task.repo, task.base_commit)
-                control_runs, gabb_runs = run_comparison(
-                    task, workspace, gabb_binary, args.verbose, run_count=args.runs
+        if args.concurrent > 1:
+            # Concurrent execution using async
+            completed = 0
+
+            def on_progress(done: int, total: int, result: SuiteTaskResult):
+                nonlocal completed
+                completed = done
+                if result.error:
+                    print_msg(f"[{done}/{total}] {result.task.id}: Error - {result.error}", "red")
+                else:
+                    print_msg(f"[{done}/{total}] {result.task.id}: Complete", "green")
+
+            suite_results = asyncio.run(
+                run_suite_async(
+                    tasks=tasks,
+                    workspace_manager=workspace_manager,
+                    gabb_binary=gabb_binary,
+                    verbose=args.verbose,
+                    run_count=args.runs,
+                    concurrent=args.concurrent,
+                    progress_callback=on_progress,
                 )
-                all_results.append((control_runs, gabb_runs))
-                print_comparison(control_runs, gabb_runs)
-            except Exception as e:
-                print_msg(f"  Error: {e}", "red")
-                continue
-            finally:
-                # Clean up gabb artifacts between runs
-                if 'workspace' in dir():
-                    workspace_manager.cleanup_workspace(workspace)
+            )
+
+            # Process results and cleanup
+            for result in suite_results:
+                if not result.error:
+                    all_results.append((result.control_runs, result.gabb_runs))
+                    print_comparison(result.control_runs, result.gabb_runs)
+                workspace_manager.cleanup_workspace(result.workspace)
+        else:
+            # Sequential execution (original behavior)
+            for i, task in enumerate(tasks):
+                print_msg(f"\n[{i+1}/{len(tasks)}] {task.id}", "bold")
+
+                try:
+                    workspace = workspace_manager.get_workspace(task.repo, task.base_commit)
+                    control_runs, gabb_runs = run_comparison(
+                        task, workspace, gabb_binary, args.verbose, run_count=args.runs
+                    )
+                    all_results.append((control_runs, gabb_runs))
+                    print_comparison(control_runs, gabb_runs)
+                except Exception as e:
+                    print_msg(f"  Error: {e}", "red")
+                    continue
+                finally:
+                    # Clean up gabb artifacts between runs
+                    if 'workspace' in dir():
+                        workspace_manager.cleanup_workspace(workspace)
 
         # Save suite results
         if not args.no_save and all_results:

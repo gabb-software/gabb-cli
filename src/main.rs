@@ -551,12 +551,6 @@ enum Commands {
     Structure {
         /// File to analyze
         file: PathBuf,
-        /// Include source code snippets
-        #[arg(long)]
-        source: bool,
-        /// Number of context lines before/after (like grep -C)
-        #[arg(short = 'C', long)]
-        context: Option<usize>,
     },
     /// Show index statistics (file counts, symbol counts, index metadata)
     Stats,
@@ -857,17 +851,8 @@ fn main() -> std::process::ExitCode {
             limit,
         } => ensure_index_available(&db, &daemon_opts)
             .and_then(|_| find_includes(&db, &file, transitive, limit, format, quiet)),
-        Commands::Structure {
-            file,
-            source,
-            context,
-        } => ensure_index_available(&db, &daemon_opts).and_then(|_| {
-            let source_opts = SourceDisplayOptions {
-                include_source: source,
-                context_lines: context,
-            };
-            file_structure(&db, &workspace, &file, format, source_opts, quiet)
-        }),
+        Commands::Structure { file } => ensure_index_available(&db, &daemon_opts)
+            .and_then(|_| file_structure(&db, &workspace, &file, format, quiet)),
         Commands::Stats => ensure_index_available(&db, &daemon_opts)
             .and_then(|_| show_stats(&db, format).map(|_| ExitCode::Success)),
     };
@@ -2274,11 +2259,7 @@ fn split_file_and_embedded_position(file: &Path) -> (PathBuf, Option<(usize, usi
 // ==================== File Structure Command ====================
 
 /// Build a hierarchical tree of symbols from flat records
-fn build_symbol_tree(
-    symbols: Vec<SymbolRecord>,
-    source_opts: SourceDisplayOptions,
-    file_path: &str,
-) -> Result<Vec<SymbolNode>> {
+fn build_symbol_tree(symbols: Vec<SymbolRecord>, file_path: &str) -> Result<Vec<SymbolNode>> {
     use std::collections::HashMap;
 
     // Convert each symbol to a node with resolved positions
@@ -2287,12 +2268,6 @@ fn build_symbol_tree(
     for sym in &symbols {
         let (start_line, start_col) = offset_to_line_char_in_file(&sym.file, sym.start)?;
         let (end_line, end_col) = offset_to_line_char_in_file(&sym.file, sym.end)?;
-
-        let source = if source_opts.include_source {
-            mcp::extract_source(&sym.file, sym.start, sym.end, source_opts.context_lines)
-        } else {
-            None
-        };
 
         // Determine context from file path OR inline test markers (#[cfg(test)], #[test])
         let context = if sym.is_test || is_test_file(file_path) {
@@ -2315,7 +2290,7 @@ fn build_symbol_tree(
             },
             visibility: sym.visibility.clone(),
             children: Vec::new(),
-            source,
+            source: None,
         };
 
         nodes.push((sym.container.clone(), node));
@@ -2372,7 +2347,6 @@ fn file_structure(
     workspace: &Path,
     file: &Path,
     format: OutputFormat,
-    source_opts: SourceDisplayOptions,
     _quiet: bool,
 ) -> Result<ExitCode> {
     let store = open_store_for_query(db)?;
@@ -2415,7 +2389,7 @@ fn file_structure(
     };
 
     // Build the hierarchical tree
-    let tree = build_symbol_tree(symbols, source_opts, &file_str)?;
+    let tree = build_symbol_tree(symbols, &file_str)?;
 
     let structure = FileStructure {
         file: file_str.clone(),
@@ -2466,7 +2440,7 @@ fn file_structure(
         }
         OutputFormat::Text => {
             println!("{} ({})", structure.file, structure.context);
-            print_tree(&structure.symbols, "", true, source_opts.include_source);
+            print_tree(&structure.symbols, "");
         }
     }
 
@@ -2474,7 +2448,7 @@ fn file_structure(
 }
 
 /// Print symbol tree with ASCII art indentation
-fn print_tree(nodes: &[SymbolNode], prefix: &str, _is_last_group: bool, show_source: bool) {
+fn print_tree(nodes: &[SymbolNode], prefix: &str) {
     for (i, node) in nodes.iter().enumerate() {
         let is_last = i == nodes.len() - 1;
         let connector = if is_last { "└─" } else { "├─" };
@@ -2494,27 +2468,13 @@ fn print_tree(nodes: &[SymbolNode], prefix: &str, _is_last_group: bool, show_sou
             prefix, connector, node.kind, node.name, visibility, context_indicator, position
         );
 
-        if show_source {
-            if let Some(src) = &node.source {
-                let child_prefix = if is_last {
-                    format!("{}   ", prefix)
-                } else {
-                    format!("{}│  ", prefix)
-                };
-                for line in src.lines() {
-                    println!("{}    {}", child_prefix, line);
-                }
-                println!("{}    ", child_prefix);
-            }
-        }
-
         if !node.children.is_empty() {
             let child_prefix = if is_last {
                 format!("{}   ", prefix)
             } else {
                 format!("{}│  ", prefix)
             };
-            print_tree(&node.children, &child_prefix, is_last, show_source);
+            print_tree(&node.children, &child_prefix);
         }
     }
 }

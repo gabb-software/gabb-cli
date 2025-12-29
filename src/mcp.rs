@@ -1810,19 +1810,12 @@ impl McpServer {
             "prod"
         };
 
-        // Build hierarchical structure
+        // Build hierarchical structure and format as text tree
         let tree = build_structure_tree(&symbols, &file_str)?;
+        let mut output = format!("{} ({})\n", file_str, context);
+        format_structure_tree(&tree, "", &mut output);
 
-        // Build JSON output
-        let output = json!({
-            "file": file_str,
-            "context": context,
-            "symbols": tree
-        });
-
-        Ok(ToolResult::text(
-            serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string()),
-        ))
+        Ok(ToolResult::text(output))
     }
 
     fn tool_supertypes(&mut self, args: &Value) -> Result<ToolResult> {
@@ -2677,6 +2670,74 @@ fn build_structure_tree(symbols: &[SymbolRecord], file_path: &str) -> Result<Vec
     });
 
     Ok(roots)
+}
+
+/// Format the structure tree as compact text with ASCII art indentation
+fn format_structure_tree(nodes: &[Value], prefix: &str, output: &mut String) {
+    use std::fmt::Write;
+
+    for (i, node) in nodes.iter().enumerate() {
+        let is_last = i == nodes.len() - 1;
+        let connector = if is_last { "└─" } else { "├─" };
+
+        let name = node.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+        let kind = node.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+        let context = node
+            .get("context")
+            .and_then(|v| v.as_str())
+            .unwrap_or("prod");
+
+        let start_line = node
+            .get("start")
+            .and_then(|s| s.get("line"))
+            .and_then(|l| l.as_u64())
+            .unwrap_or(0);
+        let start_char = node
+            .get("start")
+            .and_then(|s| s.get("character"))
+            .and_then(|c| c.as_u64())
+            .unwrap_or(0);
+        let end_line = node
+            .get("end")
+            .and_then(|s| s.get("line"))
+            .and_then(|l| l.as_u64())
+            .unwrap_or(0);
+        let end_char = node
+            .get("end")
+            .and_then(|s| s.get("character"))
+            .and_then(|c| c.as_u64())
+            .unwrap_or(0);
+
+        let visibility = node
+            .get("visibility")
+            .and_then(|v| v.as_str())
+            .map(|v| format!(" ({})", v))
+            .unwrap_or_default();
+
+        let _ = writeln!(
+            output,
+            "{}{} {} {}{} [{}]  [{}:{} - {}:{}]",
+            prefix,
+            connector,
+            kind,
+            name,
+            visibility,
+            context,
+            start_line,
+            start_char,
+            end_line,
+            end_char
+        );
+
+        if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
+            let child_prefix = if is_last {
+                format!("{}   ", prefix)
+            } else {
+                format!("{}│  ", prefix)
+            };
+            format_structure_tree(children, &child_prefix, output);
+        }
+    }
 }
 
 /// Run the MCP server with the given workspace and database paths.

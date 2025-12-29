@@ -416,6 +416,7 @@ class ClaudeCodeRunner:
         self.temp_dir: Path | None = None
         self.workspace_claude_dir: Path | None = None
         self.mcp_config_file: Path | None = None
+        self.skill_content: str | None = None  # Skill content to inject via system prompt
 
     def setup(self) -> None:
         """Set up workspace-local config for Claude Code.
@@ -468,14 +469,21 @@ class ClaudeCodeRunner:
             json.dumps(settings, indent=2)
         )
 
-        # Copy skill files for gabb/gabb-prompt conditions (SKILL.md + tool reference files)
+        # Load skill content for gabb/gabb-prompt conditions
+        # NOTE: Skills don't work in -p (print) mode, so we inject via --append-system-prompt
         if self.condition in ("gabb", "gabb-prompt"):
-            skill_src_dir = CONFIGS_DIR / "gabb" / "skills" / "gabb"
-            if skill_src_dir.exists():
-                skill_dst = self.workspace_claude_dir / "skills" / "gabb"
-                if skill_dst.exists():
-                    shutil.rmtree(skill_dst)
-                shutil.copytree(skill_src_dir, skill_dst)
+            skill_file = CONFIGS_DIR / "gabb" / "skills" / "gabb" / "SKILL.md"
+            if skill_file.exists():
+                # Read skill content, stripping YAML frontmatter
+                content = skill_file.read_text()
+                # Remove frontmatter (everything between --- markers)
+                if content.startswith("---"):
+                    end_marker = content.find("---", 3)
+                    if end_marker != -1:
+                        content = content[end_marker + 3:].strip()
+                self.skill_content = content
+                if self.verbose:
+                    print_msg(f"Loaded skill content ({len(self.skill_content)} chars)", "dim")
 
         # Initialize gabb for gabb/gabb-prompt conditions
         if self.condition in ("gabb", "gabb-prompt") and self.gabb_binary:
@@ -602,6 +610,10 @@ FINAL_ANSWER: path/to/file2.py"""
                 "mcp__gabb__gabb_callees",
                 "mcp__gabb__gabb_stats",
             ])
+
+        # Inject skill content via system prompt (skills don't work in -p mode)
+        if self.skill_content:
+            cmd.extend(["--append-system-prompt", self.skill_content])
 
         if self.verbose:
             print_msg(f"Running claude in {self.workspace}", "dim")

@@ -1,4 +1,4 @@
-## Tool Selection: Use gabb for Code Navigation
+## Important: Tool Selection: Use gabb for Code Navigation
 
 **This project has gabb MCP tools available. Use them instead of Grep/Read/Glob for code:**
 

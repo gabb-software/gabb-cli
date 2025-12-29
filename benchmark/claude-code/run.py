@@ -416,13 +416,15 @@ class ClaudeCodeRunner:
         self.temp_dir: Path | None = None
         self.workspace_claude_dir: Path | None = None
         self.mcp_config_file: Path | None = None
-        self.skill_content: str | None = None  # Skill content to inject via system prompt
         # Track original CLAUDE.md state for cleanup
         self.original_claudemd: str | None = None  # Original content or None if didn't exist
         self.claudemd_existed: bool = False
 
     def setup(self) -> None:
         """Set up workspace-local config for Claude Code.
+
+        For control condition: Clean environment with no gabb artifacts.
+        For gabb condition: Full gabb setup including MCP server, skill, and CLAUDE.md.
 
         Uses workspace-local .claude/ directory instead of CLAUDE_CONFIG_DIR
         to preserve authentication credentials stored in system keychain.
@@ -438,27 +440,10 @@ class ClaudeCodeRunner:
         else:
             self.original_claudemd = None
 
-        # For conditions that shouldn't have gabb CLAUDE.md guidance, ensure it's clean
-        # This prevents interference from previous runs
-        gabb_marker = "## Tool Selection: Use gabb"
-        if self.condition in ("control", "gabb", "gabb-prompt") and self.claudemd_existed:
-            if gabb_marker in self.original_claudemd:
-                # Remove the gabb section from CLAUDE.md
-                lines = self.original_claudemd.split("\n")
-                new_lines = []
-                skip_until_next_h2 = False
-                for line in lines:
-                    if line.startswith(gabb_marker):
-                        skip_until_next_h2 = True
-                        continue
-                    if skip_until_next_h2 and line.startswith("## "):
-                        skip_until_next_h2 = False
-                    if not skip_until_next_h2:
-                        new_lines.append(line)
-                cleaned = "\n".join(new_lines).rstrip() + "\n"
-                claudemd_path.write_text(cleaned)
-                if self.verbose:
-                    print_msg("  Removed gabb section from CLAUDE.md for clean run", "dim")
+        # For control condition, ensure no gabb artifacts exist
+        # This prevents interference from previous gabb runs
+        if self.condition == "control":
+            self._clean_gabb_artifacts()
 
         # Use workspace-local .claude directory for project-specific settings
         self.workspace_claude_dir = self.workspace / ".claude"
@@ -483,55 +468,79 @@ class ClaudeCodeRunner:
             ]
         }
 
-        # Configure gabb MCP server for gabb/gabb-prompt/gabb-claudemd conditions
-        if self.condition in ("gabb", "gabb-prompt", "gabb-claudemd") and self.gabb_binary:
-            settings["mcpServers"] = {
-                "gabb": {
-                    "command": str(self.gabb_binary),
-                    "args": ["mcp-server", "--workspace", str(self.workspace)],
-                }
-            }
-            # Also create a separate MCP config file for --mcp-config flag
-            self.mcp_config_file = self.temp_dir / "mcp_config.json"
-            self.mcp_config_file.write_text(json.dumps({
-                "mcpServers": settings["mcpServers"]
-            }, indent=2))
-
-        # Write workspace-local settings
+        # Write workspace-local settings (hooks only for control, full setup for gabb)
         (self.workspace_claude_dir / "settings.local.json").write_text(
             json.dumps(settings, indent=2)
         )
 
-        # Load skill content for gabb/gabb-prompt conditions (NOT gabb-claudemd)
-        # NOTE: Skills don't work in -p (print) mode, so we inject via --append-system-prompt
-        # gabb-claudemd uses CLAUDE.md instead of system prompt injection
-        if self.condition in ("gabb", "gabb-prompt"):
-            skill_file = CONFIGS_DIR / "gabb" / "skills" / "gabb" / "SKILL.md"
-            if skill_file.exists():
-                # Read skill content, stripping YAML frontmatter
-                content = skill_file.read_text()
-                # Remove frontmatter (everything between --- markers)
-                if content.startswith("---"):
-                    end_marker = content.find("---", 3)
-                    if end_marker != -1:
-                        content = content[end_marker + 3:].strip()
-                self.skill_content = content
-                if self.verbose:
-                    print_msg(f"Loaded skill content ({len(self.skill_content)} chars)", "dim")
+        # Full gabb setup for gabb condition
+        if self.condition == "gabb" and self.gabb_binary:
+            self._setup_gabb_full()
 
-        # Initialize gabb for gabb/gabb-prompt/gabb-claudemd conditions
-        if self.condition in ("gabb", "gabb-prompt", "gabb-claudemd") and self.gabb_binary:
-            self._setup_gabb()
-
-        # For gabb-claudemd, add gabb guidance to CLAUDE.md
-        if self.condition == "gabb-claudemd" and self.gabb_binary:
-            self._setup_claudemd()
-
-    def _setup_gabb(self) -> None:
-        """Initialize gabb index in workspace."""
+    def _clean_gabb_artifacts(self) -> None:
+        """Remove any gabb artifacts from workspace for clean control runs."""
         if self.verbose:
-            print_msg(f"Initializing gabb in {self.workspace}...", "dim")
+            print_msg("  Cleaning gabb artifacts for control condition...", "dim")
 
+        # Remove .gabb directory
+        gabb_dir = self.workspace / ".gabb"
+        if gabb_dir.exists():
+            shutil.rmtree(gabb_dir)
+            if self.verbose:
+                print_msg("  Removed .gabb directory", "dim")
+
+        # Remove gabb skill directory
+        skill_dir = self.workspace / ".claude" / "skills" / "gabb"
+        if skill_dir.exists():
+            shutil.rmtree(skill_dir)
+            if self.verbose:
+                print_msg("  Removed gabb skill", "dim")
+
+        # Remove gabb section from CLAUDE.md if present
+        claudemd_path = self.workspace / "CLAUDE.md"
+        gabb_marker = "## Tool Selection: Use gabb"
+        if claudemd_path.exists():
+            content = claudemd_path.read_text()
+            if gabb_marker in content:
+                lines = content.split("\n")
+                new_lines = []
+                skip_until_next_h2 = False
+                for line in lines:
+                    if line.startswith(gabb_marker):
+                        skip_until_next_h2 = True
+                        continue
+                    if skip_until_next_h2 and line.startswith("## "):
+                        skip_until_next_h2 = False
+                    if not skip_until_next_h2:
+                        new_lines.append(line)
+                cleaned = "\n".join(new_lines).rstrip() + "\n"
+                claudemd_path.write_text(cleaned)
+                if self.verbose:
+                    print_msg("  Removed gabb section from CLAUDE.md", "dim")
+
+        # Remove gabb MCP server from settings if present
+        settings_file = self.workspace / ".claude" / "settings.local.json"
+        if settings_file.exists():
+            try:
+                settings = json.loads(settings_file.read_text())
+                if "mcpServers" in settings and "gabb" in settings.get("mcpServers", {}):
+                    del settings["mcpServers"]["gabb"]
+                    if not settings["mcpServers"]:
+                        del settings["mcpServers"]
+                    settings_file.write_text(json.dumps(settings, indent=2))
+                    if self.verbose:
+                        print_msg("  Removed gabb MCP server from settings", "dim")
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+    def _setup_gabb_full(self) -> None:
+        """Full gabb setup: init, skill, MCP server, and CLAUDE.md."""
+        if self.verbose:
+            print_msg(f"Setting up gabb in {self.workspace}...", "dim")
+
+        # Step 1: Initialize gabb (creates .gabb directory and starts daemon)
+        if self.verbose:
+            print_msg("  Step 1: gabb init...", "dim")
         subprocess.run(
             [str(self.gabb_binary), "init"],
             cwd=self.workspace,
@@ -545,13 +554,48 @@ class ClaudeCodeRunner:
             capture_output=True,
             text=True,
         )
+        if result.returncode != 0 and self.verbose:
+            print_msg(f"  gabb daemon start warning: {result.stderr[:200]}", "yellow")
 
-        if result.returncode != 0:
-            if self.verbose:
-                print_msg(f"gabb daemon start warning: {result.stderr[:200]}", "yellow")
+        # Step 2: Install the skill
+        if self.verbose:
+            print_msg("  Step 2: Installing gabb skill...", "dim")
+        result = subprocess.run(
+            [str(self.gabb_binary), "init", "--skill"],
+            cwd=self.workspace,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0 and self.verbose:
+            print_msg(f"  gabb init --skill warning: {result.stderr[:200]}", "yellow")
+
+        # Step 3: Add MCP server using claude mcp add
+        if self.verbose:
+            print_msg("  Step 3: Adding gabb MCP server...", "dim")
+        result = subprocess.run(
+            ["claude", "mcp", "add", "gabb", "-s", "project", "--", str(self.gabb_binary), "mcp-server"],
+            cwd=self.workspace,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0 and self.verbose:
+            print_msg(f"  claude mcp add warning: {result.stderr[:200]}", "yellow")
+
+        # Step 4: Add gabb guidance to CLAUDE.md
+        if self.verbose:
+            print_msg("  Step 4: Updating CLAUDE.md...", "dim")
+        result = subprocess.run(
+            [str(self.gabb_binary), "init", "--claudemd"],
+            cwd=self.workspace,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0 and self.verbose:
+            print_msg(f"  gabb init --claudemd warning: {result.stderr[:200]}", "yellow")
 
         # Wait for daemon to be ready with an index
-        # Poll status until indexed file count > 0 or timeout
+        if self.verbose:
+            print_msg("  Waiting for gabb indexing...", "dim")
         max_wait = 300  # 5 minutes for large repos
         poll_interval = 2
         waited = 0
@@ -567,14 +611,12 @@ class ClaudeCodeRunner:
             if status_result.returncode == 0:
                 try:
                     status = json.loads(status_result.stdout)
-                    # Check if daemon is running and has indexed files
-                    # Stats are nested under "stats" key
                     stats = status.get("stats", {})
                     files_indexed = stats.get("files_indexed", 0)
                     if status.get("running") and files_indexed > 0:
                         if self.verbose:
                             print_msg(
-                                f"gabb ready: {files_indexed} files indexed",
+                                f"  gabb ready: {files_indexed} files indexed",
                                 "green"
                             )
                         return
@@ -588,25 +630,7 @@ class ClaudeCodeRunner:
                 print_msg(f"  waiting for gabb indexing... ({waited}s)", "dim")
 
         if self.verbose:
-            print_msg(f"gabb warning: timeout waiting for index after {max_wait}s", "yellow")
-
-    def _setup_claudemd(self) -> None:
-        """Add gabb guidance to CLAUDE.md using gabb init --claudemd."""
-        if self.verbose:
-            print_msg("  Adding gabb guidance to CLAUDE.md...", "dim")
-
-        result = subprocess.run(
-            [str(self.gabb_binary), "init", "--claudemd"],
-            cwd=self.workspace,
-            capture_output=True,
-            text=True,
-        )
-
-        if result.returncode != 0:
-            if self.verbose:
-                print_msg(f"  gabb init --claudemd warning: {result.stderr[:200]}", "yellow")
-        elif self.verbose:
-            print_msg("  CLAUDE.md configured with gabb guidance", "green")
+            print_msg(f"  gabb warning: timeout waiting for index after {max_wait}s", "yellow")
 
     def run(self, prompt: str, timeout: int = 300) -> RunMetrics:
         """Run Claude Code with the given prompt."""
@@ -624,15 +648,7 @@ class ClaudeCodeRunner:
         env.update(load_env_file())  # Load ANTHROPIC_API_KEY from api/.env
         env["BENCHMARK_TOOL_LOG"] = str(self.tool_log)
 
-        # Add gabb usage hint for gabb-prompt condition
-        if self.condition == "gabb-prompt":
-            gabb_hint = """IMPORTANT: This project has gabb MCP tools available. Use gabb_symbols and gabb_structure instead of Grep/Read for code navigation.
-
-"""
-        else:
-            gabb_hint = ""
-
-        full_prompt = f"""{gabb_hint}{prompt}
+        full_prompt = f"""{prompt}
 
 When you find the file(s), output your answer in this format:
 FINAL_ANSWER: path/to/file.py
@@ -643,10 +659,9 @@ FINAL_ANSWER: path/to/file2.py"""
 
         cmd = ["claude", "-p", full_prompt, "--output-format", "json"]
 
-        # Add MCP config for gabb/gabb-prompt conditions
-        if self.mcp_config_file and self.mcp_config_file.exists():
-            cmd.extend(["--mcp-config", str(self.mcp_config_file)])
-            # Allow all gabb MCP tools
+        # For gabb condition, allow all gabb MCP tools
+        # (MCP server is already configured via claude mcp add in setup)
+        if self.condition == "gabb":
             cmd.extend([
                 "--allowedTools",
                 "mcp__gabb__gabb_symbols",
@@ -666,10 +681,6 @@ FINAL_ANSWER: path/to/file2.py"""
                 "mcp__gabb__gabb_callees",
                 "mcp__gabb__gabb_stats",
             ])
-
-        # Inject skill content via system prompt (skills don't work in -p mode)
-        if self.skill_content:
-            cmd.extend(["--append-system-prompt", self.skill_content])
 
         if self.verbose:
             print_msg(f"Running claude in {self.workspace}", "dim")
@@ -725,9 +736,16 @@ FINAL_ANSWER: path/to/file2.py"""
 
     def cleanup(self) -> None:
         """Clean up temporary resources."""
-        if self.condition in ("gabb", "gabb-prompt", "gabb-claudemd") and self.gabb_binary:
+        # Stop gabb daemon if running
+        if self.condition == "gabb" and self.gabb_binary:
             subprocess.run(
                 [str(self.gabb_binary), "daemon", "stop"],
+                cwd=self.workspace,
+                capture_output=True,
+            )
+            # Remove gabb MCP server from Claude settings
+            subprocess.run(
+                ["claude", "mcp", "remove", "gabb", "-s", "project"],
                 cwd=self.workspace,
                 capture_output=True,
             )
@@ -853,49 +871,6 @@ def run_comparison(
     return control_runs, gabb_runs
 
 
-def run_all_conditions(
-    task: Task,
-    workspace: Path,
-    gabb_binary: Path | None = None,
-    verbose: bool = False,
-    run_count: int = 1,
-) -> dict[str, list[RunMetrics]]:
-    """Run all three conditions (control, gabb, gabb-prompt) on a task."""
-    return {
-        "control": run_multiple(task, workspace, "control", run_count, gabb_binary, verbose),
-        "gabb": run_multiple(task, workspace, "gabb", run_count, gabb_binary, verbose),
-        "gabb-prompt": run_multiple(task, workspace, "gabb-prompt", run_count, gabb_binary, verbose),
-    }
-
-
-def run_gabb_conditions(
-    task: Task,
-    workspace: Path,
-    gabb_binary: Path | None = None,
-    verbose: bool = False,
-    run_count: int = 1,
-) -> dict[str, list[RunMetrics]]:
-    """Run gabb and gabb-prompt conditions (skip control)."""
-    return {
-        "gabb": run_multiple(task, workspace, "gabb", run_count, gabb_binary, verbose),
-        "gabb-prompt": run_multiple(task, workspace, "gabb-prompt", run_count, gabb_binary, verbose),
-    }
-
-
-def run_full_conditions(
-    task: Task,
-    workspace: Path,
-    gabb_binary: Path | None = None,
-    verbose: bool = False,
-    run_count: int = 1,
-) -> dict[str, list[RunMetrics]]:
-    """Run all four conditions (control, gabb, gabb-prompt, gabb-claudemd) on a task."""
-    return {
-        "control": run_multiple(task, workspace, "control", run_count, gabb_binary, verbose),
-        "gabb": run_multiple(task, workspace, "gabb", run_count, gabb_binary, verbose),
-        "gabb-prompt": run_multiple(task, workspace, "gabb-prompt", run_count, gabb_binary, verbose),
-        "gabb-claudemd": run_multiple(task, workspace, "gabb-claudemd", run_count, gabb_binary, verbose),
-    }
 
 
 # =============================================================================
@@ -918,431 +893,8 @@ def print_comparison(
         _print_comparison_plain(control_runs, gabb_runs)
 
 
-def print_all_conditions(results: dict[str, list[RunMetrics]]) -> None:
-    """Print comparison of all three conditions."""
-    if HAS_RICH and console:
-        _print_all_conditions_rich(results)
-    else:
-        _print_all_conditions_plain(results)
 
 
-def print_gabb_conditions(results: dict[str, list[RunMetrics]]) -> None:
-    """Print comparison of gabb vs gabb-prompt."""
-    if HAS_RICH and console:
-        _print_gabb_conditions_rich(results)
-    else:
-        _print_gabb_conditions_plain(results)
-
-
-def _print_gabb_conditions_rich(results: dict[str, list[RunMetrics]]) -> None:
-    """Print gabb vs gabb-prompt comparison using rich."""
-    gabb_agg = aggregate_runs(results.get("gabb", []))
-    prompt_agg = aggregate_runs(results.get("gabb-prompt", []))
-
-    any_runs = results.get("gabb", results.get("gabb-prompt", []))
-    single_run = len(any_runs) == 1 if any_runs else True
-    task_id = any_runs[0].task_id if any_runs else "Unknown"
-
-    title = f"Results: {task_id} (gabb vs gabb-prompt)"
-    if not single_run:
-        title += f" - {len(any_runs)} runs"
-
-    table = Table(title=title)
-    table.add_column("Metric", style="cyan")
-    table.add_column("Gabb", justify="right")
-    table.add_column("Gabb+Prompt", justify="right")
-    table.add_column("Diff", justify="right")
-
-    def fmt(agg: dict, key: str) -> float:
-        if not agg:
-            return 0
-        val = agg.get(key, {})
-        return val.get("mean", 0) if isinstance(val, dict) else 0
-
-    def fmt_str(agg: dict, key: str) -> str:
-        if not agg:
-            return "-"
-        val = agg.get(key, {})
-        if isinstance(val, dict):
-            if single_run:
-                return f"{val.get('mean', 0):.1f}"
-            return f"{val.get('mean', 0):.1f} ± {val.get('std', 0):.1f}"
-        return str(val)
-
-    def fmt_success(agg: dict) -> str:
-        if not agg:
-            return "-"
-        rate = agg.get("success_rate", 0)
-        if single_run:
-            return "[green]PASS[/green]" if rate == 1 else "[red]FAIL[/red]"
-        return f"{rate * 100:.0f}%"
-
-    # Success
-    table.add_row("Success", fmt_success(gabb_agg), fmt_success(prompt_agg), "")
-
-    # Time
-    g_time = fmt(gabb_agg, "wall_time_seconds")
-    p_time = fmt(prompt_agg, "wall_time_seconds")
-    diff = p_time - g_time
-    pct = (diff / g_time * 100) if g_time > 0 else 0
-    table.add_row("Time (s)", fmt_str(gabb_agg, "wall_time_seconds"), fmt_str(prompt_agg, "wall_time_seconds"), f"{diff:+.1f} ({pct:+.0f}%)")
-
-    # Tokens
-    g_tokens = fmt(gabb_agg, "tokens_total")
-    p_tokens = fmt(prompt_agg, "tokens_total")
-    diff = p_tokens - g_tokens
-    pct = (diff / g_tokens * 100) if g_tokens > 0 else 0
-    table.add_row("Tokens", f"{g_tokens:,.0f}", f"{p_tokens:,.0f}", f"{diff:+,.0f} ({pct:+.0f}%)")
-
-    # Tool calls
-    table.add_row("Tool Calls", fmt_str(gabb_agg, "tool_calls_total"), fmt_str(prompt_agg, "tool_calls_total"), "")
-
-    console.print(table)
-
-    # Tool breakdown
-    console.print("\n[bold]Tool Usage:[/bold]")
-    all_tools: set[str] = set()
-    for agg in [gabb_agg, prompt_agg]:
-        if agg:
-            all_tools.update(agg.get("tool_calls", {}).keys())
-
-    gabb_tool_names = sorted([t for t in all_tools if "gabb" in t.lower()])
-    search_tools = sorted([t for t in all_tools if t in ("Grep", "Glob", "Read")])
-    other_tools = sorted([t for t in all_tools if t not in gabb_tool_names and t not in search_tools])
-
-    tool_table = Table()
-    tool_table.add_column("Tool", style="cyan")
-    tool_table.add_column("Gabb", justify="right")
-    tool_table.add_column("Gabb+Prompt", justify="right")
-
-    def get_tool_stat(agg: dict, tool: str) -> str:
-        if not agg:
-            return "-"
-        tools = agg.get("tool_calls", {})
-        t = tools.get(tool, {"mean": 0})
-        if single_run:
-            return f"{t.get('mean', 0):.0f}"
-        return f"{t.get('mean', 0):.1f}"
-
-    for tool in search_tools + gabb_tool_names + other_tools:
-        g = get_tool_stat(gabb_agg, tool)
-        p = get_tool_stat(prompt_agg, tool)
-        if g != "0" or p != "0":
-            tool_table.add_row(tool, g, p)
-
-    console.print(tool_table)
-
-
-def _print_gabb_conditions_plain(results: dict[str, list[RunMetrics]]) -> None:
-    """Print gabb vs gabb-prompt comparison in plain text."""
-    gabb_agg = aggregate_runs(results.get("gabb", []))
-    prompt_agg = aggregate_runs(results.get("gabb-prompt", []))
-
-    any_runs = results.get("gabb", results.get("gabb-prompt", []))
-    single_run = len(any_runs) == 1 if any_runs else True
-    task_id = any_runs[0].task_id if any_runs else "Unknown"
-
-    print(f"\n{'=' * 60}")
-    title = f"Results: {task_id} (gabb vs gabb-prompt)"
-    if not single_run:
-        title += f" - {len(any_runs)} runs"
-    print(title)
-    print('=' * 60)
-    print(f"{'Metric':<15} {'Gabb':>20} {'Gabb+Prompt':>20}")
-    print('-' * 60)
-
-    def fmt(agg: dict, key: str) -> str:
-        if not agg:
-            return "-"
-        val = agg.get(key, {})
-        if isinstance(val, dict):
-            return f"{val.get('mean', 0):.1f}"
-        return str(val)
-
-    def fmt_success(agg: dict) -> str:
-        if not agg:
-            return "-"
-        rate = agg.get("success_rate", 0)
-        if single_run:
-            return "PASS" if rate == 1 else "FAIL"
-        return f"{rate * 100:.0f}%"
-
-    print(f"{'Success':<15} {fmt_success(gabb_agg):>20} {fmt_success(prompt_agg):>20}")
-    print(f"{'Time (s)':<15} {fmt(gabb_agg, 'wall_time_seconds'):>20} {fmt(prompt_agg, 'wall_time_seconds'):>20}")
-    print(f"{'Tool Calls':<15} {fmt(gabb_agg, 'tool_calls_total'):>20} {fmt(prompt_agg, 'tool_calls_total'):>20}")
-
-
-def print_full_conditions(results: dict[str, list[RunMetrics]]) -> None:
-    """Print comparison of all four conditions."""
-    if HAS_RICH and console:
-        _print_full_conditions_rich(results)
-    else:
-        _print_full_conditions_plain(results)
-
-
-def _print_full_conditions_rich(results: dict[str, list[RunMetrics]]) -> None:
-    """Print all four conditions comparison using rich."""
-    control_agg = aggregate_runs(results.get("control", []))
-    gabb_agg = aggregate_runs(results.get("gabb", []))
-    prompt_agg = aggregate_runs(results.get("gabb-prompt", []))
-    claudemd_agg = aggregate_runs(results.get("gabb-claudemd", []))
-
-    any_runs = results.get("control", results.get("gabb", results.get("gabb-prompt", results.get("gabb-claudemd", []))))
-    single_run = len(any_runs) == 1 if any_runs else True
-    task_id = any_runs[0].task_id if any_runs else "Unknown"
-
-    title = f"Results: {task_id} (Full Comparison)"
-    if not single_run:
-        title += f" - {len(any_runs)} runs"
-
-    table = Table(title=title)
-    table.add_column("Metric", style="cyan")
-    table.add_column("Control", justify="right")
-    table.add_column("Gabb", justify="right")
-    table.add_column("Gabb+Prompt", justify="right")
-    table.add_column("Gabb+CLAUDE.md", justify="right")
-
-    # Helper to format values
-    def fmt(agg: dict, key: str) -> str:
-        if not agg:
-            return "-"
-        val = agg.get(key, {})
-        if isinstance(val, dict):
-            if single_run:
-                return f"{val.get('mean', 0):.1f}"
-            return f"{val.get('mean', 0):.1f} ± {val.get('std', 0):.1f}"
-        return str(val)
-
-    def fmt_tokens(agg: dict) -> str:
-        if not agg:
-            return "-"
-        val = agg.get("tokens_total", {})
-        if single_run:
-            return f"{val.get('mean', 0):,.0f}"
-        return f"{val.get('mean', 0):,.0f}"
-
-    def fmt_success(agg: dict) -> str:
-        if not agg:
-            return "-"
-        rate = agg.get("success_rate", 0)
-        if single_run:
-            return "[green]PASS[/green]" if rate == 1 else "[red]FAIL[/red]"
-        return f"{rate * 100:.0f}%"
-
-    table.add_row("Success", fmt_success(control_agg), fmt_success(gabb_agg), fmt_success(prompt_agg), fmt_success(claudemd_agg))
-    table.add_row("Time (s)", fmt(control_agg, "wall_time_seconds"), fmt(gabb_agg, "wall_time_seconds"), fmt(prompt_agg, "wall_time_seconds"), fmt(claudemd_agg, "wall_time_seconds"))
-    table.add_row("Tokens", fmt_tokens(control_agg), fmt_tokens(gabb_agg), fmt_tokens(prompt_agg), fmt_tokens(claudemd_agg))
-    table.add_row("Tool Calls", fmt(control_agg, "tool_calls_total"), fmt(gabb_agg, "tool_calls_total"), fmt(prompt_agg, "tool_calls_total"), fmt(claudemd_agg, "tool_calls_total"))
-
-    console.print(table)
-
-    # Tool breakdown
-    console.print("\n[bold]Tool Usage:[/bold]")
-    all_tools: set[str] = set()
-    for agg in [control_agg, gabb_agg, prompt_agg, claudemd_agg]:
-        if agg:
-            all_tools.update(agg.get("tool_calls", {}).keys())
-
-    gabb_tool_names = sorted([t for t in all_tools if "gabb" in t.lower()])
-    search_tools = sorted([t for t in all_tools if t in ("Grep", "Glob", "Read")])
-    other_tools = sorted([t for t in all_tools if t not in gabb_tool_names and t not in search_tools])
-
-    tool_table = Table()
-    tool_table.add_column("Tool", style="cyan")
-    tool_table.add_column("Control", justify="right")
-    tool_table.add_column("Gabb", justify="right")
-    tool_table.add_column("Gabb+Prompt", justify="right")
-    tool_table.add_column("Gabb+CLAUDE.md", justify="right")
-
-    def get_tool_stat(agg: dict, tool: str) -> str:
-        if not agg:
-            return "-"
-        tools = agg.get("tool_calls", {})
-        t = tools.get(tool, {"mean": 0})
-        if single_run:
-            return f"{t.get('mean', 0):.0f}"
-        return f"{t.get('mean', 0):.1f}"
-
-    for tool in search_tools + gabb_tool_names + other_tools:
-        c = get_tool_stat(control_agg, tool)
-        g = get_tool_stat(gabb_agg, tool)
-        p = get_tool_stat(prompt_agg, tool)
-        m = get_tool_stat(claudemd_agg, tool)
-        if c != "0" or g != "0" or p != "0" or m != "0":
-            tool_table.add_row(tool, c, g, p, m)
-
-    console.print(tool_table)
-
-
-def _print_full_conditions_plain(results: dict[str, list[RunMetrics]]) -> None:
-    """Print all four conditions comparison in plain text."""
-    control_agg = aggregate_runs(results.get("control", []))
-    gabb_agg = aggregate_runs(results.get("gabb", []))
-    prompt_agg = aggregate_runs(results.get("gabb-prompt", []))
-    claudemd_agg = aggregate_runs(results.get("gabb-claudemd", []))
-
-    any_runs = results.get("control", results.get("gabb", results.get("gabb-prompt", results.get("gabb-claudemd", []))))
-    single_run = len(any_runs) == 1 if any_runs else True
-    task_id = any_runs[0].task_id if any_runs else "Unknown"
-
-    print(f"\n{'=' * 90}")
-    title = f"Results: {task_id} (Full Comparison)"
-    if not single_run:
-        title += f" - {len(any_runs)} runs"
-    print(title)
-    print('=' * 90)
-    print(f"{'Metric':<15} {'Control':>15} {'Gabb':>15} {'Gabb+Prompt':>15} {'Gabb+CLAUDE.md':>18}")
-    print('-' * 90)
-
-    def fmt(agg: dict, key: str) -> str:
-        if not agg:
-            return "-"
-        val = agg.get(key, {})
-        if isinstance(val, dict):
-            return f"{val.get('mean', 0):.1f}"
-        return str(val)
-
-    def fmt_success(agg: dict) -> str:
-        if not agg:
-            return "-"
-        rate = agg.get("success_rate", 0)
-        if single_run:
-            return "PASS" if rate == 1 else "FAIL"
-        return f"{rate * 100:.0f}%"
-
-    print(f"{'Success':<15} {fmt_success(control_agg):>15} {fmt_success(gabb_agg):>15} {fmt_success(prompt_agg):>15} {fmt_success(claudemd_agg):>18}")
-    print(f"{'Time (s)':<15} {fmt(control_agg, 'wall_time_seconds'):>15} {fmt(gabb_agg, 'wall_time_seconds'):>15} {fmt(prompt_agg, 'wall_time_seconds'):>15} {fmt(claudemd_agg, 'wall_time_seconds'):>18}")
-    print(f"{'Tool Calls':<15} {fmt(control_agg, 'tool_calls_total'):>15} {fmt(gabb_agg, 'tool_calls_total'):>15} {fmt(prompt_agg, 'tool_calls_total'):>15} {fmt(claudemd_agg, 'tool_calls_total'):>18}")
-
-
-def _print_all_conditions_rich(results: dict[str, list[RunMetrics]]) -> None:
-    """Print all conditions comparison using rich."""
-    control_agg = aggregate_runs(results.get("control", []))
-    gabb_agg = aggregate_runs(results.get("gabb", []))
-    prompt_agg = aggregate_runs(results.get("gabb-prompt", []))
-
-    any_runs = results.get("control", results.get("gabb", results.get("gabb-prompt", [])))
-    single_run = len(any_runs) == 1 if any_runs else True
-    task_id = any_runs[0].task_id if any_runs else "Unknown"
-
-    title = f"Results: {task_id}"
-    if not single_run:
-        title += f" ({len(any_runs)} runs)"
-
-    table = Table(title=title)
-    table.add_column("Metric", style="cyan")
-    table.add_column("Control", justify="right")
-    table.add_column("Gabb", justify="right")
-    table.add_column("Gabb+Prompt", justify="right")
-
-    # Helper to format values
-    def fmt(agg: dict, key: str) -> str:
-        if not agg:
-            return "-"
-        val = agg.get(key, {})
-        if isinstance(val, dict):
-            if single_run:
-                return f"{val.get('mean', 0):.1f}"
-            return f"{val.get('mean', 0):.1f} ± {val.get('std', 0):.1f}"
-        return str(val)
-
-    def fmt_tokens(agg: dict) -> str:
-        if not agg:
-            return "-"
-        val = agg.get("tokens_total", {})
-        if single_run:
-            return f"{val.get('mean', 0):,.0f}"
-        return f"{val.get('mean', 0):,.0f}"
-
-    def fmt_success(agg: dict) -> str:
-        if not agg:
-            return "-"
-        rate = agg.get("success_rate", 0)
-        if single_run:
-            return "[green]PASS[/green]" if rate == 1 else "[red]FAIL[/red]"
-        return f"{rate * 100:.0f}%"
-
-    table.add_row("Success", fmt_success(control_agg), fmt_success(gabb_agg), fmt_success(prompt_agg))
-    table.add_row("Time (s)", fmt(control_agg, "wall_time_seconds"), fmt(gabb_agg, "wall_time_seconds"), fmt(prompt_agg, "wall_time_seconds"))
-    table.add_row("Tokens", fmt_tokens(control_agg), fmt_tokens(gabb_agg), fmt_tokens(prompt_agg))
-    table.add_row("Tool Calls", fmt(control_agg, "tool_calls_total"), fmt(gabb_agg, "tool_calls_total"), fmt(prompt_agg, "tool_calls_total"))
-
-    console.print(table)
-
-    # Tool breakdown
-    console.print("\n[bold]Tool Usage:[/bold]")
-    all_tools: set[str] = set()
-    for agg in [control_agg, gabb_agg, prompt_agg]:
-        if agg:
-            all_tools.update(agg.get("tool_calls", {}).keys())
-
-    gabb_tool_names = sorted([t for t in all_tools if "gabb" in t.lower()])
-    search_tools = sorted([t for t in all_tools if t in ("Grep", "Glob", "Read")])
-    other_tools = sorted([t for t in all_tools if t not in gabb_tool_names and t not in search_tools])
-
-    tool_table = Table()
-    tool_table.add_column("Tool", style="cyan")
-    tool_table.add_column("Control", justify="right")
-    tool_table.add_column("Gabb", justify="right")
-    tool_table.add_column("Gabb+Prompt", justify="right")
-
-    def get_tool_stat(agg: dict, tool: str) -> str:
-        if not agg:
-            return "-"
-        tools = agg.get("tool_calls", {})
-        t = tools.get(tool, {"mean": 0})
-        if single_run:
-            return f"{t.get('mean', 0):.0f}"
-        return f"{t.get('mean', 0):.1f}"
-
-    for tool in search_tools + gabb_tool_names + other_tools:
-        c = get_tool_stat(control_agg, tool)
-        g = get_tool_stat(gabb_agg, tool)
-        p = get_tool_stat(prompt_agg, tool)
-        if c != "0" or g != "0" or p != "0":
-            tool_table.add_row(tool, c, g, p)
-
-    console.print(tool_table)
-
-
-def _print_all_conditions_plain(results: dict[str, list[RunMetrics]]) -> None:
-    """Print all conditions comparison in plain text."""
-    control_agg = aggregate_runs(results.get("control", []))
-    gabb_agg = aggregate_runs(results.get("gabb", []))
-    prompt_agg = aggregate_runs(results.get("gabb-prompt", []))
-
-    any_runs = results.get("control", results.get("gabb", results.get("gabb-prompt", [])))
-    single_run = len(any_runs) == 1 if any_runs else True
-    task_id = any_runs[0].task_id if any_runs else "Unknown"
-
-    print(f"\n{'=' * 70}")
-    title = f"Results: {task_id}"
-    if not single_run:
-        title += f" ({len(any_runs)} runs)"
-    print(title)
-    print('=' * 70)
-    print(f"{'Metric':<15} {'Control':>15} {'Gabb':>15} {'Gabb+Prompt':>15}")
-    print('-' * 70)
-
-    def fmt(agg: dict, key: str) -> str:
-        if not agg:
-            return "-"
-        val = agg.get(key, {})
-        if isinstance(val, dict):
-            return f"{val.get('mean', 0):.1f}"
-        return str(val)
-
-    def fmt_success(agg: dict) -> str:
-        if not agg:
-            return "-"
-        rate = agg.get("success_rate", 0)
-        if single_run:
-            return "PASS" if rate == 1 else "FAIL"
-        return f"{rate * 100:.0f}%"
-
-    print(f"{'Success':<15} {fmt_success(control_agg):>15} {fmt_success(gabb_agg):>15} {fmt_success(prompt_agg):>15}")
-    print(f"{'Time (s)':<15} {fmt(control_agg, 'wall_time_seconds'):>15} {fmt(gabb_agg, 'wall_time_seconds'):>15} {fmt(prompt_agg, 'wall_time_seconds'):>15}")
-    print(f"{'Tool Calls':<15} {fmt(control_agg, 'tool_calls_total'):>15} {fmt(gabb_agg, 'tool_calls_total'):>15} {fmt(prompt_agg, 'tool_calls_total'):>15}")
 
 
 def _format_stat(stats: dict[str, float], single_run: bool = False) -> str:
@@ -1842,11 +1394,10 @@ Examples:
     parser.add_argument("--gabb-binary", type=Path, help="Path to gabb binary")
     parser.add_argument(
         "--condition",
-        choices=["control", "gabb", "gabb-prompt", "gabb-claudemd", "both", "gabb-all", "all", "full"],
+        choices=["control", "gabb", "both"],
         default="both",
-        help="Which condition(s) to run: control, gabb, gabb-prompt (skill via system prompt), "
-             "gabb-claudemd (guidance in CLAUDE.md), both=control+gabb, gabb-all=gabb+gabb-prompt, "
-             "all=control+gabb+gabb-prompt, full=all 4 conditions",
+        help="Which condition(s) to run: control (no gabb), gabb (full gabb setup), "
+             "both (run both conditions for comparison)",
     )
     parser.add_argument(
         "--runs",
@@ -1898,7 +1449,7 @@ Examples:
 
     # Check for gabb binary
     gabb_binary = args.gabb_binary or shutil.which("gabb")
-    if args.condition in ("gabb", "gabb-prompt", "gabb-claudemd", "both", "gabb-all", "all", "full") and not gabb_binary:
+    if args.condition in ("gabb", "both") and not gabb_binary:
         print_msg("Warning: gabb binary not found.", "yellow")
 
     workspace_manager = WorkspaceManager(cache_dir=args.cache_dir)
@@ -1959,28 +1510,7 @@ Examples:
         print_msg(f"Workspace: {workspace}", "dim")
 
         try:
-            if args.condition == "full":
-                results = run_full_conditions(
-                    task, workspace, gabb_binary, args.verbose, run_count=args.runs
-                )
-                print_full_conditions(results)
-                if not args.no_save:
-                    save_results(results, task.id, RESULTS_DIR)
-            elif args.condition == "all":
-                results = run_all_conditions(
-                    task, workspace, gabb_binary, args.verbose, run_count=args.runs
-                )
-                print_all_conditions(results)
-                if not args.no_save:
-                    save_results(results, task.id, RESULTS_DIR)
-            elif args.condition == "gabb-all":
-                results = run_gabb_conditions(
-                    task, workspace, gabb_binary, args.verbose, run_count=args.runs
-                )
-                print_gabb_conditions(results)
-                if not args.no_save:
-                    save_results(results, task.id, RESULTS_DIR)
-            elif args.condition == "both":
+            if args.condition == "both":
                 control_runs, gabb_runs = run_comparison(
                     task, workspace, gabb_binary, args.verbose, run_count=args.runs
                 )
@@ -2025,28 +1555,7 @@ Examples:
         if args.runs > 1:
             print_msg(f"Runs: {args.runs}", "dim")
 
-        if args.condition == "full":
-            results = run_full_conditions(
-                task, args.workspace, gabb_binary, args.verbose, run_count=args.runs
-            )
-            print_full_conditions(results)
-            if not args.no_save:
-                save_results(results, task.id, RESULTS_DIR)
-        elif args.condition == "all":
-            results = run_all_conditions(
-                task, args.workspace, gabb_binary, args.verbose, run_count=args.runs
-            )
-            print_all_conditions(results)
-            if not args.no_save:
-                save_results(results, task.id, RESULTS_DIR)
-        elif args.condition == "gabb-all":
-            results = run_gabb_conditions(
-                task, args.workspace, gabb_binary, args.verbose, run_count=args.runs
-            )
-            print_gabb_conditions(results)
-            if not args.no_save:
-                save_results(results, task.id, RESULTS_DIR)
-        elif args.condition == "both":
+        if args.condition == "both":
             control_runs, gabb_runs = run_comparison(
                 task, args.workspace, gabb_binary, args.verbose, run_count=args.runs
             )

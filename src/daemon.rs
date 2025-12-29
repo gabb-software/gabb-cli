@@ -674,6 +674,50 @@ fn run_indexing_with_progress(
     Ok(summary)
 }
 
+/// Run initial indexing only (no watch loop, no PID file).
+/// This is intended for setup scenarios where we want to show progress
+/// to the user, then start the daemon in the background.
+pub fn run_initial_index(root: &Path, db_path: &Path, rebuild: bool, quiet: bool) -> Result<()> {
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize root {}", root.display()))?;
+
+    info!("Opening index at {}", db_path.display());
+
+    // Handle explicit rebuild request
+    if rebuild && db_path.exists() {
+        info!("{}", RegenerationReason::UserRequested.message());
+        info!("Regenerating index...");
+        let _ = fs::remove_file(db_path);
+    }
+
+    // Try to open with version checking
+    let store = if rebuild {
+        IndexStore::open(db_path)?
+    } else {
+        match IndexStore::try_open(db_path)? {
+            DbOpenResult::Ready(store) => store,
+            DbOpenResult::NeedsRegeneration { reason, path } => {
+                warn!("{}", reason.message());
+                info!("Regenerating index (this may take a minute for large codebases)...");
+                if path.exists() {
+                    let _ = fs::remove_file(&path);
+                }
+                IndexStore::open(db_path)?
+            }
+        }
+    };
+
+    // Run indexing with progress reporting
+    let _summary = run_indexing_with_progress(&root, &store, quiet)?;
+
+    // Mark initial indexing as complete so CLI/MCP can proceed with queries
+    store.set_meta("initial_index_complete", &now_unix().to_string())?;
+    info!("Initial indexing complete");
+
+    Ok(())
+}
+
 /// Run the daemon in the foreground
 fn run_foreground(root: &Path, db_path: &Path, rebuild: bool, quiet: bool) -> Result<()> {
     let root = root

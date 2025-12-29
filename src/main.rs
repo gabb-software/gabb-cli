@@ -3621,23 +3621,31 @@ fn setup_wizard(root: &Path, db: &Path, yes: bool, dry_run: bool) -> Result<()> 
         }
     }
 
-    // Step 7: Start daemon and run initial index
+    // Step 7: Run initial index with progress, then start daemon in background
     if dry_run {
-        println!("🚀 Would start daemon and run initial index");
+        println!("🚀 Would run initial index and start daemon");
     } else {
-        println!("🚀 Starting daemon...");
-
         // Check if daemon is already running
         if let Ok(Some(pid_info)) = daemon::read_pid_file(&root) {
             if daemon::is_process_running(pid_info.pid) {
-                println!("   Daemon already running (PID {})", pid_info.pid);
+                println!("🚀 Daemon already running (PID {})", pid_info.pid);
             } else {
-                // Start daemon in foreground to show progress, but don't block
-                daemon::start(&root, db, false, false, None, false)?;
+                // Run initial indexing with progress (returns after indexing)
+                println!("🚀 Running initial index...");
+                daemon::run_initial_index(&root, db, false, false)?;
+
+                // Start daemon in background to watch for changes
+                println!("🚀 Starting background daemon...");
+                daemon::start(&root, db, false, true, None, false)?;
             }
         } else {
-            // Start daemon in foreground to show progress
-            daemon::start(&root, db, false, false, None, false)?;
+            // Run initial indexing with progress (returns after indexing)
+            println!("🚀 Running initial index...");
+            daemon::run_initial_index(&root, db, false, false)?;
+
+            // Start daemon in background to watch for changes
+            println!("🚀 Starting background daemon...");
+            daemon::start(&root, db, false, true, None, false)?;
         }
     }
 

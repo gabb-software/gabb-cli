@@ -1810,9 +1810,13 @@ impl McpServer {
             "prod"
         };
 
+        // Compute summary (counts by kind, line count, key types)
+        let summary = compute_file_summary(&symbols, full_path.to_str().unwrap_or(&file_str));
+        let summary_text = format_file_summary(&summary);
+
         // Build hierarchical structure and format as text tree
         let tree = build_structure_tree(&symbols, &file_str)?;
-        let mut output = format!("{} ({})\n", file_str, context);
+        let mut output = format!("{} ({})\n{}\n", file_str, context, summary_text);
         format_structure_tree(&tree, "", &mut output);
 
         Ok(ToolResult::text(output))
@@ -2568,6 +2572,106 @@ fn get_line_at_offset(file_path: &str, offset: usize) -> Option<String> {
         .unwrap_or(content.len());
 
     String::from_utf8(content[line_start..line_end].to_vec()).ok()
+}
+
+/// Summary information for a file's structure
+struct FileSummary {
+    /// Symbol counts by kind (e.g., "function" -> 45)
+    counts_by_kind: Vec<(String, usize)>,
+    /// Total line count in the file
+    line_count: usize,
+    /// Key types: public types with many methods, sorted by method count
+    key_types: Vec<String>,
+}
+
+/// Compute summary statistics for a file's symbols
+fn compute_file_summary(symbols: &[SymbolRecord], file_path: &str) -> FileSummary {
+    use std::collections::HashMap;
+
+    // Count symbols by kind
+    let mut kind_counts: HashMap<String, usize> = HashMap::new();
+    for sym in symbols {
+        *kind_counts.entry(sym.kind.clone()).or_default() += 1;
+    }
+
+    // Sort by count descending, then by kind name
+    let mut counts_by_kind: Vec<(String, usize)> = kind_counts.into_iter().collect();
+    counts_by_kind.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+    // Count lines in the file
+    let line_count = fs::read_to_string(file_path)
+        .map(|content| content.lines().count())
+        .unwrap_or(0);
+
+    // Find key types: public structs/classes/traits/interfaces with methods
+    // Count methods per container
+    let mut methods_per_container: HashMap<String, usize> = HashMap::new();
+    for sym in symbols {
+        if let Some(ref container) = sym.container {
+            if sym.kind == "function" || sym.kind == "method" {
+                *methods_per_container.entry(container.clone()).or_default() += 1;
+            }
+        }
+    }
+
+    // Filter to public types and sort by method count
+    let type_kinds = ["struct", "class", "trait", "interface", "enum", "type"];
+    let mut type_symbols: Vec<(&SymbolRecord, usize)> = symbols
+        .iter()
+        .filter(|s| {
+            type_kinds.contains(&s.kind.as_str())
+                && s.visibility.as_ref().map(|v| v == "pub").unwrap_or(false)
+        })
+        .map(|s| {
+            let method_count = methods_per_container.get(&s.name).copied().unwrap_or(0);
+            (s, method_count)
+        })
+        .collect();
+
+    // Sort by method count descending
+    type_symbols.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Take top 5 key types, or types with 3+ methods
+    let key_types: Vec<String> = type_symbols
+        .into_iter()
+        .filter(|(_, count)| *count >= 3)
+        .take(5)
+        .map(|(sym, count)| {
+            if count > 0 {
+                format!("{} ({} methods)", sym.name, count)
+            } else {
+                sym.name.clone()
+            }
+        })
+        .collect();
+
+    FileSummary {
+        counts_by_kind,
+        line_count,
+        key_types,
+    }
+}
+
+/// Format the file summary as a compact string
+fn format_file_summary(summary: &FileSummary) -> String {
+    let mut parts = Vec::new();
+
+    // Format counts by kind
+    for (kind, count) in &summary.counts_by_kind {
+        let plural = if *count == 1 { "" } else { "s" };
+        parts.push(format!("{} {}{}", count, kind, plural));
+    }
+
+    let counts_str = parts.join(", ");
+    let lines_str = format!("{} lines", summary.line_count);
+
+    let mut result = format!("Summary: {} | {}", counts_str, lines_str);
+
+    if !summary.key_types.is_empty() {
+        result.push_str(&format!("\nKey types: {}", summary.key_types.join(", ")));
+    }
+
+    result
 }
 
 /// Build a hierarchical tree of symbols for the structure command

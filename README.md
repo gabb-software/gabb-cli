@@ -213,11 +213,11 @@ Symbol command:
 
 Structure command:
 - Show hierarchical structure of all symbols in a file
+- **Summary stats**: symbol counts by kind, total line count
+- **Key types**: highlights important public types with many methods
 - Displays symbols nested by containment (e.g., methods inside classes)
 - Shows start/end positions for each symbol
 - Indicates whether file is test or production code
-- Use `--source` to include source code snippets
-- Use `-C <n>` for context lines around symbols
 
 What gets indexed:
 - Files: `*.ts`, `*.tsx`, `*.rs`, `*.kt`, `*.kts`
@@ -243,7 +243,7 @@ Gabb includes an MCP (Model Context Protocol) server that exposes code indexing 
 | `gabb_callees` | Find all functions/methods called by a given function (call graph: what do I call?) |
 | `gabb_rename` | Get all locations to update when renaming a symbol (edit-ready output) |
 | `gabb_duplicates` | Find duplicate symbol definitions |
-| `gabb_structure` | Cheap file overview: symbol names, kinds, and positions (no source code) |
+| `gabb_structure` | Cheap file overview with summary stats, key types, and symbol hierarchy (no source code) |
 | `gabb_includers` | Find all files that #include a header (reverse dependency lookup) |
 | `gabb_includes` | Find all headers included by a file (forward dependency lookup) |
 | `gabb_daemon_status` | Check the status of the gabb indexing daemon |

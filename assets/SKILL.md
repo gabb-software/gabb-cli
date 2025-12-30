@@ -31,17 +31,16 @@ allowed-tools: mcp__gabb__*, Edit, Write, Bash, Read, Glob
 
 **For .js, .jsx, .go, .java, .c, .h → Use Grep/Read**
 
-## Start Here: The Two-Step Pattern
+## Quick Paths (Use These First)
 
-**Step 1: Get cheap overview** (no source code, just structure)
-```
-gabb_structure file="path/to/file.py"
-```
-Returns symbol names, kinds, line numbers. Use for any file >100 lines.
+**Issue mentions a specific function/method name?**
+→ `gabb_symbol name="exact_name" include_source=true` — **1 tool call, done**
 
-**Step 2: Get specific code** (one of these based on what you need)
-- `gabb_symbols name="FunctionName" include_source=true` - get a specific symbol's code
-- `Read file="path" offset=150 limit=50` - read specific line range from structure output
+**Issue mentions a concept but not exact name?**
+→ `gabb_symbols name_contains="concept" include_source=true` — **1 tool call**
+
+**Need to understand a file's structure first?**
+→ `gabb_structure file="path"` then targeted lookup — **2 calls**
 
 ## Quick Reference
 

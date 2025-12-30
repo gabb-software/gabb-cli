@@ -821,47 +821,40 @@ fn collect_call_edges(
 }
 
 /// Find the enclosing function/method and return its symbol ID
-fn find_enclosing_function_id(path: &Path, source: &str, node: &Node) -> Option<String> {
+fn find_enclosing_function_id(path: &Path, _source: &str, node: &Node) -> Option<String> {
     let mut current = node.parent();
 
     while let Some(n) = current {
         match n.kind() {
-            "function_declaration" | "function" => {
-                if let Some(name_node) = n.child_by_field_name("name") {
-                    let name = slice(source, &name_node);
-                    return Some(make_symbol_id(path, &name));
-                }
-            }
-            "method_definition" => {
-                if let Some(name_node) = n.child_by_field_name("name") {
-                    let name = slice(source, &name_node);
-                    // For methods, we need to include the class name
-                    if let Some(class_node) = find_enclosing_class(n.parent()) {
-                        if let Some(class_name_node) = class_node.child_by_field_name("name") {
-                            let class_name = slice(source, &class_name_node);
-                            return Some(format!(
-                                "{}#{}::{}",
-                                normalize_path(path),
-                                class_name,
-                                name
-                            ));
-                        }
-                    }
-                    return Some(make_symbol_id(path, &name));
-                }
+            "function_declaration" | "function" | "method_definition" => {
+                // Use byte-range ID to match how symbols are stored
+                return Some(format!(
+                    "{}#{}-{}",
+                    normalize_path(path),
+                    n.start_byte(),
+                    n.end_byte()
+                ));
             }
             "arrow_function" | "function_expression" => {
-                // Anonymous functions - try to get from variable declaration
+                // For arrow functions assigned to variables, the symbol uses the
+                // variable_declarator's byte range, not the arrow function's
                 if let Some(parent) = n.parent() {
                     if parent.kind() == "variable_declarator" {
-                        if let Some(name_node) = parent.child_by_field_name("name") {
-                            let name = slice(source, &name_node);
-                            return Some(make_symbol_id(path, &name));
-                        }
+                        return Some(format!(
+                            "{}#{}-{}",
+                            normalize_path(path),
+                            parent.start_byte(),
+                            parent.end_byte()
+                        ));
                     }
                 }
-                // Fall back to position-based ID for truly anonymous functions
-                return Some(format!("{}#anon@{}", normalize_path(path), n.start_byte()));
+                // Fall back to byte-range ID for truly anonymous functions
+                return Some(format!(
+                    "{}#{}-{}",
+                    normalize_path(path),
+                    n.start_byte(),
+                    n.end_byte()
+                ));
             }
             _ => {}
         }
@@ -929,11 +922,6 @@ fn resolve_call_target(
         }
         _ => None,
     }
-}
-
-/// Create a symbol ID from path and name (used for caller identification)
-fn make_symbol_id(path: &Path, name: &str) -> String {
-    format!("{}#{}", normalize_path(path), name)
 }
 
 fn find_child_kind<'a>(node: &'a Node<'a>, kind: &str) -> Option<Node<'a>> {

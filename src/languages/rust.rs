@@ -624,47 +624,38 @@ fn collect_call_edges(
 }
 
 /// Find the enclosing function/method and return its symbol ID
-fn find_enclosing_function_id(path: &Path, source: &str, node: &Node) -> Option<String> {
+fn find_enclosing_function_id(path: &Path, _source: &str, node: &Node) -> Option<String> {
     let mut current = node.parent();
 
     while let Some(n) = current {
         match n.kind() {
-            "function_item" => {
-                if let Some(name_node) = n.child_by_field_name("name") {
-                    let name = slice(source, &name_node);
-                    return Some(format!("{}#{}", normalize_path(path), name));
-                }
-            }
-            "function_signature_item" => {
-                if let Some(name_node) = n.child_by_field_name("name") {
-                    let name = slice(source, &name_node);
-                    return Some(format!("{}#{}", normalize_path(path), name));
-                }
+            "function_item" | "function_signature_item" => {
+                // Use byte-range ID to match how symbols are stored
+                return Some(format!(
+                    "{}#{}-{}",
+                    normalize_path(path),
+                    n.start_byte(),
+                    n.end_byte()
+                ));
             }
             "impl_item" => {
-                // Method in an impl block - try to get both impl type and method name
+                // Method in an impl block - find the actual function node and use its byte range
                 if let Some(fn_node) = find_containing_function(&n, node) {
-                    if let Some(fn_name) = fn_node.child_by_field_name("name") {
-                        let method_name = slice(source, &fn_name);
-                        if let Some(type_node) = n.child_by_field_name("type") {
-                            let type_name = slice(source, &type_node);
-                            return Some(format!(
-                                "{}#{}::{}",
-                                normalize_path(path),
-                                type_name,
-                                method_name
-                            ));
-                        }
-                        return Some(format!("{}#{}", normalize_path(path), method_name));
-                    }
+                    return Some(format!(
+                        "{}#{}-{}",
+                        normalize_path(path),
+                        fn_node.start_byte(),
+                        fn_node.end_byte()
+                    ));
                 }
             }
             "closure_expression" => {
-                // Anonymous closure - use position-based ID
+                // Anonymous closure - use byte-range ID
                 return Some(format!(
-                    "{}#closure@{}",
+                    "{}#{}-{}",
                     normalize_path(path),
-                    n.start_byte()
+                    n.start_byte(),
+                    n.end_byte()
                 ));
             }
             _ => {}

@@ -31,16 +31,31 @@ allowed-tools: mcp__gabb__*, Edit, Write, Bash, Read, Glob
 
 **For .js, .jsx, .go, .java, .c, .h → Use Grep/Read**
 
-## Quick Paths (Use These First)
+## Quick Decision Tree
 
-**Issue mentions a specific function/method name?**
-→ `gabb_symbol name="exact_name" include_source=true` — **1 tool call, done**
+### Finding Code
 
-**Issue mentions a concept but not exact name?**
-→ `gabb_symbols name_contains="concept" include_source=true` — **1 tool call**
+| Situation | Tool | Example |
+|-----------|------|---------|
+| Know exact symbol name | `gabb_symbol` | `gabb_symbol name="handleError" include_source=true` |
+| Know partial name/concept | `gabb_symbols` | `gabb_symbols name_contains="auth" include_source=true` |
+| Need file overview first | `gabb_structure` | `gabb_structure file="src/auth.ts"` |
+| Find all usages before refactor | `gabb_usages` | `gabb_usages file="..." line=N character=M` |
+| Trace call graph | `gabb_callers`/`gabb_callees` | `gabb_callers file="..." line=N character=M` |
 
-**Need to understand a file's structure first?**
-→ `gabb_structure file="path"` then targeted lookup — **2 calls**
+### Reading Issue Text
+
+Before exploring, extract hints from the issue:
+- **Method name mentioned?** → Direct `gabb_symbol` lookup
+- **Error in specific file?** → `gabb_structure` on that file
+- **Concept described?** → `gabb_symbols name_contains="concept"`
+
+### Anti-Patterns to Avoid
+
+❌ Using `gabb_structure` when you already know the symbol name
+❌ Using `gabb_symbols` without `include_source=true` then doing a separate Read
+❌ Falling back to Grep for code patterns (use `name_fts` or `name_contains`)
+❌ Multiple exploratory calls when issue text contains specific hints
 
 ## Quick Reference
 

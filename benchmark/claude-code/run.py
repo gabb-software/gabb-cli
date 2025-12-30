@@ -667,9 +667,9 @@ class ClaudeCodeRunner:
         if self.tool_log and self.tool_log.exists():
             self.tool_log.unlink()
 
-        # Build environment with API key from .env file
+        # Build environment - use system auth (interactive login) instead of API key
         env = os.environ.copy()
-        env.update(load_env_file())  # Load ANTHROPIC_API_KEY from api/.env
+        # env.update(load_env_file())  # Disabled: use interactive login instead of API key
         env["BENCHMARK_TOOL_LOG"] = str(self.tool_log)
 
         full_prompt = f"""{prompt}

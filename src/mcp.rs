@@ -385,7 +385,7 @@ impl McpServer {
                 description: concat!(
                     "Get detailed information about a symbol when you know its name. ",
                     "USE THIS when you have a specific symbol name and want to find where it's defined. ",
-                    "Returns the symbol's location, kind, visibility, and container. ",
+                    "Returns the symbol's location, kind, visibility, container, and source code (by default). ",
                     "For exploring unknown code, use gabb_symbols instead."
                 ).to_string(),
                 input_schema: json!({
@@ -398,6 +398,14 @@ impl McpServer {
                         "kind": {
                             "type": "string",
                             "description": "Optionally filter by kind if the name is ambiguous (function, class, interface, etc.)"
+                        },
+                        "include_source": {
+                            "type": "boolean",
+                            "description": "Include the symbol's source code in the output (default: true)"
+                        },
+                        "context_lines": {
+                            "type": "integer",
+                            "description": "Number of lines to show before and after the symbol (like grep -C). Only applies when include_source is true."
                         }
                     },
                     "required": ["name"]
@@ -1213,6 +1221,21 @@ impl McpServer {
 
         let kind = args.get("kind").and_then(|v| v.as_str());
 
+        // Format options - default to including source for symbol lookups
+        let include_source = args
+            .get("include_source")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let context_lines = args
+            .get("context_lines")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize);
+
+        let format_opts = FormatOptions {
+            include_source,
+            context_lines,
+        };
+
         let symbols = store.list_symbols(None, kind, Some(name), Some(10))?;
 
         if symbols.is_empty() {
@@ -1222,7 +1245,7 @@ impl McpServer {
             )));
         }
 
-        let output = format_symbols(&symbols, &workspace, &FormatOptions::default());
+        let output = format_symbols(&symbols, &workspace, &format_opts);
         Ok(ToolResult::text(output))
     }
 

@@ -19,6 +19,7 @@ from .parser import load_transcript, load_jsonl_transcript
 from .classifier import classify_tool_calls
 from .estimator import estimate_transcript_tokens
 from .reporter import generate_json_report, generate_text_report, print_rich_report
+from .rules import detect_opportunities
 
 
 def main(args: list[str] | None = None) -> int:
@@ -132,6 +133,10 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                 # Estimate tokens
                 estimate_transcript_tokens(analysis)
 
+                # Detect gabb optimization opportunities (Phase 2)
+                opportunities = detect_opportunities(analysis)
+                analysis.opportunities = opportunities
+
                 all_analyses.append(analysis)
 
                 # Output individual report (unless --summary)
@@ -185,6 +190,19 @@ def print_summary(analyses: list, output_format: str) -> None:
                     cmd = tc.bash_info.command_type
                     bash_breakdown[cmd] = bash_breakdown.get(cmd, 0) + 1
 
+    # Aggregate opportunities (Phase 2)
+    all_opportunities = []
+    opportunity_type_counts: dict[str, int] = {}
+    for a in analyses:
+        all_opportunities.extend(a.opportunities)
+        for opp in a.opportunities:
+            opp_type = opp.type.value
+            opportunity_type_counts[opp_type] = opportunity_type_counts.get(opp_type, 0) + 1
+
+    total_potential_savings = sum(o.estimated_savings for o in all_opportunities)
+    total_tokens = total_input_tokens + total_output_tokens
+    savings_percentage = (total_potential_savings / total_tokens * 100) if total_tokens > 0 else 0
+
     summary = {
         "transcript_count": len(analyses),
         "total_turns": total_turns,
@@ -194,6 +212,10 @@ def print_summary(analyses: list, output_format: str) -> None:
         "total_file_content_tokens": total_file_tokens,
         "tool_distribution": tool_counts,
         "bash_breakdown": bash_breakdown,
+        "opportunity_count": len(all_opportunities),
+        "opportunity_type_counts": opportunity_type_counts,
+        "total_potential_savings": total_potential_savings,
+        "savings_percentage": round(savings_percentage, 1),
     }
 
     if output_format == "json":
@@ -219,6 +241,19 @@ def print_summary(analyses: list, output_format: str) -> None:
             print("Bash command breakdown:")
             for cmd, count in sorted(bash_breakdown.items(), key=lambda x: -x[1]):
                 print(f"  {cmd:<30} {count:>5}")
+
+        # Opportunities summary (Phase 2)
+        if all_opportunities:
+            print()
+            print("GABB OPPORTUNITIES")
+            print("-" * 70)
+            print(f"  Total opportunities:     {len(all_opportunities)}")
+            print(f"  Potential savings:       {total_potential_savings:,} tokens ({savings_percentage:.1f}%)")
+            print()
+            print("  By type:")
+            for opp_type, count in sorted(opportunity_type_counts.items(), key=lambda x: -x[1]):
+                print(f"    {opp_type:<30} {count:>5}")
+
         print("=" * 70)
 
 

@@ -3,7 +3,70 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
+
+
+class OpportunityType(Enum):
+    """Types of gabb optimization opportunities."""
+
+    # grep for symbol name → gabb_symbol or gabb_usages
+    GREP_TO_SYMBOL = "grep_to_symbol"
+    GREP_TO_USAGES = "grep_to_usages"
+
+    # Full file read → gabb_structure first
+    READ_TO_STRUCTURE = "read_to_structure"
+
+    # Multi-hop navigation → gabb_definition
+    MULTI_HOP_TO_DEFINITION = "multi_hop_to_definition"
+
+    # find + grep combo → gabb_symbols with filters
+    FIND_GREP_TO_SYMBOLS = "find_grep_to_symbols"
+
+    # Generic grep → gabb_symbols with name filter
+    GREP_TO_SYMBOLS = "grep_to_symbols"
+
+
+@dataclass
+class Opportunity:
+    """A detected gabb optimization opportunity."""
+
+    type: OpportunityType
+    turn_id: int
+    tool_call_index: int  # Index within the turn's tool_calls
+
+    # What was originally done
+    original_command: str
+
+    # What gabb tool could replace it
+    suggested_tool: str
+    suggested_params: dict[str, Any] = field(default_factory=dict)
+
+    # Token economics
+    original_tokens: int = 0
+    estimated_gabb_tokens: int = 0
+    estimated_savings: int = 0
+
+    # Confidence in this detection (0.0 - 1.0)
+    confidence: float = 0.0
+
+    # Human-readable explanation
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": self.type.value,
+            "turn_id": self.turn_id,
+            "tool_call_index": self.tool_call_index,
+            "original_command": self.original_command,
+            "suggested_tool": self.suggested_tool,
+            "suggested_params": self.suggested_params,
+            "original_tokens": self.original_tokens,
+            "estimated_gabb_tokens": self.estimated_gabb_tokens,
+            "estimated_savings": self.estimated_savings,
+            "confidence": self.confidence,
+            "reason": self.reason,
+        }
 
 
 @dataclass
@@ -94,6 +157,9 @@ class TranscriptAnalysis:
     total_output_tokens: int = 0
     file_content_tokens: int = 0  # Tokens from Read/tool results
 
+    # Phase 2: Detected opportunities
+    opportunities: list[Opportunity] = field(default_factory=list)
+
     def to_dict(self) -> dict[str, Any]:
         # Compute tool distribution
         tool_dist: dict[str, dict[str, int]] = {}
@@ -111,6 +177,11 @@ class TranscriptAnalysis:
                     cmd_type = tc.bash_info.command_type
                     bash_breakdown[cmd_type] = bash_breakdown.get(cmd_type, 0) + 1
 
+        # Compute opportunity summary
+        total_savings = sum(opp.estimated_savings for opp in self.opportunities)
+        total_tokens = self.total_input_tokens + self.total_output_tokens
+        savings_percentage = (total_savings / total_tokens * 100) if total_tokens > 0 else 0
+
         return {
             "session_id": self.session_id,
             "task_description": self.task_description,
@@ -120,8 +191,12 @@ class TranscriptAnalysis:
                 "total_output_tokens": self.total_output_tokens,
                 "file_content_tokens": self.file_content_tokens,
                 "tool_call_count": sum(len(t.tool_calls) for t in self.turns),
+                "gabb_opportunity_count": len(self.opportunities),
+                "potential_token_savings": total_savings,
+                "savings_percentage": round(savings_percentage, 1),
             },
             "turns": [t.to_dict() for t in self.turns],
             "tool_distribution": tool_dist,
             "bash_breakdown": bash_breakdown,
+            "opportunities": [opp.to_dict() for opp in self.opportunities],
         }

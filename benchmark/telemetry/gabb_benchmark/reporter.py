@@ -1,7 +1,7 @@
 """Report generation for transcript analysis.
 
 Generates formatted reports showing tool usage breakdown, token counts,
-and (in Phase 2) gabb optimization opportunities.
+and gabb optimization opportunities (Phase 2).
 """
 
 from __future__ import annotations
@@ -118,6 +118,43 @@ def generate_text_report(analysis: TranscriptAnalysis) -> str:
             )
 
     lines.append("")
+
+    # Gabb opportunities (Phase 2)
+    if analysis.opportunities:
+        lines.append("GABB OPPORTUNITIES DETECTED")
+        lines.append("-" * 70)
+
+        # Group by impact
+        high_impact = [o for o in analysis.opportunities if o.estimated_savings >= 1000]
+        medium_impact = [o for o in analysis.opportunities if 500 <= o.estimated_savings < 1000]
+        low_impact = [o for o in analysis.opportunities if o.estimated_savings < 500]
+
+        total_savings = sum(o.estimated_savings for o in analysis.opportunities)
+        lines.append(f"  Total opportunities: {len(analysis.opportunities)}")
+        lines.append(f"  Potential savings:   {format_number(total_savings)} tokens")
+        lines.append("")
+
+        if high_impact:
+            lines.append("  HIGH IMPACT (>1,000 tokens each):")
+            for opp in high_impact[:5]:
+                lines.append(f"    Turn {opp.turn_id}: {opp.original_command[:60]}")
+                lines.append(f"      -> {opp.suggested_tool}")
+                lines.append(f"      Savings: {format_number(opp.estimated_savings)} tokens ({opp.confidence:.0%} confidence)")
+                lines.append(f"      {opp.reason}")
+                lines.append("")
+
+        if medium_impact:
+            lines.append("  MEDIUM IMPACT (500-1,000 tokens each):")
+            for opp in medium_impact[:3]:
+                lines.append(f"    Turn {opp.turn_id}: {opp.original_command[:60]}")
+                lines.append(f"      -> {opp.suggested_tool}, Savings: {format_number(opp.estimated_savings)}")
+            lines.append("")
+
+        if low_impact and not high_impact and not medium_impact:
+            lines.append("  LOW IMPACT (<500 tokens each):")
+            lines.append(f"    {len(low_impact)} additional opportunities detected")
+            lines.append("")
+
     lines.append("=" * 70)
 
     return "\n".join(lines)
@@ -207,5 +244,50 @@ def print_rich_report(analysis: TranscriptAnalysis) -> None:
             bash_table.add_row(cmd, str(count))
 
         console.print(bash_table)
+
+    # Gabb opportunities (Phase 2)
+    if analysis.opportunities:
+        console.print()
+
+        # Summary panel
+        total_savings = sum(o.estimated_savings for o in analysis.opportunities)
+        total_tokens = summary["total_input_tokens"] + summary["total_output_tokens"]
+        savings_pct = (total_savings / total_tokens * 100) if total_tokens > 0 else 0
+
+        console.print(
+            Panel.fit(
+                f"[bold green]{len(analysis.opportunities)}[/bold green] opportunities detected\n"
+                f"Potential savings: [bold]{format_number(total_savings)}[/bold] tokens ({savings_pct:.1f}%)",
+                title="[bold]Gabb Optimization Opportunities[/bold]",
+                border_style="green",
+            )
+        )
+
+        # Opportunities table
+        opp_table = Table(title="Top Opportunities")
+        opp_table.add_column("Turn", justify="right", style="dim")
+        opp_table.add_column("Original", max_width=40)
+        opp_table.add_column("Suggested", style="green")
+        opp_table.add_column("Savings", justify="right", style="bold")
+        opp_table.add_column("Conf.", justify="right")
+
+        # Show top 10 opportunities
+        for opp in analysis.opportunities[:10]:
+            opp_table.add_row(
+                str(opp.turn_id),
+                opp.original_command[:40] + ("..." if len(opp.original_command) > 40 else ""),
+                opp.suggested_tool,
+                format_number(opp.estimated_savings),
+                f"{opp.confidence:.0%}",
+            )
+
+        console.print(opp_table)
+
+        # Show reasons for top 3
+        if analysis.opportunities:
+            console.print()
+            console.print("[dim]Top recommendations:[/dim]")
+            for i, opp in enumerate(analysis.opportunities[:3], 1):
+                console.print(f"  {i}. {opp.reason}")
 
     console.print()

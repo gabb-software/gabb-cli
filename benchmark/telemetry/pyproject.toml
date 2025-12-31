@@ -1,0 +1,27 @@
+[project]
+name = "gabb-benchmark"
+version = "0.1.0"
+description = "Telemetry and analysis for gabb benchmark transcripts"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "tiktoken>=0.5.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.scripts]
+gabb-benchmark = "gabb_benchmark.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gabb_benchmark*"]

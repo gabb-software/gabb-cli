@@ -669,7 +669,7 @@ class ClaudeCodeRunner:
 
         # Build environment with API key from .env file
         env = os.environ.copy()
-        env.update(load_env_file())  # Load ANTHROPIC_API_KEY from api/.env
+#         env.update(load_env_file())  # Load ANTHROPIC_API_KEY from api/.env
         env["BENCHMARK_TOOL_LOG"] = str(self.tool_log)
 
         full_prompt = f"""{prompt}
@@ -1608,8 +1608,17 @@ Concurrency:
             print(f"  ... and {len(tasks) - 20} more")
         return 0
 
-    # Check for gabb binary
-    gabb_binary = args.gabb_binary or shutil.which("gabb")
+    # Check for gabb binary - prefer local development build over installed
+    if args.gabb_binary:
+        gabb_binary = args.gabb_binary
+    else:
+        # Check for local development build first (relative to benchmark dir)
+        local_binary = BENCHMARK_DIR.parent.parent / "target" / "release" / "gabb"
+        if local_binary.exists():
+            gabb_binary = local_binary
+            print_msg(f"Using local build: {local_binary}", "dim")
+        else:
+            gabb_binary = shutil.which("gabb")
     if args.condition in ("gabb", "both") and not gabb_binary:
         print_msg("Warning: gabb binary not found.", "yellow")
 

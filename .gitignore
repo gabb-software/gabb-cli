@@ -11,3 +11,5 @@ benchmark/bin/
 benchmark/results/
 /benchmark/api/.env
 /benchmark/claude-code/.env
+/benchmark/api/results/
+/benchmark/claude-code/results/

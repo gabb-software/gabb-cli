@@ -605,6 +605,28 @@ class ClaudeCodeRunner:
         if result.returncode != 0 and self.verbose:
             print_msg(f"  claude mcp add warning: {result.stderr[:200]}", "yellow")
 
+        # DEBUG: Verify MCP server was registered
+        if self.verbose:
+            mcp_list = subprocess.run(
+                ["claude", "mcp", "list"],
+                cwd=self.workspace,
+                capture_output=True,
+                text=True,
+            )
+            print_msg(f"  DEBUG: MCP servers registered:\n{mcp_list.stdout}", "cyan")
+
+            # Check settings.local.json for MCP config
+            settings_file = self.workspace / ".claude" / "settings.local.json"
+            if settings_file.exists():
+                try:
+                    settings = json.loads(settings_file.read_text())
+                    mcp_servers = settings.get("mcpServers", {})
+                    print_msg(f"  DEBUG: MCP servers in settings: {list(mcp_servers.keys())}", "cyan")
+                    if "gabb" in mcp_servers:
+                        print_msg(f"  DEBUG: gabb MCP config: {mcp_servers['gabb']}", "cyan")
+                except Exception as e:
+                    print_msg(f"  DEBUG: Error reading settings: {e}", "red")
+
         # Step 4: Add gabb guidance to CLAUDE.md
         if self.verbose:
             print_msg("  Step 4: Updating CLAUDE.md...", "dim")
@@ -616,6 +638,17 @@ class ClaudeCodeRunner:
         )
         if result.returncode != 0 and self.verbose:
             print_msg(f"  gabb init --claudemd warning: {result.stderr[:200]}", "yellow")
+
+        # DEBUG: Verify skill and CLAUDE.md were created
+        if self.verbose:
+            skill_file = self.workspace / ".claude" / "skills" / "gabb" / "SKILL.md"
+            claudemd_file = self.workspace / "CLAUDE.md"
+            print_msg(f"  DEBUG: SKILL.md exists: {skill_file.exists()}", "cyan")
+            print_msg(f"  DEBUG: CLAUDE.md exists: {claudemd_file.exists()}", "cyan")
+            if claudemd_file.exists():
+                content = claudemd_file.read_text()
+                has_gabb_section = "gabb" in content.lower()
+                print_msg(f"  DEBUG: CLAUDE.md mentions gabb: {has_gabb_section}", "cyan")
 
         # Wait for daemon to be ready with an index
         if self.verbose:
@@ -637,21 +670,28 @@ class ClaudeCodeRunner:
                     status = json.loads(status_result.stdout)
                     stats = status.get("stats", {})
                     files_indexed = stats.get("files_indexed", 0)
-                    if status.get("running") and files_indexed > 0:
+                    symbols_indexed = stats.get("symbols_count", 0)  # Note: field is "symbols_count" not "symbols_indexed"
+                    # Wait for BOTH files AND symbols to be indexed
+                    # Symbol extraction happens after file discovery, so we need symbols > 0
+                    if status.get("running") and files_indexed > 0 and symbols_indexed > 0:
                         if self.verbose:
                             print_msg(
-                                f"  gabb ready: {files_indexed} files indexed",
+                                f"  gabb ready: {files_indexed} files, {symbols_indexed} symbols indexed",
                                 "green"
                             )
+                            # DEBUG: Show language breakdown
+                            files_by_lang = stats.get("files_by_language", {})
+                            if files_by_lang:
+                                print_msg(f"  DEBUG: Languages indexed: {files_by_lang}", "cyan")
                         return
+                    elif self.verbose and waited % 10 == 0 and files_indexed > 0:
+                        # Progress update while waiting for symbols
+                        print_msg(f"  indexing: {files_indexed} files, {symbols_indexed} symbols...", "dim")
                 except json.JSONDecodeError:
                     pass
 
             time.sleep(poll_interval)
             waited += poll_interval
-
-            if self.verbose and waited % 10 == 0:
-                print_msg(f"  waiting for gabb indexing... ({waited}s)", "dim")
 
         if self.verbose:
             print_msg(f"  gabb warning: timeout waiting for index after {max_wait}s", "yellow")
@@ -708,6 +748,10 @@ FINAL_ANSWER: path/to/file2.py"""
 
         if self.verbose:
             print_msg(f"Running claude in {self.workspace}", "dim")
+            if self.condition == "gabb":
+                # Show which gabb tools are being allowed
+                gabb_tools = [t for t in cmd if t.startswith("mcp__gabb__")]
+                print_msg(f"  DEBUG: Allowing {len(gabb_tools)} gabb tools: {gabb_tools[:3]}...", "cyan")
 
         start_time = time.time()
         try:
@@ -737,6 +781,10 @@ FINAL_ANSWER: path/to/file2.py"""
                     metrics.final_answer = result.stdout
             else:
                 metrics.error = result.stderr or f"Exit code: {result.returncode}"
+                if self.verbose:
+                    print_msg(f"  DEBUG: Claude Code failed with exit {result.returncode}", "red")
+                    if result.stderr:
+                        print_msg(f"  DEBUG: stderr: {result.stderr[:500]}", "red")
 
         except subprocess.TimeoutExpired:
             metrics.wall_time_seconds = timeout
@@ -755,6 +803,19 @@ FINAL_ANSWER: path/to/file2.py"""
                     metrics.tool_calls[tool] = metrics.tool_calls.get(tool, 0) + 1
                 except json.JSONDecodeError:
                     pass
+
+        # DEBUG: Check if any gabb tools were called
+        if self.verbose and self.condition == "gabb":
+            gabb_tools_called = [t for t in metrics.tool_calls.keys() if "gabb" in t.lower()]
+            if gabb_tools_called:
+                print_msg(f"  DEBUG: gabb tools used: {gabb_tools_called}", "green")
+            else:
+                print_msg("  DEBUG: ⚠️  NO GABB TOOLS WERE CALLED!", "red bold")
+                print_msg(f"  DEBUG: Tools used instead: {list(metrics.tool_calls.keys())}", "yellow")
+                # Show raw tool log for debugging
+                raw_log = self.tool_log.read_text()
+                if len(raw_log) < 2000:
+                    print_msg(f"  DEBUG: Raw tool log:\n{raw_log}", "dim")
 
         return metrics
 

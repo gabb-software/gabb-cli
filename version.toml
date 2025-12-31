@@ -10,6 +10,6 @@
 #   - minor: New features or significant improvements
 #   - patch: Bug fixes and small improvements
 
-major = 0
-minor = 11
+major = 1
+minor = 0
 patch = 0

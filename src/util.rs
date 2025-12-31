@@ -28,11 +28,7 @@ pub fn open_store_for_query(db: &Path) -> Result<IndexStore> {
 }
 
 /// Ensure the index is available using the shared daemon logic.
-pub fn ensure_index_available(
-    db: &Path,
-    no_start_daemon: bool,
-    no_daemon: bool,
-) -> Result<()> {
+pub fn ensure_index_available(db: &Path, no_start_daemon: bool, no_daemon: bool) -> Result<()> {
     // Derive workspace root from db path
     let workspace_root = daemon::workspace_root_from_db(db)
         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));

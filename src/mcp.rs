@@ -37,6 +37,9 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 const SERVER_NAME: &str = "gabb";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// MCP server instructions (sent to client during initialization)
+const SERVER_INSTRUCTIONS: &str = include_str!("../assets/MCP_INSTRUCTIONS.md");
+
 // ==================== JSON-RPC Types ====================
 
 #[derive(Debug, Deserialize)]
@@ -303,7 +306,8 @@ impl McpServer {
             "serverInfo": {
                 "name": SERVER_NAME,
                 "version": SERVER_VERSION
-            }
+            },
+            "instructions": SERVER_INSTRUCTIONS
         }))
     }
 

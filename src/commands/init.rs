@@ -444,7 +444,13 @@ fn format_number(n: i64) -> String {
 }
 
 /// Interactive setup wizard for one-command onboarding
-pub fn setup_wizard(root: &Path, db: &Path, yes: bool, dry_run: bool, no_index: bool) -> Result<()> {
+pub fn setup_wizard(
+    root: &Path,
+    db: &Path,
+    yes: bool,
+    dry_run: bool,
+    no_index: bool,
+) -> Result<()> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let gabb_dir = root.join(".gabb");
 
@@ -452,11 +458,7 @@ pub fn setup_wizard(root: &Path, db: &Path, yes: bool, dry_run: bool, no_index: 
     println!();
     let project_type = detect_project_type(&root);
     if let Some(ptype) = project_type {
-        println!(
-            "Detected workspace: {} ({} found)",
-            root.display(),
-            ptype
-        );
+        println!("Detected workspace: {} ({} found)", root.display(), ptype);
     } else {
         println!("Detected workspace: {}", root.display());
     }
@@ -571,8 +573,7 @@ pub fn setup_wizard(root: &Path, db: &Path, yes: bool, dry_run: bool, no_index: 
     if gitignore_has_gabb && gitignore_has_claude {
         println!(".gitignore already configured");
     } else {
-        let should_update =
-            yes || prompt_yes_no("Add .gabb/ and .claude/ to .gitignore?", true)?;
+        let should_update = yes || prompt_yes_no("Add .gabb/ and .claude/ to .gitignore?", true)?;
         if should_update {
             if dry_run {
                 if !gitignore_has_gabb {

@@ -180,7 +180,15 @@ fn main() -> std::process::ExitCode {
             kind,
             min_count,
         } => ensure_index(&db, cli.no_start_daemon, cli.no_daemon).and_then(|_| {
-            commands::find_duplicates(&db, uncommitted, staged, kind.as_deref(), min_count, format, quiet)
+            commands::find_duplicates(
+                &db,
+                uncommitted,
+                staged,
+                kind.as_deref(),
+                min_count,
+                format,
+                quiet,
+            )
         }),
         Commands::McpServer => mcp::run_server(&workspace, &db).map(|_| ExitCode::Success),
         Commands::Mcp { command } => match command {

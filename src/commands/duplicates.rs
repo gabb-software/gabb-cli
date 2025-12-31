@@ -7,9 +7,7 @@ use gabb_cli::daemon;
 use gabb_cli::ExitCode;
 use gabb_cli::OutputFormat;
 
-use crate::output::{
-    DuplicateGroupOutput, DuplicatesOutput, DuplicatesSummary, SymbolOutput,
-};
+use crate::output::{DuplicateGroupOutput, DuplicatesOutput, DuplicatesSummary, SymbolOutput};
 use crate::util::{get_git_changed_files, open_store_for_query};
 
 pub fn find_duplicates(

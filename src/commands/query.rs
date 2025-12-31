@@ -295,7 +295,8 @@ pub fn show_symbol(
             let references: Vec<ReferenceOutput> = refs
                 .iter()
                 .filter_map(|r| {
-                    let (r_line, r_col) = util::offset_to_line_char_in_file(&r.file, r.start).ok()?;
+                    let (r_line, r_col) =
+                        util::offset_to_line_char_in_file(&r.file, r.start).ok()?;
                     let (r_end_line, r_end_col) =
                         util::offset_to_line_char_in_file(&r.file, r.end).ok()?;
                     Some(ReferenceOutput {

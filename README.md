@@ -226,44 +226,22 @@ What gets indexed:
 
 ## MCP Server (AI Assistant Integration)
 
-Gabb includes an MCP (Model Context Protocol) server that exposes code indexing tools to AI assistants. This allows AI coding tools to search symbols, find definitions, usages, and implementations in your codebase.
+Gabb includes an MCP (Model Context Protocol) server that exposes the `gabb_structure` tool to AI assistants. This provides a cheap, lightweight way to preview file contents before reading them.
 
-### Available Tools
+### The `gabb_structure` Tool
 
-| Tool | Description |
-|------|-------------|
-| `gabb_symbols` | List or search symbols in the codebase |
-| `gabb_symbol` | Get detailed information about a symbol by name |
-| `gabb_definition` | Go to definition for a symbol at a source position |
-| `gabb_usages` | Find all usages/references of a symbol |
-| `gabb_implementations` | Find implementations of an interface, trait, or abstract class |
-| `gabb_supertypes` | Find parent types (superclasses, implemented interfaces/traits) of a type |
-| `gabb_subtypes` | Find child types (subclasses, implementors) of a type/interface/trait |
-| `gabb_callers` | Find all functions/methods that call a given function (call graph: who calls me?) |
-| `gabb_callees` | Find all functions/methods called by a given function (call graph: what do I call?) |
-| `gabb_rename` | Get all locations to update when renaming a symbol (edit-ready output) |
-| `gabb_duplicates` | Find duplicate symbol definitions |
-| `gabb_structure` | Cheap file overview with summary stats, key types, and symbol hierarchy (no source code) |
-| `gabb_includers` | Find all files that #include a header (reverse dependency lookup) |
-| `gabb_includes` | Find all headers included by a file (forward dependency lookup) |
-| `gabb_daemon_status` | Check the status of the gabb indexing daemon |
-| `gabb_stats` | Get comprehensive index statistics (files by language, symbols by kind, index size) |
+Get a file overview **without reading the source code**. Returns symbol names, kinds, and line numbers—perfect for understanding what's in a large file before deciding which parts to read.
 
-#### `gabb_symbols` Parameters
+**Use it when:**
+- Before reading any file >100 lines
+- To understand what functions/classes exist in a file
+- To get line numbers for targeted `Read` calls with offset/limit
 
-| Parameter | Description |
-|-----------|-------------|
-| `name` | Exact symbol name match |
-| `name_pattern` | Glob-style pattern (e.g., `get*`, `*Handler`, `*User*`) |
-| `name_contains` | Substring match (e.g., `User` matches `getUser`, `UserService`) |
-| `case_insensitive` | Make name matching case-insensitive (default: false) |
-| `kind` | Filter by symbol kind: `function`, `class`, `interface`, `type`, `struct`, `enum`, `trait`, `method`, `const`, `variable` |
-| `file` | Filter by path: exact file (`src/main.ts`), directory (`src/` or `src/components`), or glob (`src/**/*.ts`) |
-| `namespace` | Filter by namespace/qualifier prefix (e.g., `std::collections`, `myapp::services`). Supports glob patterns (e.g., `std::*`) |
-| `scope` | Filter by containing scope/container (e.g., `MyClass` to find methods within MyClass) |
-| `limit` | Maximum results (default: 50) |
-| `include_source` | Include the symbol's source code in output |
-| `context_lines` | Lines before/after the symbol (like `grep -C`), requires `include_source` |
+**Example workflow:**
+```
+1. gabb_structure file="src/large_file.rs"  → See symbols and line numbers
+2. Read with offset/limit                    → Read only what you need
+```
 
 ---
 
@@ -406,7 +384,7 @@ The `gabb mcp command` creates a `/gabb` slash command in your project that help
 
 ### Agent Skill for Discoverability
 
-In addition to the MCP server, gabb can generate an **Agent Skill** that teaches Claude when to prefer gabb tools over grep/ripgrep for code navigation:
+In addition to the MCP server, gabb can generate an **Agent Skill** that teaches Claude when to use `gabb_structure`:
 
 ```bash
 # Create the skill during project initialization
@@ -416,12 +394,9 @@ gabb init --skill
 gabb init --mcp --skill
 ```
 
-This creates `.claude/skills/gabb/SKILL.md` which Claude auto-discovers. The skill:
-- Guides Claude to use `gabb_symbols` instead of grep for finding definitions
-- Recommends `gabb_usages` for refactoring impact analysis
-- Explains when each gabb tool is the best choice
+This creates `.claude/skills/gabb/SKILL.md` which Claude auto-discovers. The skill teaches Claude to use `gabb_structure` before reading large files in supported languages.
 
-**Skills vs MCP**: The MCP server provides the actual tools. The skill provides guidance on *when* to use them. Both complement each other for optimal AI assistant integration.
+**Skills vs MCP**: The MCP server provides the actual tool. The skill provides guidance on *when* to use it. Both complement each other for optimal AI assistant integration.
 
 ## Project Layout
 - `src/main.rs`: CLI entrypoint and logging setup

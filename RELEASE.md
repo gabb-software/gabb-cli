@@ -4,11 +4,16 @@ This document describes how to release gabb-cli for different platforms.
 
 ## Overview
 
-gabb-cli uses GitHub Actions to automatically build binaries when a version tag is pushed. The release workflow produces:
+gabb-cli uses two GitHub Actions workflows:
+
+- **CI workflow** (`ci.yml`): Runs tests and linting on every push to main and all PRs
+- **Release workflow** (`release.yml`): Triggers when `version.toml` is modified, runs full CI, then builds and publishes release binaries
+
+The release workflow produces:
 
 - **macOS**: x86_64, aarch64, and universal binaries
-- **Linux**: x86_64 binary (glibc)
-- **Windows**: Not yet automated (see [Windows section](#windows))
+- **Linux**: x86_64 binary (musl, statically linked)
+- **Windows**: x86_64 binary
 
 ## Prerequisites
 
@@ -19,46 +24,57 @@ gabb-cli uses GitHub Actions to automatically build binaries when a version tag 
 
 ### 1. Update Version
 
-Edit `Cargo.toml` and update the version:
+Edit `version.toml` and update the version numbers:
 
 ```toml
-[package]
-version = "0.2.0"  # Update this
+major = 0
+minor = 10
+patch = 1  # Increment this for bug fixes
 ```
+
+Version guidelines:
+- **major**: Breaking changes or major milestones
+- **minor**: New features or significant improvements
+- **patch**: Bug fixes and small improvements
 
 ### 2. Update Changelog (Optional)
 
 If you maintain a CHANGELOG.md, update it with the new version's changes.
 
-### 3. Commit and Tag
+### 3. Commit and Push
 
 ```bash
-git add Cargo.toml Cargo.lock
-git commit -m "chore: bump version to 0.2.0"
-git tag v0.2.0
-git push origin main --tags
+git add version.toml
+git commit -m "chore: release v0.10.1"
+git push origin main
 ```
+
+The release workflow automatically triggers when `version.toml` changes.
 
 ### 4. Wait for GitHub Actions
 
 The release workflow will:
-1. Build binaries for all platforms
-2. Create a universal macOS binary
-3. Generate SHA256 checksums
-4. Create a GitHub release with all artifacts
+1. Run full test suite on Ubuntu and macOS
+2. Run linting (rustfmt, clippy)
+3. Build binaries for all platforms
+4. Create a universal macOS binary
+5. Generate SHA256 checksums
+6. Create git tag and GitHub release
+7. Update Homebrew and Scoop package managers
 
 Monitor progress at: `https://github.com/gabb-software/gabb-cli/actions`
 
 ### 5. Verify Release
 
 Once complete, verify the release at:
-`https://github.com/gabb-software/gabb-cli/releases/tag/v0.2.0`
+`https://github.com/gabb-software/gabb-cli/releases/tag/v0.10.1`
 
 Expected artifacts:
-- `gabb-cli-x86_64-apple-darwin.tar.gz`
-- `gabb-cli-aarch64-apple-darwin.tar.gz`
-- `gabb-cli-universal-apple-darwin.tar.gz`
-- `gabb-cli-x86_64-unknown-linux-gnu.tar.gz`
+- `gabb-x86_64-apple-darwin.tar.gz`
+- `gabb-aarch64-apple-darwin.tar.gz`
+- `gabb-universal-apple-darwin.tar.gz`
+- `gabb-x86_64-unknown-linux-musl.tar.gz`
+- `gabb-x86_64-pc-windows-msvc.zip`
 - `SHA256SUMS.txt`
 
 ---
@@ -145,16 +161,16 @@ Currently, Linux releases are distributed as tarballs. Future options include:
 
 ```bash
 # Download latest release
-VERSION="0.2.0"
-curl -LO "https://github.com/gabb-software/gabb-cli/releases/download/v${VERSION}/gabb-cli-x86_64-unknown-linux-gnu.tar.gz"
+VERSION="0.10.1"
+curl -LO "https://github.com/gabb-software/gabb-cli/releases/download/v${VERSION}/gabb-x86_64-unknown-linux-musl.tar.gz"
 
 # Verify checksum
 curl -LO "https://github.com/gabb-software/gabb-cli/releases/download/v${VERSION}/SHA256SUMS.txt"
 sha256sum -c SHA256SUMS.txt --ignore-missing
 
 # Extract and install
-tar -xzf gabb-cli-x86_64-unknown-linux-gnu.tar.gz
-sudo mv gabb-cli /usr/local/bin/
+tar -xzf gabb-x86_64-unknown-linux-musl.tar.gz
+sudo mv gabb /usr/local/bin/
 ```
 
 ### Installation Script (Recommended)
@@ -172,22 +188,22 @@ if [ "$VERSION" = "latest" ]; then
     VERSION=$(curl -s https://api.github.com/repos/gabb-software/gabb-cli/releases/latest | grep tag_name | cut -d'"' -f4)
 fi
 
-echo "Installing gabb-cli ${VERSION}..."
+echo "Installing gabb ${VERSION}..."
 
 ARCH=$(uname -m)
 case "$ARCH" in
-    x86_64) TARGET="x86_64-unknown-linux-gnu" ;;
-    aarch64) TARGET="aarch64-unknown-linux-gnu" ;;
+    x86_64) TARGET="x86_64-unknown-linux-musl" ;;
+    aarch64) TARGET="aarch64-unknown-linux-musl" ;;
     *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
-curl -LO "https://github.com/gabb-software/gabb-cli/releases/download/${VERSION}/gabb-cli-${TARGET}.tar.gz"
-tar -xzf "gabb-cli-${TARGET}.tar.gz"
-sudo mv gabb-cli "$INSTALL_DIR/"
-rm "gabb-cli-${TARGET}.tar.gz"
+curl -LO "https://github.com/gabb-software/gabb-cli/releases/download/${VERSION}/gabb-${TARGET}.tar.gz"
+tar -xzf "gabb-${TARGET}.tar.gz"
+sudo mv gabb "$INSTALL_DIR/"
+rm "gabb-${TARGET}.tar.gz"
 
-echo "Installed gabb-cli to ${INSTALL_DIR}/gabb-cli"
-gabb-cli --version
+echo "Installed gabb to ${INSTALL_DIR}/gabb"
+gabb --version
 ```
 
 ### Adding Debian/Ubuntu Packages (Future)
@@ -258,7 +274,21 @@ package() {
 
 ### Current Status
 
-Windows builds are not yet automated. Users can build from source or use WSL.
+Windows builds are automated via GitHub Actions. Each release includes a Windows binary.
+
+### Installation via Scoop
+
+```powershell
+# Add the bucket (first time only)
+scoop bucket add gabb https://github.com/gabb-software/scoop-bucket
+
+# Install
+scoop install gabb
+```
+
+### Manual Installation
+
+Download `gabb-x86_64-pc-windows-msvc.zip` from the latest release and extract to a directory in your PATH.
 
 ### Building from Source
 
@@ -269,32 +299,7 @@ git clone https://github.com/gabb-software/gabb-cli.git
 cd gabb-cli
 cargo build --release
 
-# Binary will be at: target\release\gabb-cli.exe
-```
-
-### Adding Windows to Release Workflow (Future)
-
-To add Windows support, update `.github/workflows/release.yml`:
-
-```yaml
-jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          # ... existing targets ...
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-
-    steps:
-      # ... existing steps ...
-
-      - name: Package (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          cd target/${{ matrix.target }}/release
-          7z a ../../../gabb-cli-${{ matrix.target }}.zip gabb-cli.exe
+# Binary will be at: target\release\gabb.exe
 ```
 
 ### Chocolatey Package (Future)
@@ -370,18 +375,16 @@ cargo install gabb-cli
 ## Release Checklist
 
 ```markdown
-## Release v0.X.0
+## Release v0.X.Y
 
-- [ ] Update version in `Cargo.toml`
+- [ ] Update version in `version.toml` (major, minor, and/or patch)
 - [ ] Update CHANGELOG.md (if maintained)
-- [ ] Run full test suite: `cargo test`
-- [ ] Run clippy: `cargo clippy --all-targets`
-- [ ] Commit version bump
-- [ ] Create and push tag: `git tag v0.X.0 && git push origin --tags`
-- [ ] Wait for GitHub Actions to complete
-- [ ] Verify release artifacts on GitHub
-- [ ] Update Homebrew formula in homebrew-tap
-- [ ] Test installation: `brew upgrade gabb-cli`
+- [ ] Run full test suite locally: `cargo test`
+- [ ] Run clippy locally: `cargo clippy --all-targets --all-features`
+- [ ] Commit and push: `git commit -m "chore: release v0.X.Y" && git push`
+- [ ] Wait for GitHub Actions release workflow to complete
+- [ ] Verify release artifacts on GitHub releases page
+- [ ] Test installation: `brew upgrade gabb` (macOS) or `scoop update gabb` (Windows)
 - [ ] Announce release (if applicable)
 ```
 
@@ -416,13 +419,12 @@ env:
   MACOSX_DEPLOYMENT_TARGET: "10.14"
 ```
 
-### Linux binary has glibc issues
+### Linux binary compatibility
 
-The default Linux build uses glibc. For maximum compatibility, consider musl:
+The Linux build uses musl for static linking, which should work on any Linux distribution. If you encounter issues, you can build from source with your system's glibc:
 
-```yaml
-- target: x86_64-unknown-linux-musl
-  os: ubuntu-latest
+```bash
+git clone https://github.com/gabb-software/gabb-cli.git
+cd gabb-cli
+cargo build --release
 ```
-
-This produces a statically-linked binary that works on any Linux distribution.

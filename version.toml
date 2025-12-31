@@ -1,12 +1,15 @@
-# Semantic version components managed manually
-# Patch number is automatically set to the GitHub Actions run number
+# Semantic version components - all managed manually
 #
-# To bump versions:
+# To release a new version:
+#   1. Update this file with the new version numbers
+#   2. Commit and push to main
+#   3. The release workflow will automatically trigger
+#
+# Version guidelines:
 #   - major: Breaking changes or major milestones
 #   - minor: New features or significant improvements
-#
-# The full version becomes: {major}.{minor}.{run_number}
-# Example: 0.9.142 (where 142 is the CI build number)
+#   - patch: Bug fixes and small improvements
 
 major = 0
-minor = 9
+minor = 10
+patch = 1

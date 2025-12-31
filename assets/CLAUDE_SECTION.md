@@ -1,17 +1,17 @@
 ## Important: Tool Selection: Use gabb for Code Navigation
 
-**This project has gabb MCP tools available. Use them instead of Grep/Read/Glob for code:**
+**This project has gabb MCP tools available for PRECISE code lookups:**
 
 | Task | Use gabb | NOT this |
 |------|----------|----------|
-| Find function/class | `gabb_symbols name_contains="foo" include_source=true` | `Grep "def foo"` |
-| Understand file structure | `gabb_structure file="src/file.rs"` | `Read file.rs` |
-| Get symbol definition | `gabb_symbol name="MyType"` | `Read` + search |
+| Preview file structure (cheap) | `gabb_structure file="src/file.rs"` | `Read file.rs` |
+| Get specific symbol by name | `gabb_symbol name="MyClass" include_source=true` | `Read` + search |
 | Find usages before refactor | `gabb_usages file="..." line=N character=M` | `Grep "MyType"` |
 | Trace call graph | `gabb_callers` / `gabb_callees` | Multiple `Read` calls |
 
 **Key rules:**
-- Always add `include_source=true` to get code without needing Read
-- Use `gabb_structure` before reading any file >100 lines
+- `gabb_structure` is CHEAP - use it first to see file contents without source code
+- Use `include_source=true` ONLY for specific symbol lookups (exact name), not broad searches
+- For broad exploration, still use Task/Explore agent - gabb is for precision, not discovery
 - Supported: `.py`, `.rs`, `.ts`, `.tsx`, `.kt`, `.cpp`
-- Fall back to Grep/Read only for non-code files or unsupported languages
+- Fall back to Grep/Read for non-code files or unsupported languages

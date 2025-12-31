@@ -202,61 +202,10 @@ fn init_skill(root: &Path) -> Result<()> {
         println!("  Created .claude/skills/gabb/");
     }
 
-    // Create tools subdirectory
-    let tools_dir = skills_dir.join("tools");
-    if !tools_dir.exists() {
-        fs::create_dir_all(&tools_dir)?;
-    }
-
-    // Write SKILL.md (main skill file - decision logic)
+    // Write SKILL.md (self-contained skill file with all guidance)
     let skill_file = skills_dir.join("SKILL.md");
     let skill_content = include_str!("../../assets/SKILL.md");
     write_skill_file(&skill_file, skill_content, "SKILL.md")?;
-
-    // Write individual tool reference files (progressive disclosure)
-    let tool_files: &[(&str, &str)] = &[
-        (
-            "tools/symbols.md",
-            include_str!("../../assets/tools/symbols.md"),
-        ),
-        (
-            "tools/structure.md",
-            include_str!("../../assets/tools/structure.md"),
-        ),
-        (
-            "tools/definition.md",
-            include_str!("../../assets/tools/definition.md"),
-        ),
-        (
-            "tools/usages.md",
-            include_str!("../../assets/tools/usages.md"),
-        ),
-        (
-            "tools/callers.md",
-            include_str!("../../assets/tools/callers.md"),
-        ),
-        (
-            "tools/callees.md",
-            include_str!("../../assets/tools/callees.md"),
-        ),
-        (
-            "tools/rename.md",
-            include_str!("../../assets/tools/rename.md"),
-        ),
-        (
-            "tools/implementations.md",
-            include_str!("../../assets/tools/implementations.md"),
-        ),
-        (
-            "tools/hierarchy.md",
-            include_str!("../../assets/tools/hierarchy.md"),
-        ),
-    ];
-
-    for (name, content) in tool_files {
-        let file_path = skills_dir.join(name);
-        write_skill_file(&file_path, content, name)?;
-    }
 
     Ok(())
 }

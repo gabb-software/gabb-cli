@@ -18,7 +18,12 @@ from . import __version__
 from .parser import load_transcript, load_jsonl_transcript
 from .classifier import classify_tool_calls
 from .estimator import estimate_transcript_tokens
-from .reporter import generate_json_report, generate_text_report, print_rich_report
+from .reporter import (
+    generate_json_report,
+    generate_markdown_report,
+    generate_text_report,
+    print_rich_report,
+)
 from .rules import detect_opportunities
 
 
@@ -73,9 +78,9 @@ Examples:
     analyze_parser.add_argument(
         "--format",
         "-f",
-        choices=["text", "json", "rich"],
+        choices=["text", "json", "markdown", "rich"],
         default="rich",
-        help="Output format (default: rich)",
+        help="Output format: text, json, markdown, or rich (default: rich)",
     )
     analyze_parser.add_argument(
         "--verbose",
@@ -121,7 +126,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         try:
             # Load transcript(s)
             if filepath.suffix == ".jsonl":
-                analyses = load_jsonl_transcript(filepath)
+                analyses = [load_jsonl_transcript(filepath)]
             else:
                 analyses = [load_transcript(filepath)]
 
@@ -145,8 +150,10 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                         print(generate_json_report(analysis))
                     elif args.format == "text":
                         print(generate_text_report(analysis))
+                    elif args.format == "markdown":
+                        print(generate_markdown_report(analysis, verbose=args.verbose))
                     else:  # rich
-                        print_rich_report(analysis)
+                        print_rich_report(analysis, verbose=args.verbose)
 
         except json.JSONDecodeError as e:
             print(f"Error: Invalid JSON in {filepath}: {e}", file=sys.stderr)
@@ -167,7 +174,7 @@ def print_summary(analyses: list, output_format: str) -> None:
 
     Args:
         analyses: List of TranscriptAnalysis objects.
-        output_format: Output format (text, json, rich).
+        output_format: Output format (text, json, markdown, rich).
     """
     # Aggregate metrics
     total_turns = sum(len(a.turns) for a in analyses)
@@ -190,7 +197,7 @@ def print_summary(analyses: list, output_format: str) -> None:
                     cmd = tc.bash_info.command_type
                     bash_breakdown[cmd] = bash_breakdown.get(cmd, 0) + 1
 
-    # Aggregate opportunities (Phase 2)
+    # Aggregate opportunities
     all_opportunities = []
     opportunity_type_counts: dict[str, int] = {}
     for a in analyses:
@@ -220,6 +227,54 @@ def print_summary(analyses: list, output_format: str) -> None:
 
     if output_format == "json":
         print(json.dumps(summary, indent=2))
+    elif output_format == "markdown":
+        # Markdown output
+        lines = []
+        lines.append("# Aggregate Summary")
+        lines.append("")
+        lines.append("## Overview")
+        lines.append("")
+        lines.append("| Metric | Value |")
+        lines.append("|--------|-------|")
+        lines.append(f"| Transcripts analyzed | {len(analyses)} |")
+        lines.append(f"| Total turns | {total_turns} |")
+        lines.append(f"| Total tool calls | {total_tool_calls} |")
+        lines.append(f"| Total input tokens | {total_input_tokens:,} |")
+        lines.append(f"| Total output tokens | {total_output_tokens:,} |")
+        lines.append(f"| File content tokens | {total_file_tokens:,} |")
+        lines.append("")
+
+        lines.append("## Tool Distribution")
+        lines.append("")
+        lines.append("| Tool | Count |")
+        lines.append("|------|-------|")
+        for tool, count in sorted(tool_counts.items(), key=lambda x: -x[1]):
+            lines.append(f"| {tool} | {count} |")
+        lines.append("")
+
+        if bash_breakdown:
+            lines.append("### Bash Command Breakdown")
+            lines.append("")
+            lines.append("| Command | Count |")
+            lines.append("|---------|-------|")
+            for cmd, count in sorted(bash_breakdown.items(), key=lambda x: -x[1]):
+                lines.append(f"| {cmd} | {count} |")
+            lines.append("")
+
+        if all_opportunities:
+            lines.append("## Gabb Opportunities")
+            lines.append("")
+            lines.append(f"**{len(all_opportunities)} opportunities** with potential savings of **{total_potential_savings:,} tokens ({savings_percentage:.1f}%)**")
+            lines.append("")
+            lines.append("### By Type")
+            lines.append("")
+            lines.append("| Opportunity Type | Count |")
+            lines.append("|------------------|-------|")
+            for opp_type, count in sorted(opportunity_type_counts.items(), key=lambda x: -x[1]):
+                lines.append(f"| {opp_type} | {count} |")
+            lines.append("")
+
+        print("\n".join(lines))
     else:
         # Text/rich output
         print()
@@ -242,7 +297,7 @@ def print_summary(analyses: list, output_format: str) -> None:
             for cmd, count in sorted(bash_breakdown.items(), key=lambda x: -x[1]):
                 print(f"  {cmd:<30} {count:>5}")
 
-        # Opportunities summary (Phase 2)
+        # Opportunities summary
         if all_opportunities:
             print()
             print("GABB OPPORTUNITIES")

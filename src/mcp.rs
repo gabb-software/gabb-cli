@@ -1301,21 +1301,14 @@ impl McpServer {
             )));
         }
 
-        // Determine if this is a test file
-        let context = if is_test_file(&file_str) {
-            "test"
-        } else {
-            "prod"
-        };
-
         // Compute summary (counts by kind, line count, key types)
         let summary = compute_file_summary(&symbols, full_path.to_str().unwrap_or(&file_str));
         let summary_text = format_file_summary(&summary);
 
-        // Build hierarchical structure and format as text tree
+        // Build hierarchical structure and format as compact text
         let tree = build_structure_tree(&symbols, &file_str)?;
-        let mut output = format!("{} ({})\n{}\n", file_str, context, summary_text);
-        format_structure_tree(&tree, "", &mut output);
+        let mut output = format!("{}:{}\n{}\n", file_str, summary.line_count, summary_text);
+        format_structure_tree(&tree, 0, &mut output);
 
         Ok(ToolResult::text(output))
     }
@@ -2173,34 +2166,20 @@ fn format_file_summary(summary: &FileSummary) -> String {
 }
 
 /// Build a hierarchical tree of symbols for the structure command
-fn build_structure_tree(symbols: &[SymbolRecord], file_path: &str) -> Result<Vec<Value>> {
+fn build_structure_tree(symbols: &[SymbolRecord], _file_path: &str) -> Result<Vec<Value>> {
     use std::collections::HashMap;
 
-    // Convert each symbol to a JSON node with resolved positions
+    // Convert each symbol to a minimal JSON node (name, kind, start_line only)
     let mut nodes: Vec<(Option<String>, Value)> = Vec::new();
 
     for sym in symbols {
-        let (start_line, start_col) = offset_to_line_col_in_file(&sym.file, sym.start as usize)?;
-        let (end_line, end_col) = offset_to_line_col_in_file(&sym.file, sym.end as usize)?;
+        let (start_line, _) = offset_to_line_col_in_file(&sym.file, sym.start as usize)?;
 
-        // Determine context from file path OR inline test markers (#[cfg(test)], #[test])
-        let context = if sym.is_test || is_test_file(file_path) {
-            "test"
-        } else {
-            "prod"
-        };
-
-        let mut node = json!({
+        let node = json!({
             "name": sym.name,
             "kind": sym.kind,
-            "context": context,
-            "start": { "line": start_line, "character": start_col },
-            "end": { "line": end_line, "character": end_col }
+            "line": start_line
         });
-
-        if let Some(vis) = &sym.visibility {
-            node["visibility"] = json!(vis);
-        }
 
         nodes.push((sym.container.clone(), node));
     }
@@ -2228,18 +2207,10 @@ fn build_structure_tree(symbols: &[SymbolRecord], file_path: &str) -> Result<Vec
                 for child in &mut children_array {
                     attach_children(child, children_map);
                 }
-                // Sort children by start position
+                // Sort children by line number
                 children_array.sort_by(|a, b| {
-                    let a_line = a
-                        .get("start")
-                        .and_then(|s| s.get("line"))
-                        .and_then(|l| l.as_u64())
-                        .unwrap_or(0);
-                    let b_line = b
-                        .get("start")
-                        .and_then(|s| s.get("line"))
-                        .and_then(|l| l.as_u64())
-                        .unwrap_or(0);
+                    let a_line = a.get("line").and_then(|l| l.as_u64()).unwrap_or(0);
+                    let b_line = b.get("line").and_then(|l| l.as_u64()).unwrap_or(0);
                     a_line.cmp(&b_line)
                 });
                 node["children"] = json!(children_array);
@@ -2256,88 +2227,50 @@ fn build_structure_tree(symbols: &[SymbolRecord], file_path: &str) -> Result<Vec
         roots.extend(orphans);
     }
 
-    // Sort roots by start position
+    // Sort roots by line number
     roots.sort_by(|a, b| {
-        let a_line = a
-            .get("start")
-            .and_then(|s| s.get("line"))
-            .and_then(|l| l.as_u64())
-            .unwrap_or(0);
-        let b_line = b
-            .get("start")
-            .and_then(|s| s.get("line"))
-            .and_then(|l| l.as_u64())
-            .unwrap_or(0);
+        let a_line = a.get("line").and_then(|l| l.as_u64()).unwrap_or(0);
+        let b_line = b.get("line").and_then(|l| l.as_u64()).unwrap_or(0);
         a_line.cmp(&b_line)
     });
 
     Ok(roots)
 }
 
-/// Format the structure tree as compact text with ASCII art indentation
-fn format_structure_tree(nodes: &[Value], prefix: &str, output: &mut String) {
+/// Abbreviate symbol kinds for compact output
+fn abbreviate_kind(kind: &str) -> &'static str {
+    match kind {
+        "function" => "fn",
+        "struct" => "st",
+        "interface" => "if",
+        "type" => "ty",
+        "enum" => "en",
+        "trait" => "tr",
+        "method" => "me",
+        "const" => "cn",
+        "variable" => "va",
+        "class" => "cl",
+        _ => "??",
+    }
+}
+
+/// Format the structure tree as ultra-compact text (~4-5 tokens/line)
+/// Format: `<name> <kind_abbrev> <line>` with single-space indent for children
+fn format_structure_tree(nodes: &[Value], indent: usize, output: &mut String) {
     use std::fmt::Write;
 
-    for (i, node) in nodes.iter().enumerate() {
-        let is_last = i == nodes.len() - 1;
-        let connector = if is_last { "└─" } else { "├─" };
-
+    for node in nodes {
         let name = node.get("name").and_then(|v| v.as_str()).unwrap_or("?");
         let kind = node.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-        let context = node
-            .get("context")
-            .and_then(|v| v.as_str())
-            .unwrap_or("prod");
+        let line = node.get("line").and_then(|l| l.as_u64()).unwrap_or(0);
 
-        let start_line = node
-            .get("start")
-            .and_then(|s| s.get("line"))
-            .and_then(|l| l.as_u64())
-            .unwrap_or(0);
-        let start_char = node
-            .get("start")
-            .and_then(|s| s.get("character"))
-            .and_then(|c| c.as_u64())
-            .unwrap_or(0);
-        let end_line = node
-            .get("end")
-            .and_then(|s| s.get("line"))
-            .and_then(|l| l.as_u64())
-            .unwrap_or(0);
-        let end_char = node
-            .get("end")
-            .and_then(|s| s.get("character"))
-            .and_then(|c| c.as_u64())
-            .unwrap_or(0);
+        let kind_abbrev = abbreviate_kind(kind);
+        let indent_str = " ".repeat(indent);
 
-        let visibility = node
-            .get("visibility")
-            .and_then(|v| v.as_str())
-            .map(|v| format!(" ({})", v))
-            .unwrap_or_default();
-
-        let _ = writeln!(
-            output,
-            "{}{} {} {}{} [{}]  [{}:{} - {}:{}]",
-            prefix,
-            connector,
-            kind,
-            name,
-            visibility,
-            context,
-            start_line,
-            start_char,
-            end_line,
-            end_char
-        );
+        let _ = writeln!(output, "{}{} {} {}", indent_str, name, kind_abbrev, line);
 
         if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
-            let child_prefix = if is_last {
-                format!("{}   ", prefix)
-            } else {
-                format!("{}│  ", prefix)
-            };
-            format_structure_tree(children, &child_prefix, output);
+            format_structure_tree(children, indent + 1, output);
         }
     }
 }

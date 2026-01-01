@@ -216,8 +216,7 @@ Structure command:
 - **Summary stats**: symbol counts by kind, total line count
 - **Key types**: highlights important public types with many methods
 - Displays symbols nested by containment (e.g., methods inside classes)
-- Shows start/end positions for each symbol
-- Indicates whether file is test or production code
+- Shows start line for each symbol (compact format: `name kind line`)
 
 What gets indexed:
 - Files: `*.ts`, `*.tsx`, `*.rs`, `*.kt`, `*.kts`

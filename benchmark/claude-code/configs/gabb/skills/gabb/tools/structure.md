@@ -24,10 +24,9 @@ gabb_structure file="src/payments.py"
 
 - **Summary stats**: symbol counts by kind, total line count
 - **Key types**: important public types with many methods
-- Symbol names, kinds (function, class, method)
-- Line numbers and positions
-- Hierarchy (methods inside classes)
-- Test vs production context
+- Symbol names, kinds (abbreviated: fn, st, cl, if, ty, en, tr, me, cn, va)
+- Line numbers (start line only)
+- Hierarchy (methods inside classes, shown via single-space indent)
 
 **After seeing structure:**
 - Use `Read` with `offset`/`limit` to read specific line ranges

@@ -64,17 +64,19 @@ The ONLY exceptions are:
 ## What the Output Looks Like
 
 ```
-/path/to/file.rs (prod)
+/path/to/file.rs:450
 Summary: 15 functions, 3 structs | 450 lines
 Key types: MyStruct (10 methods)
-├─ struct MyStruct (pub) [prod]  [10:1 - 25:2]
-│  ├─ function new (pub) [prod]  [12:5 - 15:6]
-│  └─ function process [prod]  [17:5 - 24:6]
-├─ function helper [prod]  [30:1 - 45:2]
-└─ function main [prod]  [50:1 - 60:2]
+
+MyStruct st 10
+ new fn 12
+ process fn 17
+helper fn 30
+main fn 50
 ```
 
 The output shows:
+- File path and line count
 - Summary stats (function count, struct count, line count)
 - Key types with method counts
-- Hierarchical tree with line ranges `[start:col - end:col]`
+- Compact symbol tree: `name kind_abbrev line` with single-space indent for children

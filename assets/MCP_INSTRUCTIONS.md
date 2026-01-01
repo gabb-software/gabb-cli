@@ -2,26 +2,31 @@
 
 Code indexing server providing lightweight file structure previews via SQLite index.
 
-## The `gabb_structure` Tool
+## CRITICAL: Pre-Read Check for Code Files
 
-Use `gabb_structure` to get a **cheap, lightweight overview** of a file before reading it.
+**BEFORE using Read on ANY supported code file, you MUST:**
 
-**When to use:**
-- Before reading any file >100 lines
-- To understand what functions/classes exist in a file
-- To get line numbers for targeted `Read` calls
+1. Check: Is file extension .py, .pyi, .ts, .tsx, .rs, .kt, .kts, .cpp, .cc, .cxx, .hpp, .hh?
+2. If YES → Call `gabb_structure` FIRST. Do NOT call Read without structure.
+3. Use the structure output to Read with offset/limit.
 
-**What it returns:**
-- File path and summary stats (function count, class count, line count)
-- Key types with their line ranges
-- Symbol hierarchy tree (names, kinds, line numbers)
-- NO source code (saves tokens)
+**Why this is mandatory:**
+- Large files consume 5,000-10,000 tokens per read
+- `gabb_structure` costs ~50 tokens, shows file layout
+- You can then Read specific sections (saves 90%+ tokens)
+- The same file may be read many times in a session—structure prevents repeated waste
 
-**Example workflow:**
+**The pattern is ALWAYS:**
 ```
-1. gabb_structure file="src/large_file.rs"    → See symbols and line numbers
-2. Read file_path="src/large_file.rs" offset=150 limit=50  → Read specific section
+gabb_structure file="path/to/file.rs"      # ~50 tokens, shows layout
+Read file="path/to/file.rs" offset=X limit=Y   # Read only what you need
 ```
+
+**Exceptions:**
+- Files you've already seen structure for in this conversation
+- Files known to be <50 lines
+- Non-code files (.json, .md, .yaml, .toml)
+- Unsupported languages (.js, .jsx, .go, .java, .c, .h)
 
 ## Supported Languages
 

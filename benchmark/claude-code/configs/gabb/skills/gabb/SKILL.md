@@ -8,6 +8,20 @@ allowed-tools: mcp__gabb__*, Edit, Write, Bash, Read, Glob
 
 # When to Use gabb vs Grep/Read
 
+## Pre-Flight Checklist (Before ANY Read on Code Files)
+
+Before calling `Read` on a code file, run this check:
+
+```
+□ Is file extension in [.py, .pyi, .ts, .tsx, .rs, .kt, .kts, .cpp, .cc, .cxx, .hpp, .hh]?
+  ├─ NO  → Use Read directly (unsupported language)
+  └─ YES → Have I called gabb_structure on this file in this session?
+           ├─ NO  → Call gabb_structure FIRST, then decide what to read
+           └─ YES → Use Read with offset/limit based on structure output
+```
+
+**Why checklists work**: They force a pause before automatic behavior.
+
 ## The Core Decision
 
 **Ask yourself: "Am I looking for CODE (functions, classes, symbols)?"**
@@ -37,7 +51,7 @@ allowed-tools: mcp__gabb__*, Edit, Write, Bash, Read, Glob
 ```
 gabb_structure file="path/to/file.py"
 ```
-Returns symbol names, kinds, line numbers. Use for any file >100 lines.
+**MANDATORY** for any supported code file. Returns symbol names, kinds, line numbers.
 
 **Step 2: Get specific code** (one of these based on what you need)
 - `gabb_symbols name="FunctionName" include_source=true` - get a specific symbol's code

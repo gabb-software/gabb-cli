@@ -319,11 +319,14 @@ impl McpServer {
         let tools = vec![Tool {
             name: "gabb_structure".to_string(),
             description: concat!(
-                "Get a CHEAP, LIGHTWEIGHT overview of a file's symbols before reading it. ",
-                "USE THIS FIRST for any file >100 lines to see what's inside without token cost. ",
-                "Returns symbol names, kinds, and line numbers - NOT source code. ",
-                "After seeing structure, use Read with offset/limit to read specific sections. ",
-                "Supports Python, TypeScript, Rust, Kotlin, and C++."
+                "Get a CHEAP, LIGHTWEIGHT overview of a file's symbols before reading it.\n\n",
+                "⚠️ MANDATORY PRE-READ CHECK: Before calling Read on any .py/.ts/.tsx/.rs/.kt/.cpp/.cc/.hpp file, ",
+                "you MUST call gabb_structure FIRST. Reading a large file directly can cost 5,000-10,000 tokens. ",
+                "gabb_structure costs ~50 tokens and shows you what's inside, so you can then Read with offset/limit.\n\n",
+                "The ONLY exceptions are: (1) files <50 lines where direct Read is fine, ",
+                "(2) files you've already seen structure for in this conversation.\n\n",
+                "Returns: symbol names, kinds, line numbers—NOT source code. ",
+                "After seeing structure, use targeted Read with offset/limit."
             )
             .to_string(),
             input_schema: json!({

@@ -8,24 +8,38 @@ allowed-tools: mcp__gabb__gabb_structure, Edit, Write, Bash, Read, Glob
 
 # gabb File Structure Preview
 
+## Pre-Flight Checklist (Before ANY Read on Code Files)
+
+Before calling `Read` on a code file, run this check:
+
+```
+□ Is file extension in [.py, .pyi, .ts, .tsx, .rs, .kt, .kts, .cpp, .cc, .cxx, .hpp, .hh]?
+  ├─ NO  → Use Read directly (unsupported language)
+  └─ YES → Have I called gabb_structure on this file in this session?
+           ├─ NO  → Call gabb_structure FIRST, then decide what to read
+           └─ YES → Use Read with offset/limit based on structure output
+```
+
+**Why checklists work**: They force a pause before automatic behavior.
+
 ## Purpose
 
 Gabb provides a single tool—`gabb_structure`—that gives you a cheap, lightweight overview of a file's symbols before reading it. Use it to see what's in a file without the token cost of reading the entire thing.
 
 ## When to Use `gabb_structure`
 
-Use it when:
-- You're about to read a file that might be large (>100 lines)
-- You want to know what functions, classes, or types exist in a file
-- You need line numbers to read specific sections with `Read offset/limit`
+**MANDATORY**: Before reading any supported code file, call `gabb_structure` first.
 
-## When NOT to Use `gabb_structure`
+The ONLY exceptions are:
+- Files known to be <50 lines
+- Files you've already seen structure for in this conversation
+- Non-code files (.json, .md, .yaml, .toml)
+- Unsupported languages (.js, .jsx, .go, .java, .c, .h)
 
-Fall back to direct `Read` or `Grep` when:
-- The file is short (<100 lines)—just read it directly
-- Searching **non-code files** (.json, .md, .yaml, .toml, .env)
-- Searching **unsupported languages** (.js, .jsx, .go, .java, .c, .h)
-- Looking for **text content** (error messages, log strings, comments)
+**Why this is mandatory:**
+- Large files consume 5,000-10,000 tokens per Read
+- `gabb_structure` costs ~50 tokens, shows file layout
+- You can then Read specific sections (saves 90%+ tokens)
 
 ## Supported Languages
 

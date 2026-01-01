@@ -332,6 +332,98 @@ All four are valid and layer together. CLAUDE.md's project-specific hint adds to
 
 ---
 
+## Prompt Effectiveness Patterns
+
+These patterns are derived from empirical analysis of Claude Code transcripts. Use them when you need Claude to override default behaviors (like using Read/Grep) with preferred alternatives (like gabb tools).
+
+### 1. Trigger on Observable Conditions
+
+**Problem:** Instructions that depend on information Claude doesn't have yet fail.
+
+**Bad:** "Use gabb_structure for files >100 lines"
+- Claude doesn't know file size BEFORE reading it
+- The decision point comes too late—Claude has already committed to Read
+
+**Good:** "Before calling Read on any .py/.ts/.rs file, call gabb_structure first"
+- File extension is known before the Read call
+- Decision can be made at the right time
+
+### 2. Mandatory Language with Clear Exceptions
+
+**Problem:** Advisory language doesn't override trained defaults.
+
+**Research finding:** Rules with exceptions ("MUST X unless Y") outperform preferences ("prefer X when Y") by 3-4x in compliance.
+
+**Bad:** "Prefer gabb tools over grep for code navigation"
+**Good:** "You MUST call gabb_structure before Read. The ONLY exceptions are: (1) files <50 lines, (2) files you've already seen"
+
+The pattern is: **MUST + verb + clear exceptions**
+
+### 3. Quantify Stakes
+
+**Problem:** Vague benefits don't motivate behavior change.
+
+**Bad:** "gabb_structure is cheaper than Read"
+**Good:** "Reading a large file costs 5,000-10,000 tokens. gabb_structure costs ~50 tokens."
+
+Concrete numbers create urgency. "90% savings" or "5000 tokens" beats "more efficient".
+
+### 4. Strategic Placement by Visibility
+
+Instructions are loaded at different times with different reliability:
+
+| Location | Loaded When | Reliability | Best For |
+|----------|-------------|-------------|----------|
+| Tool Description | Always (part of schema) | Highest | Critical per-tool guidance |
+| MCP_INSTRUCTIONS.md | Server connects | High | Cross-tool workflows |
+| SKILL.md | Skill invoked/relevant | Medium | Detailed patterns |
+| CLAUDE.md | Project opened | High | Project-specific overrides |
+
+**Key insight:** Put mission-critical behavior changes in **tool descriptions** because they're always visible. Don't rely on SKILL.md for critical instructions—it may not be loaded during exploration tasks.
+
+### 5. Decision Interrupts (Checklists)
+
+**Problem:** Claude's base training creates automatic behaviors that skip consideration of alternatives.
+
+**Solution:** Create a visual checkpoint that forces a pause:
+
+```
+□ Is file extension in [.py, .ts, .rs, ...]?
+  ├─ NO  → Use Read directly
+  └─ YES → Have I called gabb_structure?
+           ├─ NO  → Call it first
+           └─ YES → Use Read with offset/limit
+```
+
+The checkbox (□) and tree structure create a visual interrupt that's hard to skip.
+
+### 6. Visual Markers for Critical Instructions
+
+Use emoji markers to draw attention to must-follow instructions:
+
+- ⚠️ for mandatory requirements
+- ❌ for prohibited actions
+- ✅ for required actions
+
+**Example:**
+```
+⚠️ MANDATORY PRE-READ CHECK: Before calling Read on any .py/.ts/.rs file,
+you MUST call gabb_structure FIRST.
+```
+
+### Summary: The Effective Override Pattern
+
+When you need Claude to use Tool A instead of default Tool B:
+
+1. **Trigger** on something Claude knows BEFORE calling Tool B (file extension, not file size)
+2. **State** the requirement as MUST with enumerated exceptions
+3. **Quantify** the cost of not following (tokens, API calls, time)
+4. **Place** in tool description (always visible) not just SKILL.md
+5. **Interrupt** automatic behavior with visual checklists
+6. **Mark** critical instructions with ⚠️
+
+---
+
 ## Template: SKILL.md Structure
 
 ```markdown

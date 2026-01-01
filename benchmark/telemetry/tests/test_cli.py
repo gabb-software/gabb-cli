@@ -78,3 +78,60 @@ def test_cli_analyze_summary(simple_transcript_path: Path, multi_tool_transcript
     captured = capsys.readouterr()
     assert "AGGREGATE SUMMARY" in captured.out
     assert "Transcripts analyzed:" in captured.out
+
+
+def test_cli_analyze_markdown_output(simple_transcript_path: Path, capsys):
+    """Test markdown output format."""
+    result = main(["analyze", str(simple_transcript_path), "--format", "markdown"])
+    assert result == 0
+
+    captured = capsys.readouterr()
+    # Check for markdown headings and tables
+    assert "# Gabb Benchmark Report" in captured.out
+    assert "## Summary" in captured.out
+    assert "| Metric | Value |" in captured.out
+    assert "## Tool Distribution" in captured.out
+
+
+def test_cli_analyze_markdown_verbose(simple_transcript_path: Path, capsys):
+    """Test markdown output with verbose mode."""
+    result = main([
+        "analyze",
+        str(simple_transcript_path),
+        "--format", "markdown",
+        "--verbose",
+    ])
+    assert result == 0
+
+    captured = capsys.readouterr()
+    assert "## Per-Turn Breakdown" in captured.out
+    assert "### Detailed Tool Calls" in captured.out
+
+
+def test_cli_analyze_summary_markdown(simple_transcript_path: Path, multi_tool_transcript_path: Path, capsys):
+    """Test --summary with markdown format."""
+    result = main([
+        "analyze",
+        str(simple_transcript_path),
+        str(multi_tool_transcript_path),
+        "--summary",
+        "--format", "markdown",
+    ])
+    assert result == 0
+
+    captured = capsys.readouterr()
+    assert "# Aggregate Summary" in captured.out
+    assert "## Overview" in captured.out
+    assert "| Metric | Value |" in captured.out
+
+
+def test_cli_analyze_verbose_rich(simple_transcript_path: Path, capsys):
+    """Test verbose mode with rich output."""
+    result = main([
+        "analyze",
+        str(simple_transcript_path),
+        "--format", "rich",
+        "--verbose",
+    ])
+    assert result == 0
+    # Rich output is printed to console, so just check it doesn't error

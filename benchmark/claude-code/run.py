@@ -120,9 +120,13 @@ class RunMetrics:
     # Timing
     wall_time_seconds: float = 0.0
 
-    # Tokens
+    # Tokens (base input excludes cache)
     tokens_input: int = 0
     tokens_output: int = 0
+
+    # Cache token breakdown
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
 
     # Tool usage counts
     tool_calls: dict[str, int] = field(default_factory=dict)
@@ -135,6 +139,28 @@ class RunMetrics:
     # Conversation turns
     turns: int = 0
 
+    @property
+    def tokens_total(self) -> int:
+        """Total context tokens (input + cache read + cache creation)."""
+        return self.tokens_input + self.cache_read_tokens + self.cache_creation_tokens + self.tokens_output
+
+    @property
+    def cost_usd(self) -> float:
+        """Estimated cost in USD using Claude Sonnet pricing.
+
+        Pricing (per million tokens):
+        - Input: $3
+        - Output: $15
+        - Cache read: $0.30 (10% of input)
+        - Cache creation: $3.75 (125% of input)
+        """
+        return (
+            self.tokens_input * 3.0 / 1_000_000
+            + self.tokens_output * 15.0 / 1_000_000
+            + self.cache_read_tokens * 0.30 / 1_000_000
+            + self.cache_creation_tokens * 3.75 / 1_000_000
+        )
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON export."""
         return {
@@ -143,7 +169,10 @@ class RunMetrics:
             "wall_time_seconds": round(self.wall_time_seconds, 2),
             "tokens_input": self.tokens_input,
             "tokens_output": self.tokens_output,
-            "tokens_total": self.tokens_input + self.tokens_output,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_creation_tokens": self.cache_creation_tokens,
+            "tokens_total": self.tokens_total,
+            "cost_usd": round(self.cost_usd, 4),
             "tool_calls": self.tool_calls,
             "tool_calls_total": sum(self.tool_calls.values()),
             "success": self.success,
@@ -197,7 +226,10 @@ def aggregate_runs(runs: list[RunMetrics]) -> dict[str, Any]:
     times = [r.wall_time_seconds for r in runs]
     tokens_input = [r.tokens_input for r in runs]
     tokens_output = [r.tokens_output for r in runs]
-    tokens_total = [r.tokens_input + r.tokens_output for r in runs]
+    tokens_total = [r.tokens_total for r in runs]
+    cache_read = [r.cache_read_tokens for r in runs]
+    cache_creation = [r.cache_creation_tokens for r in runs]
+    costs = [r.cost_usd for r in runs]
     tool_calls_total = [sum(r.tool_calls.values()) for r in runs]
     turns = [r.turns for r in runs]
     successes = sum(1 for r in runs if r.success)
@@ -222,6 +254,9 @@ def aggregate_runs(runs: list[RunMetrics]) -> dict[str, Any]:
         "tokens_input": compute_stats(tokens_input).to_dict(),
         "tokens_output": compute_stats(tokens_output).to_dict(),
         "tokens_total": compute_stats(tokens_total).to_dict(),
+        "cache_read_tokens": compute_stats(cache_read).to_dict(),
+        "cache_creation_tokens": compute_stats(cache_creation).to_dict(),
+        "cost_usd": compute_stats(costs).to_dict(),
         "tool_calls_total": compute_stats(tool_calls_total).to_dict(),
         "turns": compute_stats(turns).to_dict(),
         "success_rate": round(successes / len(runs), 2) if runs else 0,
@@ -773,9 +808,9 @@ FINAL_ANSWER: path/to/file2.py"""
                     usage = output.get("usage", {})
                     metrics.tokens_input = usage.get("input_tokens", 0)
                     metrics.tokens_output = usage.get("output_tokens", 0)
-                    # Also capture cache tokens if available
-                    metrics.tokens_input += usage.get("cache_read_input_tokens", 0)
-                    metrics.tokens_input += usage.get("cache_creation_input_tokens", 0)
+                    # Capture cache tokens separately for cost analysis
+                    metrics.cache_read_tokens = usage.get("cache_read_input_tokens", 0)
+                    metrics.cache_creation_tokens = usage.get("cache_creation_input_tokens", 0)
                     metrics.turns = output.get("num_turns", 0)
                 except json.JSONDecodeError:
                     metrics.final_answer = result.stdout
@@ -1165,7 +1200,117 @@ def _print_comparison_rich(control_runs: list[RunMetrics], gabb_runs: list[RunMe
         f"{turn_diff:+.1f}",
     )
 
+    # Cost (USD)
+    c_cost = control_agg["cost_usd"]
+    g_cost = gabb_agg["cost_usd"]
+    cost_diff = g_cost["mean"] - c_cost["mean"]
+    cost_pct = (cost_diff / c_cost["mean"] * 100) if c_cost["mean"] > 0 else 0
+    if single_run:
+        table.add_row(
+            "Cost (USD)",
+            f"${c_cost['mean']:.4f}",
+            f"${g_cost['mean']:.4f}",
+            f"{cost_diff:+.4f} ({cost_pct:+.0f}%)",
+        )
+    else:
+        table.add_row(
+            "Cost (USD)",
+            f"${c_cost['mean']:.4f} ± ${c_cost['std']:.4f}",
+            f"${g_cost['mean']:.4f} ± ${g_cost['std']:.4f}",
+            f"{cost_diff:+.4f} ({cost_pct:+.0f}%)",
+        )
+
     console.print(table)
+
+    # Cache token breakdown
+    console.print("\n[bold]Cache Token Breakdown:[/bold]")
+    cache_table = Table()
+    cache_table.add_column("Token Type", style="cyan")
+    cache_table.add_column("Control", justify="right")
+    cache_table.add_column("Gabb", justify="right")
+    cache_table.add_column("Diff", justify="right")
+
+    # Cache reads (cheap - 10% cost)
+    c_cache_read = control_agg["cache_read_tokens"]
+    g_cache_read = gabb_agg["cache_read_tokens"]
+    read_diff = g_cache_read["mean"] - c_cache_read["mean"]
+    read_pct = (read_diff / c_cache_read["mean"] * 100) if c_cache_read["mean"] > 0 else 0
+    if single_run:
+        cache_table.add_row(
+            "Cache Read (10% cost)",
+            f"{c_cache_read['mean']:,.0f}",
+            f"{g_cache_read['mean']:,.0f}",
+            f"{read_diff:+,.0f} ({read_pct:+.0f}%)",
+        )
+    else:
+        cache_table.add_row(
+            "Cache Read (10% cost)",
+            f"{c_cache_read['mean']:,.0f} ± {c_cache_read['std']:,.0f}",
+            f"{g_cache_read['mean']:,.0f} ± {g_cache_read['std']:,.0f}",
+            f"{read_diff:+,.0f} ({read_pct:+.0f}%)",
+        )
+
+    # Cache creation (expensive - 125% cost)
+    c_cache_create = control_agg["cache_creation_tokens"]
+    g_cache_create = gabb_agg["cache_creation_tokens"]
+    create_diff = g_cache_create["mean"] - c_cache_create["mean"]
+    create_pct = (create_diff / c_cache_create["mean"] * 100) if c_cache_create["mean"] > 0 else 0
+    if single_run:
+        cache_table.add_row(
+            "Cache Create (125% cost)",
+            f"{c_cache_create['mean']:,.0f}",
+            f"{g_cache_create['mean']:,.0f}",
+            f"{create_diff:+,.0f} ({create_pct:+.0f}%)",
+        )
+    else:
+        cache_table.add_row(
+            "Cache Create (125% cost)",
+            f"{c_cache_create['mean']:,.0f} ± {c_cache_create['std']:,.0f}",
+            f"{g_cache_create['mean']:,.0f} ± {g_cache_create['std']:,.0f}",
+            f"{create_diff:+,.0f} ({create_pct:+.0f}%)",
+        )
+
+    # Input tokens (full cost)
+    c_input = control_agg["tokens_input"]
+    g_input = gabb_agg["tokens_input"]
+    input_diff = g_input["mean"] - c_input["mean"]
+    input_pct = (input_diff / c_input["mean"] * 100) if c_input["mean"] > 0 else 0
+    if single_run:
+        cache_table.add_row(
+            "Input (100% cost)",
+            f"{c_input['mean']:,.0f}",
+            f"{g_input['mean']:,.0f}",
+            f"{input_diff:+,.0f} ({input_pct:+.0f}%)",
+        )
+    else:
+        cache_table.add_row(
+            "Input (100% cost)",
+            f"{c_input['mean']:,.0f} ± {c_input['std']:,.0f}",
+            f"{g_input['mean']:,.0f} ± {g_input['std']:,.0f}",
+            f"{input_diff:+,.0f} ({input_pct:+.0f}%)",
+        )
+
+    # Output tokens (highest cost)
+    c_output = control_agg["tokens_output"]
+    g_output = gabb_agg["tokens_output"]
+    output_diff = g_output["mean"] - c_output["mean"]
+    output_pct = (output_diff / c_output["mean"] * 100) if c_output["mean"] > 0 else 0
+    if single_run:
+        cache_table.add_row(
+            "Output (5x cost)",
+            f"{c_output['mean']:,.0f}",
+            f"{g_output['mean']:,.0f}",
+            f"{output_diff:+,.0f} ({output_pct:+.0f}%)",
+        )
+    else:
+        cache_table.add_row(
+            "Output (5x cost)",
+            f"{c_output['mean']:,.0f} ± {c_output['std']:,.0f}",
+            f"{g_output['mean']:,.0f} ± {g_output['std']:,.0f}",
+            f"{output_diff:+,.0f} ({output_pct:+.0f}%)",
+        )
+
+    console.print(cache_table)
 
     # Tool breakdown
     console.print("\n[bold]Tool Usage:[/bold]")
@@ -1440,6 +1585,8 @@ def save_results(
         g_tokens = gabb_agg["tokens_total"]["mean"]
         c_time = control_agg["wall_time_seconds"]["mean"]
         g_time = gabb_agg["wall_time_seconds"]["mean"]
+        c_cost = control_agg["cost_usd"]["mean"]
+        g_cost = gabb_agg["cost_usd"]["mean"]
 
         data["summary"] = {
             "token_savings_pct": {
@@ -1448,6 +1595,11 @@ def save_results(
             "time_savings_pct": {
                 "mean": round((c_time - g_time) / max(0.1, c_time) * 100, 1),
             },
+            "cost_savings_pct": {
+                "mean": round((c_cost - g_cost) / max(0.0001, c_cost) * 100, 1),
+            },
+            "control_cost_usd": round(c_cost, 4),
+            "gabb_cost_usd": round(g_cost, 4),
             "control_success_rate": control_agg["success_rate"],
             "gabb_success_rate": gabb_agg["success_rate"],
         }

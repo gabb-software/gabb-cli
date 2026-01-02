@@ -5,7 +5,10 @@ CLAUDE.md
 PLAN.md
 TOOL_PLAN.md
 .gabb/
-.claude/
+# Claude Code local files (keep commands/skills for sharing)
+.claude/*
+!.claude/commands/
+!.claude/skills/
 benchmark/.env
 benchmark/bin/
 benchmark/results/

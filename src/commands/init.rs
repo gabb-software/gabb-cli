@@ -10,9 +10,6 @@ use gabb_cli::store::IndexStats;
 
 use crate::commands::mcp_config::find_gabb_binary;
 
-/// Marker to detect if CLAUDE.md already has gabb section
-const CLAUDEMD_SECTION_MARKER: &str = "## Tool Selection: Use gabb";
-
 // ==================== Init Command ====================
 
 /// Initialize gabb in a project
@@ -21,7 +18,6 @@ pub fn init_project(
     setup_mcp: bool,
     setup_gitignore: bool,
     setup_skill: bool,
-    setup_claudemd: bool,
 ) -> Result<()> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
 
@@ -51,11 +47,6 @@ pub fn init_project(
         init_skill(&root)?;
     }
 
-    // Setup CLAUDE.md if requested
-    if setup_claudemd {
-        init_claudemd(&root)?;
-    }
-
     println!();
     println!("Next steps:");
     println!("  1. Start the daemon:    gabb daemon start");
@@ -63,10 +54,8 @@ pub fn init_project(
         println!("  2. Restart Claude Code to load the MCP server");
     } else if setup_skill {
         println!("  2. The skill will auto-activate when Claude Code sees relevant requests");
-    } else if setup_claudemd {
-        println!("  2. The CLAUDE.md guidance is now active for Claude Code");
     } else {
-        println!("  2. For AI integration: gabb init --mcp --claudemd");
+        println!("  2. For AI integration: gabb init --mcp");
     }
 
     Ok(())
@@ -227,36 +216,6 @@ fn write_skill_file(path: &Path, content: &str, name: &str) -> Result<()> {
             println!("  Claude will auto-discover this skill for code navigation tasks");
         }
     }
-    Ok(())
-}
-
-/// Add gabb tool guidance section to CLAUDE.md
-fn init_claudemd(root: &Path) -> Result<()> {
-    let claudemd_path = root.join("CLAUDE.md");
-    let section_content = include_str!("../../assets/CLAUDE_SECTION.md");
-
-    if claudemd_path.exists() {
-        // Read existing content
-        let existing = fs::read_to_string(&claudemd_path)?;
-
-        // Check if section already exists
-        if existing.contains(CLAUDEMD_SECTION_MARKER) {
-            println!("  CLAUDE.md already has gabb section");
-            return Ok(());
-        }
-
-        // Append section to existing file
-        let new_content = format!("{}\n\n{}", existing.trim_end(), section_content);
-        fs::write(&claudemd_path, new_content)?;
-        println!("  Added gabb section to CLAUDE.md");
-    } else {
-        // Create new CLAUDE.md with section
-        let header = "# Project Instructions\n\nThis file provides guidance to Claude Code.\n\n";
-        let new_content = format!("{}{}", header, section_content);
-        fs::write(&claudemd_path, new_content)?;
-        println!("  Created CLAUDE.md with gabb tool guidance");
-    }
-
     Ok(())
 }
 
@@ -470,40 +429,7 @@ pub fn setup_wizard(
         should_install
     };
 
-    // Step 5: Offer to add CLAUDE.md section
-    let claudemd_path = root.join("CLAUDE.md");
-    let claudemd_has_gabb = if claudemd_path.exists() {
-        let content = fs::read_to_string(&claudemd_path).unwrap_or_default();
-        content.contains(CLAUDEMD_SECTION_MARKER)
-    } else {
-        false
-    };
-
-    let install_claudemd = if claudemd_has_gabb {
-        println!("CLAUDE.md already has gabb section");
-        false
-    } else {
-        let prompt_msg = if claudemd_path.exists() {
-            "Add gabb guidance to CLAUDE.md?"
-        } else {
-            "Create CLAUDE.md with gabb guidance?"
-        };
-        let should_install = yes || prompt_yes_no(prompt_msg, true)?;
-        if should_install {
-            if dry_run {
-                if claudemd_path.exists() {
-                    println!("   Would add gabb section to CLAUDE.md");
-                } else {
-                    println!("   Would create CLAUDE.md with gabb guidance");
-                }
-            } else {
-                init_claudemd(&root)?;
-            }
-        }
-        should_install
-    };
-
-    // Step 6: Offer to update .gitignore
+    // Step 5: Offer to update .gitignore
     let gitignore_path = root.join(".gitignore");
     let gitignore_content = if gitignore_path.exists() {
         fs::read_to_string(&gitignore_path).unwrap_or_default()
@@ -538,7 +464,7 @@ pub fn setup_wizard(
         }
     }
 
-    // Step 7: Run initial index (unless --no-index or dry-run)
+    // Step 6: Run initial index (unless --no-index or dry-run)
     let stats = if no_index {
         println!("Skipping initial index (--no-index)");
         None
@@ -571,13 +497,13 @@ pub fn setup_wizard(
         display_index_stats_table(stats);
     }
 
-    // Step 8: Print success message and instructions
+    // Step 7: Print success message and instructions
     println!();
     if dry_run {
         println!("Dry run complete. No changes were made.");
     } else {
         println!("Setup complete! Claude can now use gabb tools.");
-        if install_mcp || install_skill || install_claudemd {
+        if install_mcp || install_skill {
             println!("Restart Claude Code to load the new configuration.");
         }
         println!();

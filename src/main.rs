@@ -213,9 +213,7 @@ fn main() -> std::process::ExitCode {
             mcp,
             gitignore,
             skill,
-            claudemd,
-        } => commands::init_project(&workspace, mcp, gitignore, skill, claudemd)
-            .map(|_| ExitCode::Success),
+        } => commands::init_project(&workspace, mcp, gitignore, skill).map(|_| ExitCode::Success),
         Commands::Setup {
             yes,
             dry_run,

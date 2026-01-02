@@ -475,29 +475,18 @@ class ClaudeCodeRunner:
         self.temp_dir: Path | None = None
         self.workspace_claude_dir: Path | None = None
         self.mcp_config_file: Path | None = None
-        # Track original CLAUDE.md state for cleanup
-        self.original_claudemd: str | None = None  # Original content or None if didn't exist
-        self.claudemd_existed: bool = False
 
     def setup(self) -> None:
         """Set up workspace-local config for Claude Code.
 
         For control condition: Clean environment with no gabb artifacts.
-        For gabb condition: Full gabb setup including MCP server, skill, and CLAUDE.md.
+        For gabb condition: Full gabb setup including MCP server and skill.
 
         Uses workspace-local .claude/ directory instead of CLAUDE_CONFIG_DIR
         to preserve authentication credentials stored in system keychain.
         """
         self.temp_dir = Path(tempfile.mkdtemp(prefix="claude_bench_"))
         self.tool_log = self.temp_dir / "tool_calls.jsonl"
-
-        # Track original CLAUDE.md state for cleanup
-        claudemd_path = self.workspace / "CLAUDE.md"
-        self.claudemd_existed = claudemd_path.exists()
-        if self.claudemd_existed:
-            self.original_claudemd = claudemd_path.read_text()
-        else:
-            self.original_claudemd = None
 
         # For control condition, ensure no gabb artifacts exist
         # This prevents interference from previous gabb runs
@@ -555,28 +544,6 @@ class ClaudeCodeRunner:
             if self.verbose:
                 print_msg("  Removed gabb skill", "dim")
 
-        # Remove gabb section from CLAUDE.md if present
-        claudemd_path = self.workspace / "CLAUDE.md"
-        gabb_marker = "## Tool Selection: Use gabb"
-        if claudemd_path.exists():
-            content = claudemd_path.read_text()
-            if gabb_marker in content:
-                lines = content.split("\n")
-                new_lines = []
-                skip_until_next_h2 = False
-                for line in lines:
-                    if line.startswith(gabb_marker):
-                        skip_until_next_h2 = True
-                        continue
-                    if skip_until_next_h2 and line.startswith("## "):
-                        skip_until_next_h2 = False
-                    if not skip_until_next_h2:
-                        new_lines.append(line)
-                cleaned = "\n".join(new_lines).rstrip() + "\n"
-                claudemd_path.write_text(cleaned)
-                if self.verbose:
-                    print_msg("  Removed gabb section from CLAUDE.md", "dim")
-
         # Remove gabb MCP server from settings if present
         settings_file = self.workspace / ".claude" / "settings.local.json"
         if settings_file.exists():
@@ -593,7 +560,7 @@ class ClaudeCodeRunner:
                 pass
 
     def _setup_gabb_full(self) -> None:
-        """Full gabb setup: init, skill, MCP server, and CLAUDE.md."""
+        """Full gabb setup: init, skill, and MCP server."""
         if self.verbose:
             print_msg(f"Setting up gabb in {self.workspace}...", "dim")
 
@@ -662,28 +629,10 @@ class ClaudeCodeRunner:
                 except Exception as e:
                     print_msg(f"  DEBUG: Error reading settings: {e}", "red")
 
-        # Step 4: Add gabb guidance to CLAUDE.md
-        if self.verbose:
-            print_msg("  Step 4: Updating CLAUDE.md...", "dim")
-        result = subprocess.run(
-            [str(self.gabb_binary), "init", "--claudemd"],
-            cwd=self.workspace,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0 and self.verbose:
-            print_msg(f"  gabb init --claudemd warning: {result.stderr[:200]}", "yellow")
-
-        # DEBUG: Verify skill and CLAUDE.md were created
+        # DEBUG: Verify skill was created
         if self.verbose:
             skill_file = self.workspace / ".claude" / "skills" / "gabb" / "SKILL.md"
-            claudemd_file = self.workspace / "CLAUDE.md"
             print_msg(f"  DEBUG: SKILL.md exists: {skill_file.exists()}", "cyan")
-            print_msg(f"  DEBUG: CLAUDE.md exists: {claudemd_file.exists()}", "cyan")
-            if claudemd_file.exists():
-                content = claudemd_file.read_text()
-                has_gabb_section = "gabb" in content.lower()
-                print_msg(f"  DEBUG: CLAUDE.md mentions gabb: {has_gabb_section}", "cyan")
 
         # Wait for daemon to be ready with an index
         if self.verbose:
@@ -872,17 +821,6 @@ FINAL_ANSWER: path/to/file2.py"""
 
         if self.temp_dir and self.temp_dir.exists():
             shutil.rmtree(self.temp_dir, ignore_errors=True)
-
-        # Restore original CLAUDE.md state
-        claudemd_path = self.workspace / "CLAUDE.md"
-        if self.claudemd_existed:
-            # Restore original content
-            if self.original_claudemd is not None:
-                claudemd_path.write_text(self.original_claudemd)
-        else:
-            # CLAUDE.md didn't exist before, remove if we created it
-            if claudemd_path.exists():
-                claudemd_path.unlink()
 
         # Clean up workspace-local settings we created
         if self.workspace_claude_dir and self.workspace_claude_dir.exists():

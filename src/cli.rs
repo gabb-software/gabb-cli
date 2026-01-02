@@ -196,9 +196,6 @@ pub enum Commands {
         /// Create .claude/skills/gabb/ agent skill for discoverability
         #[arg(long)]
         skill: bool,
-        /// Add gabb tool guidance section to CLAUDE.md
-        #[arg(long)]
-        claudemd: bool,
     },
     /// Interactive setup wizard for one-command onboarding
     Setup {

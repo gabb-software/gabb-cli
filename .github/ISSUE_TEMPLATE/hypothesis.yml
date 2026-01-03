@@ -1,0 +1,70 @@
+name: Hypothesis
+description: Propose a performance hypothesis for the gabb MCP server
+labels: ["hypothesis: untested"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Hypothesis Proposal
+        Use this template to propose a hypothesis about how gabb MCP server performance
+        can be improved on the SWE-bench lite benchmark.
+
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Hypothesis
+      description: What change do we believe will improve performance?
+      placeholder: "We believe that [specific change] will improve [metric] because [reasoning]..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-improvement
+    attributes:
+      label: Expected Improvement
+      description: What metrics should improve and by approximately how much?
+      placeholder: |
+        - Task success rate: +X%
+        - Token usage: -Y%
+        - Specific behavior change: ...
+    validations:
+      required: true
+
+  - type: input
+    id: target-task
+    attributes:
+      label: Target SWE-bench Task
+      description: A benchmark task we expect to improve with this change
+      placeholder: "e.g., django__django-12983"
+    validations:
+      required: false
+
+  - type: input
+    id: control-task
+    attributes:
+      label: Control SWE-bench Task
+      description: A benchmark task we expect to be materially unaffected
+      placeholder: "e.g., sympy__sympy-18835"
+    validations:
+      required: false
+
+  - type: textarea
+    id: source
+    attributes:
+      label: Source of Hypothesis
+      description: Where did this hypothesis come from?
+      placeholder: |
+        - Benchmark analysis of task X
+        - User feedback
+        - Refinement of previous hypothesis #Y
+        - Pure conjecture
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Any other context, links, or information relevant to this hypothesis
+    validations:
+      required: false

@@ -28,9 +28,111 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 BENCHMARK_DIR = Path(__file__).parent
+
+
+class ProgressTracker:
+    """Track progress across multiple phases with time estimation."""
+
+    def __init__(self, phases: list[tuple[str, float]]):
+        """Initialize with phases as (name, weight) tuples.
+
+        Weights are relative - they determine what fraction of progress
+        each phase represents. A phase with weight 2 takes twice as long
+        as a phase with weight 1.
+        """
+        self.phases = phases
+        self.phase_names = [p[0] for p in phases]
+        self.phase_weights = [p[1] for p in phases]
+        self.total_weight = sum(self.phase_weights)
+        self.current_phase = 0
+        self.start_time = time.time()
+        self.phase_start_time = self.start_time
+
+    def start_phase(self, phase_name: str) -> None:
+        """Mark the start of a phase."""
+        try:
+            self.current_phase = self.phase_names.index(phase_name)
+        except ValueError:
+            pass  # Unknown phase, ignore
+        self.phase_start_time = time.time()
+        self._print_status()
+
+    def complete_phase(self, phase_name: str) -> None:
+        """Mark a phase as complete."""
+        try:
+            idx = self.phase_names.index(phase_name)
+            if idx == self.current_phase:
+                self.current_phase = idx + 1
+        except ValueError:
+            pass
+
+    def _get_progress_percent(self) -> float:
+        """Calculate overall progress percentage."""
+        completed_weight = sum(self.phase_weights[:self.current_phase])
+        return (completed_weight / self.total_weight) * 100
+
+    def _format_duration(self, seconds: float) -> str:
+        """Format seconds as human-readable duration."""
+        if seconds < 60:
+            return f"{seconds:.0f}s"
+        minutes = int(seconds // 60)
+        secs = int(seconds % 60)
+        if minutes < 60:
+            return f"{minutes}m {secs}s"
+        hours = minutes // 60
+        mins = minutes % 60
+        return f"{hours}h {mins}m"
+
+    def _estimate_remaining(self) -> float | None:
+        """Estimate remaining time based on elapsed time and progress."""
+        if self.current_phase == 0:
+            return None  # Not enough data yet
+
+        elapsed = time.time() - self.start_time
+        completed_weight = sum(self.phase_weights[:self.current_phase])
+        remaining_weight = self.total_weight - completed_weight
+
+        if completed_weight == 0:
+            return None
+
+        # Time per unit weight
+        rate = elapsed / completed_weight
+        return rate * remaining_weight
+
+    def _print_status(self) -> None:
+        """Print current progress status."""
+        elapsed = time.time() - self.start_time
+        percent = self._get_progress_percent()
+        remaining = self._estimate_remaining()
+
+        # Build progress bar
+        bar_width = 20
+        filled = int(bar_width * percent / 100)
+        bar = "█" * filled + "░" * (bar_width - filled)
+
+        # Build time string
+        elapsed_str = self._format_duration(elapsed)
+        if remaining is not None:
+            remaining_str = self._format_duration(remaining)
+            time_str = f"elapsed: {elapsed_str}, remaining: ~{remaining_str}"
+        else:
+            time_str = f"elapsed: {elapsed_str}"
+
+        phase_name = self.phase_names[self.current_phase] if self.current_phase < len(self.phase_names) else "Done"
+        print(f"\n[{bar}] {percent:5.1f}% | {phase_name} | {time_str}")
+
+    def finish(self) -> None:
+        """Mark all phases complete and print final status."""
+        self.current_phase = len(self.phases)
+        elapsed = time.time() - self.start_time
+        bar = "█" * 20
+        print(f"\n[{bar}] 100.0% | Complete | total time: {self._format_duration(elapsed)}")
+
+
 REPO_ROOT = BENCHMARK_DIR.parent.parent
 RESULTS_DIR = BENCHMARK_DIR / "results"
 
@@ -250,18 +352,32 @@ def main() -> int:
     result_a: Path | None = None
     result_b: Path | None = None
 
+    # Initialize progress tracker with phases and weights
+    # Weights reflect relative duration: builds are quick, benchmarks take longer
+    benchmark_weight = 4 * args.runs  # Scale with number of runs
+    progress = ProgressTracker([
+        (f"Build {args.branch_a}", 1),
+        (f"Benchmark {args.branch_a}", benchmark_weight),
+        (f"Build {args.branch_b}", 1),
+        (f"Benchmark {args.branch_b}", benchmark_weight),
+        ("Generate comparison", 0.5),
+    ])
+
     try:
         # Run on branch A
         print(f"\n[1/2] Running on branch '{args.branch_a}'...")
         if not checkout_branch(args.branch_a):
             return 1
 
+        progress.start_phase(f"Build {args.branch_a}")
         print("  Building gabb...")
         binary_a = build_gabb()
         if not binary_a:
             return 1
         print("  Build complete")
+        progress.complete_phase(f"Build {args.branch_a}")
 
+        progress.start_phase(f"Benchmark {args.branch_a}")
         print(f"  Running {args.runs} benchmark iteration(s)...")
         result_a = run_benchmark(
             args.branch_a,
@@ -275,18 +391,22 @@ def main() -> int:
             print(f"  Results: {result_a}")
         else:
             print("  Warning: No result file generated")
+        progress.complete_phase(f"Benchmark {args.branch_a}")
 
         # Run on branch B
         print(f"\n[2/2] Running on branch '{args.branch_b}'...")
         if not checkout_branch(args.branch_b):
             return 1
 
+        progress.start_phase(f"Build {args.branch_b}")
         print("  Building gabb...")
         binary_b = build_gabb()
         if not binary_b:
             return 1
         print("  Build complete")
+        progress.complete_phase(f"Build {args.branch_b}")
 
+        progress.start_phase(f"Benchmark {args.branch_b}")
         print(f"  Running {args.runs} benchmark iteration(s)...")
         result_b = run_benchmark(
             args.branch_b,
@@ -300,6 +420,7 @@ def main() -> int:
             print(f"  Results: {result_b}")
         else:
             print("  Warning: No result file generated")
+        progress.complete_phase(f"Benchmark {args.branch_b}")
 
     finally:
         # Restore original branch
@@ -312,8 +433,10 @@ def main() -> int:
 
     # Generate comparison report
     if result_a and result_b:
+        progress.start_phase("Generate comparison")
         print("\nGenerating comparison report...\n")
         run_comparison(result_a, result_b, args.stats)
+        progress.finish()
     else:
         print("\nWarning: Cannot generate comparison - missing result files")
         return 1

@@ -320,11 +320,14 @@ impl McpServer {
             name: "gabb_structure".to_string(),
             description: concat!(
                 "Get a CHEAP, LIGHTWEIGHT overview of a file's symbols before reading it.\n\n",
-                "⚠️ MANDATORY PRE-READ CHECK: Before calling Read on any .py/.ts/.tsx/.rs/.kt/.cpp/.cc/.hpp file, ",
-                "you MUST call gabb_structure FIRST. Reading a large file directly can cost 5,000-10,000 tokens. ",
-                "gabb_structure costs ~50 tokens and shows you what's inside, so you can then Read with offset/limit.\n\n",
-                "The ONLY exceptions are: (1) files <50 lines where direct Read is fine, ",
-                "(2) files you've already seen structure for in this conversation.\n\n",
+                "Recommended for:\n",
+                "- Large files (>100 lines) where you only need part\n",
+                "- Unfamiliar codebases where you're exploring\n",
+                "- Files you'll read multiple times\n\n",
+                "Skip when:\n",
+                "- You already know exactly what you're looking for\n",
+                "- The file is likely small (<100 lines)\n",
+                "- You can answer from existing context\n\n",
                 "Returns: symbol names, kinds, line numbers—NOT source code. ",
                 "After seeing structure, use targeted Read with offset/limit."
             )

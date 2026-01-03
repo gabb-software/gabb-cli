@@ -8,38 +8,21 @@ allowed-tools: mcp__gabb__gabb_structure, Edit, Write, Bash, Read, Glob
 
 # gabb File Structure Preview
 
-## Pre-Flight Checklist (Before ANY Read on Code Files)
-
-Before calling `Read` on a code file, run this check:
-
-```
-□ Is file extension in [.py, .pyi, .ts, .tsx, .rs, .kt, .kts, .cpp, .cc, .cxx, .hpp, .hh]?
-  ├─ NO  → Use Read directly (unsupported language)
-  └─ YES → Have I called gabb_structure on this file in this session?
-           ├─ NO  → Call gabb_structure FIRST, then decide what to read
-           └─ YES → Use Read with offset/limit based on structure output
-```
-
-**Why checklists work**: They force a pause before automatic behavior.
-
-## Purpose
-
-Gabb provides a single tool—`gabb_structure`—that gives you a cheap, lightweight overview of a file's symbols before reading it. Use it to see what's in a file without the token cost of reading the entire thing.
-
 ## When to Use `gabb_structure`
 
-**MANDATORY**: Before reading any supported code file, call `gabb_structure` first.
+Before reading large or unfamiliar code files, consider using `gabb_structure` to preview the layout.
+This saves tokens when you only need part of a large file.
 
-The ONLY exceptions are:
-- Files known to be <50 lines
+**Recommended for:**
+- Large files (>100 lines) where you only need part
+- Unfamiliar codebases where you're exploring
+- Files you'll read multiple times
+
+**Skip when:**
+- You already know exactly what you're looking for
+- The file is likely small (<100 lines)
+- You can answer from existing context
 - Files you've already seen structure for in this conversation
-- Non-code files (.json, .md, .yaml, .toml)
-- Unsupported languages (.js, .jsx, .go, .java, .c, .h)
-
-**Why this is mandatory:**
-- Large files consume 5,000-10,000 tokens per Read
-- `gabb_structure` costs ~50 tokens, shows file layout
-- You can then Read specific sections (saves 90%+ tokens)
 
 ## Supported Languages
 

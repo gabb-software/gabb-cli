@@ -83,6 +83,92 @@ def load_env_file() -> dict[str, str]:
                 env_vars[key.strip()] = value.strip()
     return env_vars
 
+
+def get_branch_info(gabb_binary: Path | None = None) -> dict[str, Any]:
+    """Get git branch and gabb version info for result metadata.
+
+    Args:
+        gabb_binary: Optional path to gabb binary to get version from.
+
+    Returns:
+        Dictionary with branch, commit, dirty status, and optionally gabb version.
+    """
+    info: dict[str, Any] = {}
+
+    # Git info
+    try:
+        info["branch"] = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            text=True,
+            cwd=BENCHMARK_DIR,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        info["commit"] = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            text=True,
+            cwd=BENCHMARK_DIR,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        info["commit_full"] = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            text=True,
+            cwd=BENCHMARK_DIR,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        info["commit_message"] = subprocess.check_output(
+            ["git", "log", "-1", "--format=%s"],
+            text=True,
+            cwd=BENCHMARK_DIR,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        # Check if working tree is dirty
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            cwd=BENCHMARK_DIR,
+        )
+        info["dirty"] = bool(result.stdout.strip())
+    except subprocess.CalledProcessError:
+        info["branch"] = "unknown"
+        info["commit"] = "unknown"
+        info["commit_full"] = "unknown"
+        info["commit_message"] = ""
+        info["dirty"] = True
+
+    # Gabb version
+    if gabb_binary and gabb_binary.exists():
+        try:
+            version_output = subprocess.check_output(
+                [str(gabb_binary), "--version"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+            info["gabb_version"] = version_output
+        except subprocess.CalledProcessError:
+            info["gabb_version"] = "unknown"
+    else:
+        info["gabb_version"] = None
+
+    return info
+
+
+def sanitize_branch_name(branch: str) -> str:
+    """Sanitize branch name for use in filenames.
+
+    Args:
+        branch: Git branch name.
+
+    Returns:
+        Sanitized string safe for filenames (max 20 chars).
+    """
+    # Replace slashes and other problematic chars with dashes
+    sanitized = branch.replace("/", "-").replace("\\", "-")
+    # Remove any remaining non-alphanumeric chars (except dash and underscore)
+    sanitized = "".join(c for c in sanitized if c.isalnum() or c in "-_")
+    # Truncate to 20 chars
+    return sanitized[:20]
+
 logger = logging.getLogger(__name__)
 
 # Try to import rich for pretty output
@@ -1485,6 +1571,7 @@ def save_results(
     results: dict[str, list[RunMetrics]],
     task_id: str,
     output_dir: Path,
+    gabb_binary: Path | None = None,
 ) -> Path:
     """Save results to JSON file.
 
@@ -1492,18 +1579,27 @@ def save_results(
         results: Dict mapping condition name to list of run metrics
         task_id: Task identifier
         output_dir: Directory to save results
+        gabb_binary: Optional path to gabb binary for version info
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+    # Get branch metadata
+    branch_info = get_branch_info(gabb_binary)
+    branch_name = sanitize_branch_name(branch_info.get("branch", "unknown"))
+    commit_short = branch_info.get("commit", "unknown")
+
     # Determine run count from any condition
     run_count = max(len(runs) for runs in results.values()) if results else 1
-    filepath = output_dir / f"results_{task_id}_n{run_count}_{timestamp}.json"
+
+    # Updated filename format: results_{task_id}_{branch}_{commit}_n{runs}_{timestamp}.json
+    filepath = output_dir / f"results_{task_id}_{branch_name}_{commit_short}_n{run_count}_{timestamp}.json"
 
     data: dict[str, Any] = {
         "task_id": task_id,
         "timestamp": timestamp,
         "run_count": run_count,
+        "branch_info": branch_info,
         "conditions": {},
     }
 
@@ -1553,6 +1649,7 @@ def save_suite_results(
     all_results: list[tuple[list[RunMetrics], list[RunMetrics]]],
     output_dir: Path,
     run_count: int = 1,
+    gabb_binary: Path | None = None,
 ) -> Path:
     """Save results from a full suite run.
 
@@ -1560,10 +1657,18 @@ def save_suite_results(
         all_results: List of (control_runs, gabb_runs) tuples, where each is a list of runs
         output_dir: Directory to save results
         run_count: Number of runs per condition
+        gabb_binary: Optional path to gabb binary for version info
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filepath = output_dir / f"suite_results_n{run_count}_{timestamp}.json"
+
+    # Get branch metadata
+    branch_info = get_branch_info(gabb_binary)
+    branch_name = sanitize_branch_name(branch_info.get("branch", "unknown"))
+    commit_short = branch_info.get("commit", "unknown")
+
+    # Updated filename format: suite_results_{branch}_{commit}_n{runs}_{timestamp}.json
+    filepath = output_dir / f"suite_results_{branch_name}_{commit_short}_n{run_count}_{timestamp}.json"
 
     # Aggregate across all tasks and runs
     all_control_runs: list[RunMetrics] = []
@@ -1590,6 +1695,7 @@ def save_suite_results(
         "timestamp": timestamp,
         "task_count": len(all_results),
         "run_count": run_count,
+        "branch_info": branch_info,
         "summary": {
             "control": control_agg,
             "gabb": gabb_agg,
@@ -1850,7 +1956,7 @@ Concurrency:
 
         # Save suite results
         if not args.no_save and all_results:
-            save_suite_results(all_results, RESULTS_DIR, run_count=args.runs)
+            save_suite_results(all_results, RESULTS_DIR, run_count=args.runs, gabb_binary=gabb_binary)
 
         return 0
 
@@ -1878,7 +1984,7 @@ Concurrency:
                 if not args.no_save:
                     save_results(
                         {"control": control_runs, "gabb": gabb_runs},
-                        task.id, RESULTS_DIR
+                        task.id, RESULTS_DIR, gabb_binary=gabb_binary
                     )
             else:
                 runs = run_multiple(
@@ -1886,7 +1992,7 @@ Concurrency:
                 )
                 print_single_condition(runs, args.condition)
                 if not args.no_save:
-                    save_results({args.condition: runs}, task.id, RESULTS_DIR)
+                    save_results({args.condition: runs}, task.id, RESULTS_DIR, gabb_binary=gabb_binary)
         finally:
             workspace_manager.cleanup_workspace(workspace)
 
@@ -1923,7 +2029,7 @@ Concurrency:
             if not args.no_save:
                 save_results(
                     {"control": control_runs, "gabb": gabb_runs},
-                    task.id, RESULTS_DIR
+                    task.id, RESULTS_DIR, gabb_binary=gabb_binary
                 )
         else:
             runs = run_multiple(
@@ -1931,7 +2037,7 @@ Concurrency:
             )
             print_single_condition(runs, args.condition)
             if not args.no_save:
-                save_results({args.condition: runs}, task.id, RESULTS_DIR)
+                save_results({args.condition: runs}, task.id, RESULTS_DIR, gabb_binary=gabb_binary)
 
         return 0
 

@@ -8,24 +8,21 @@ allowed-tools: mcp__gabb__gabb_structure, Edit, Write, Bash, Read, Glob
 
 # gabb File Structure Preview
 
-## Purpose
-
-Gabb provides a single tool—`gabb_structure`—that gives you a cheap, lightweight overview of a file's symbols before reading it. Use it to see what's in a file without the token cost of reading the entire thing.
-
 ## When to Use `gabb_structure`
 
-Use it when:
-- You're about to read a file that might be large (>100 lines)
-- You want to know what functions, classes, or types exist in a file
-- You need line numbers to read specific sections with `Read offset/limit`
+Before reading large or unfamiliar code files, consider using `gabb_structure` to preview the layout.
+This saves tokens when you only need part of a large file.
 
-## When NOT to Use `gabb_structure`
+**Recommended for:**
+- Large files (>100 lines) where you only need part
+- Unfamiliar codebases where you're exploring
+- Files you'll read multiple times
 
-Fall back to direct `Read` or `Grep` when:
-- The file is short (<100 lines)—just read it directly
-- Searching **non-code files** (.json, .md, .yaml, .toml, .env)
-- Searching **unsupported languages** (.js, .jsx, .go, .java, .c, .h)
-- Looking for **text content** (error messages, log strings, comments)
+**Skip when:**
+- You already know exactly what you're looking for
+- The file is likely small (<100 lines)
+- You can answer from existing context
+- Files you've already seen structure for in this conversation
 
 ## Supported Languages
 
@@ -50,17 +47,19 @@ Fall back to direct `Read` or `Grep` when:
 ## What the Output Looks Like
 
 ```
-/path/to/file.rs (prod)
+/path/to/file.rs:450
 Summary: 15 functions, 3 structs | 450 lines
 Key types: MyStruct (10 methods)
-├─ struct MyStruct (pub) [prod]  [10:1 - 25:2]
-│  ├─ function new (pub) [prod]  [12:5 - 15:6]
-│  └─ function process [prod]  [17:5 - 24:6]
-├─ function helper [prod]  [30:1 - 45:2]
-└─ function main [prod]  [50:1 - 60:2]
+
+MyStruct st 10
+ new fn 12
+ process fn 17
+helper fn 30
+main fn 50
 ```
 
 The output shows:
+- File path and line count
 - Summary stats (function count, struct count, line count)
 - Key types with method counts
-- Hierarchical tree with line ranges `[start:col - end:col]`
+- Compact symbol tree: `name kind_abbrev line` with single-space indent for children

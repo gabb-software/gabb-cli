@@ -1,7 +1,10 @@
 use std::fs;
 use std::process::Command;
 
-use gabb_cli::{indexer, offset_to_line_col, store::IndexStore};
+use gabb_cli::{
+    indexer, offset_to_line_col,
+    store::{normalize_path, IndexStore},
+};
 use tempfile::tempdir;
 
 #[test]
@@ -33,8 +36,7 @@ fn cross_file_usages_via_dependency_graph() {
     );
 
     // Verify file dependency was correctly resolved with .ts extension
-    let utils_canonical = utils_path.canonicalize().unwrap();
-    let utils_str = utils_canonical.to_string_lossy().to_string();
+    let utils_str = normalize_path(&utils_path.canonicalize().unwrap());
     let dependents = store.get_dependents(&utils_str).unwrap();
     assert!(
         !dependents.is_empty(),
@@ -42,11 +44,15 @@ fn cross_file_usages_via_dependency_graph() {
         deps
     );
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Find usages of 'helper' - should find the usage in main.ts
     let usages_out = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "usages",
             "--db",
             db_path.to_str().unwrap(),
@@ -96,11 +102,15 @@ fn symbols_and_implementation_commands_work() {
         .expect("symbol foo indexed");
     let (line, character) = offset_to_line_col(&contents, symbol.start as usize).unwrap();
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // symbols should list the function
     let symbols = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "symbols",
             "--db",
             db_path.to_str().unwrap(),
@@ -124,7 +134,14 @@ fn symbols_and_implementation_commands_work() {
 
     // symbol should dump details about foo
     let symbol_detail = Command::new(bin)
-        .args(["symbol", "--db", db_path.to_str().unwrap(), "--name", "foo"])
+        .args([
+            "--no-start-daemon",
+            "symbol",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--name",
+            "foo",
+        ])
         .current_dir(root)
         .output()
         .unwrap();
@@ -144,6 +161,7 @@ fn symbols_and_implementation_commands_work() {
     // Exit code 0 = found results, exit code 1 = not found (but not an error)
     let impl_out = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "implementation",
             "--db",
             db_path.to_str().unwrap(),
@@ -173,6 +191,7 @@ fn symbols_and_implementation_commands_work() {
     // usages should include the call site line/column
     let usages_out = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "usages",
             "--db",
             db_path.to_str().unwrap(),
@@ -226,13 +245,11 @@ fn file_modification_identifies_dependents() {
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
     // Get the invalidation set for base.ts - should include derived.ts
-    let base_canonical = base_path.canonicalize().unwrap();
-    let base_str = base_canonical.to_string_lossy().to_string();
+    let base_str = normalize_path(&base_path.canonicalize().unwrap());
     let invalidation_set = store.get_invalidation_set(&base_str).unwrap();
 
     // Verify that derived.ts is in the invalidation set
-    let derived_canonical = derived_path.canonicalize().unwrap();
-    let derived_str = derived_canonical.to_string_lossy().to_string();
+    let derived_str = normalize_path(&derived_path.canonicalize().unwrap());
     assert!(
         invalidation_set.contains(&derived_str),
         "expected derived.ts in invalidation set for base.ts, got: {:?}",
@@ -241,8 +258,7 @@ fn file_modification_identifies_dependents() {
 
     // Verify transitive invalidation - consumer.ts should also be affected
     // when base.ts changes (via derived.ts)
-    let consumer_canonical = consumer_path.canonicalize().unwrap();
-    let consumer_str = consumer_canonical.to_string_lossy().to_string();
+    let consumer_str = normalize_path(&consumer_path.canonicalize().unwrap());
     assert!(
         invalidation_set.contains(&consumer_str),
         "expected consumer.ts in invalidation set (transitive), got: {:?}",
@@ -305,13 +321,11 @@ fn circular_dependency_handling() {
     );
 
     // Verify invalidation set doesn't infinite loop
-    let a_canonical = a_path.canonicalize().unwrap();
-    let a_str = a_canonical.to_string_lossy().to_string();
+    let a_str = normalize_path(&a_path.canonicalize().unwrap());
     let invalidation_set = store.get_invalidation_set(&a_str).unwrap();
 
     // Both files should be in each other's invalidation sets
-    let b_canonical = b_path.canonicalize().unwrap();
-    let b_str = b_canonical.to_string_lossy().to_string();
+    let b_str = normalize_path(&b_path.canonicalize().unwrap());
     assert!(
         invalidation_set.contains(&b_str),
         "b.ts should be in a.ts invalidation set"
@@ -340,13 +354,9 @@ fn two_phase_indexing_resolves_import_aliases() {
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
     // Get the symbol ID for 'helper' in utils.ts
+    let utils_str = normalize_path(&utils_path.canonicalize().unwrap());
     let utils_symbols = store
-        .list_symbols(
-            Some(&utils_path.canonicalize().unwrap().to_string_lossy()),
-            None,
-            Some("helper"),
-            None,
-        )
+        .list_symbols(Some(&utils_str), None, Some("helper"), None)
         .unwrap();
     assert!(
         !utils_symbols.is_empty(),
@@ -359,8 +369,7 @@ fn two_phase_indexing_resolves_import_aliases() {
 
     // The reference in main.ts (where 'h()' is called) should resolve to the helper symbol
     // thanks to two-phase indexing
-    let main_canonical = main_path.canonicalize().unwrap();
-    let main_str = main_canonical.to_string_lossy().to_string();
+    let main_str = normalize_path(&main_path.canonicalize().unwrap());
 
     // Check if any reference is from main.ts
     let main_refs: Vec<_> = refs.iter().filter(|r| r.file == main_str).collect();
@@ -392,12 +401,16 @@ fn definition_command_finds_symbol_declaration() {
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Find definition of 'helper' from the usage site in main.ts (line 2, col ~16 for the call)
     // The call `helper()` is at line 2
     let def_out = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "definition",
             "--db",
             db_path.to_str().unwrap(),
@@ -435,11 +448,15 @@ fn definition_command_with_json_output() {
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Find definition of foo from the call site
     let def_out = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "definition",
             "--format",
             "json",
@@ -514,11 +531,19 @@ function somethingUnique(x: number): number {
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Run duplicates command
     let dup_out = Command::new(bin)
-        .args(["duplicates", "--db", db_path.to_str().unwrap()])
+        .args([
+            "--no-start-daemon",
+            "duplicates",
+            "--db",
+            db_path.to_str().unwrap(),
+        ])
         .current_dir(root)
         .output()
         .unwrap();
@@ -571,11 +596,15 @@ export function processData(data: string[]): string[] {
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Run duplicates command with JSON output
     let dup_out = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "duplicates",
             "--format",
             "json",
@@ -647,11 +676,15 @@ export class MyService implements Svc {
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Find implementations of 'Service' interface (at line 1, col 18 where 'Service' starts)
     let impl_out = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "implementation",
             "-f",
             "json",
@@ -704,11 +737,15 @@ export function processOrder(order: any) { return order; }
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Test prefix search with --fuzzy and "getUser*"
     let output = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "symbols",
             "--fuzzy",
             "--name",
@@ -750,6 +787,7 @@ export function processOrder(order: any) { return order; }
     // Test substring search (without trailing *)
     let output2 = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "symbols",
             "--fuzzy",
             "--name",
@@ -792,11 +830,21 @@ fn symbols_command_pagination_works() {
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Test --limit only (should return first 5)
     let output1 = Command::new(bin)
-        .args(["symbols", "--limit", "5", "--db", db_path.to_str().unwrap()])
+        .args([
+            "--no-start-daemon",
+            "symbols",
+            "--limit",
+            "5",
+            "--db",
+            db_path.to_str().unwrap(),
+        ])
         .current_dir(root)
         .output()
         .unwrap();
@@ -821,6 +869,7 @@ fn symbols_command_pagination_works() {
     // Test --limit with --offset (should skip first 5 and return next 5)
     let output2 = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "symbols",
             "--limit",
             "5",
@@ -895,11 +944,15 @@ fn usages_command_shows_import_chain() {
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Find usages of helper - should show the import statement
     let output = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "usages",
             "--db",
             db_path.to_str().unwrap(),
@@ -947,11 +1000,15 @@ fn usages_json_includes_import_via() {
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Find usages of helper with JSON output
     let output = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "-f",
             "json",
             "usages",
@@ -1027,8 +1084,7 @@ fn main() {
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
     // Get the symbol for ExitCode in lib.rs
-    let lib_canonical = lib_path.canonicalize().unwrap();
-    let lib_str = lib_canonical.to_string_lossy().to_string();
+    let lib_str = normalize_path(&lib_path.canonicalize().unwrap());
     let symbols = store
         .list_symbols(Some(&lib_str), None, Some("ExitCode"), None)
         .unwrap();
@@ -1039,8 +1095,7 @@ fn main() {
     let refs = store.references_for_symbol(&exit_code_symbol.id).unwrap();
 
     // Should find references in main.rs (the cross-file usages)
-    let main_canonical = main_path.canonicalize().unwrap();
-    let main_str = main_canonical.to_string_lossy().to_string();
+    let main_str = normalize_path(&main_path.canonicalize().unwrap());
     let main_refs: Vec<_> = refs.iter().filter(|r| r.file == main_str).collect();
 
     // This is the key assertion - currently fails because cross-file references

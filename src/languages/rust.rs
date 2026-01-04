@@ -1071,9 +1071,9 @@ mod tests {
         let greeter = symbols.iter().find(|s| s.name == "Greeter").unwrap();
 
         assert!(symbols.iter().any(|s| s.name == "greet"));
-        let path_str = path.to_string_lossy();
-        assert!(person.id.starts_with(path_str.as_ref()));
-        assert!(greeter.id.starts_with(path_str.as_ref()));
+        let path_str = normalize_path(&path);
+        assert!(person.id.starts_with(&path_str));
+        assert!(greeter.id.starts_with(&path_str));
         assert!(
             edges.iter().any(|e| e.kind == "trait_impl"),
             "expected trait_impl edge"

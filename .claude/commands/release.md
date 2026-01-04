@@ -37,7 +37,7 @@ Analyze the commits and categorize them:
 ### Breaking Changes (→ MAJOR)
 Look for commits with:
 - `BREAKING CHANGE:` in the body
-- `!` after the type (e.g., `feat!:`, `fix!:`)
+- Commits with breaking change indicator suffix on type (like feat!: or fix!:)
 - Commits mentioning "breaking", "incompatible", "remove API", "rename public"
 
 ### New Features (→ MINOR)

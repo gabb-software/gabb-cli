@@ -44,11 +44,15 @@ fn cross_file_usages_via_dependency_graph() {
         deps
     );
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Find usages of 'helper' - should find the usage in main.ts
     let usages_out = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "usages",
             "--db",
             db_path.to_str().unwrap(),
@@ -98,11 +102,15 @@ fn symbols_and_implementation_commands_work() {
         .expect("symbol foo indexed");
     let (line, character) = offset_to_line_col(&contents, symbol.start as usize).unwrap();
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // symbols should list the function
     let symbols = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "symbols",
             "--db",
             db_path.to_str().unwrap(),
@@ -126,7 +134,14 @@ fn symbols_and_implementation_commands_work() {
 
     // symbol should dump details about foo
     let symbol_detail = Command::new(bin)
-        .args(["symbol", "--db", db_path.to_str().unwrap(), "--name", "foo"])
+        .args([
+            "--no-start-daemon",
+            "symbol",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--name",
+            "foo",
+        ])
         .current_dir(root)
         .output()
         .unwrap();
@@ -146,6 +161,7 @@ fn symbols_and_implementation_commands_work() {
     // Exit code 0 = found results, exit code 1 = not found (but not an error)
     let impl_out = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "implementation",
             "--db",
             db_path.to_str().unwrap(),
@@ -175,6 +191,7 @@ fn symbols_and_implementation_commands_work() {
     // usages should include the call site line/column
     let usages_out = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "usages",
             "--db",
             db_path.to_str().unwrap(),
@@ -384,12 +401,16 @@ fn definition_command_finds_symbol_declaration() {
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Find definition of 'helper' from the usage site in main.ts (line 2, col ~16 for the call)
     // The call `helper()` is at line 2
     let def_out = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "definition",
             "--db",
             db_path.to_str().unwrap(),
@@ -427,11 +448,15 @@ fn definition_command_with_json_output() {
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Find definition of foo from the call site
     let def_out = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "definition",
             "--format",
             "json",
@@ -506,11 +531,19 @@ function somethingUnique(x: number): number {
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Run duplicates command
     let dup_out = Command::new(bin)
-        .args(["duplicates", "--db", db_path.to_str().unwrap()])
+        .args([
+            "--no-start-daemon",
+            "duplicates",
+            "--db",
+            db_path.to_str().unwrap(),
+        ])
         .current_dir(root)
         .output()
         .unwrap();
@@ -563,11 +596,15 @@ export function processData(data: string[]): string[] {
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Run duplicates command with JSON output
     let dup_out = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "duplicates",
             "--format",
             "json",
@@ -639,11 +676,15 @@ export class MyService implements Svc {
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Find implementations of 'Service' interface (at line 1, col 18 where 'Service' starts)
     let impl_out = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "implementation",
             "-f",
             "json",
@@ -696,11 +737,15 @@ export function processOrder(order: any) { return order; }
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Test prefix search with --fuzzy and "getUser*"
     let output = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "symbols",
             "--fuzzy",
             "--name",
@@ -742,6 +787,7 @@ export function processOrder(order: any) { return order; }
     // Test substring search (without trailing *)
     let output2 = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "symbols",
             "--fuzzy",
             "--name",
@@ -784,11 +830,21 @@ fn symbols_command_pagination_works() {
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Test --limit only (should return first 5)
     let output1 = Command::new(bin)
-        .args(["symbols", "--limit", "5", "--db", db_path.to_str().unwrap()])
+        .args([
+            "--no-start-daemon",
+            "symbols",
+            "--limit",
+            "5",
+            "--db",
+            db_path.to_str().unwrap(),
+        ])
         .current_dir(root)
         .output()
         .unwrap();
@@ -813,6 +869,7 @@ fn symbols_command_pagination_works() {
     // Test --limit with --offset (should skip first 5 and return next 5)
     let output2 = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "symbols",
             "--limit",
             "5",
@@ -887,11 +944,15 @@ fn usages_command_shows_import_chain() {
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Find usages of helper - should show the import statement
     let output = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "usages",
             "--db",
             db_path.to_str().unwrap(),
@@ -939,11 +1000,15 @@ fn usages_json_includes_import_via() {
     let store = IndexStore::open(&db_path).unwrap();
     indexer::build_full_index(root, &store, None::<fn(&indexer::IndexProgress)>).unwrap();
 
+    // Drop store before spawning CLI to release SQLite file locks (required on Windows)
+    drop(store);
+
     let bin = env!("CARGO_BIN_EXE_gabb");
 
     // Find usages of helper with JSON output
     let output = Command::new(bin)
         .args([
+            "--no-start-daemon",
             "-f",
             "json",
             "usages",

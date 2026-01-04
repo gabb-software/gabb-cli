@@ -112,6 +112,9 @@ impl<'a> CliRunner<'a> {
     pub fn run(self) -> Result<CliOutput> {
         let mut cmd = Command::new(TestWorkspace::cli_bin());
 
+        // Don't auto-start daemon - tests build index directly via library
+        cmd.arg("--no-start-daemon");
+
         if self.json {
             cmd.args(["--format", "json"]);
         }

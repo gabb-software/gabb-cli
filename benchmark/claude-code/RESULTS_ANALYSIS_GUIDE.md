@@ -46,6 +46,68 @@ Example: `results_astropy__astropy-12907_n10_20251229_104532.json`
 }
 ```
 
+### Suite Results Structure
+
+Suite results aggregate multiple tasks into a single file:
+
+```
+suite_results_{branch}_{commit}_{n}{run_count}_{timestamp}.json
+```
+
+Example: `suite_results_fix-102-tune-gabb-st_6311560_n10_20260104_094005.json`
+
+**Suite structure differs from individual task results:**
+
+```json
+{
+  "timestamp": "20260104_094005",
+  "task_count": 10,
+  "run_count": 10,
+  "branch_info": {
+    "branch": "fix-102-tune-gabb-structure-guidance",
+    "commit_sha": "6311560"
+  },
+  "summary": {
+    "control": {
+      "wall_time_seconds": {"mean": 48.57, "std": 30.07, ...},
+      "tokens_total": {"mean": 61320.87, "std": 23320.8, ...},
+      "success_rate": 0.95,
+      "run_count": 100,  // task_count * runs_per_task
+      "tool_calls": {...}
+    },
+    "gabb": {...}
+  },
+  "tasks": [
+    {
+      "task_id": "django__django-11179",
+      "control": {
+        "runs": [...],  // Note: no "aggregate" key at task level
+        "success_rate": 1.0
+      },
+      "gabb": {
+        "runs": [...],
+        "success_rate": 1.0
+      }
+    }
+  ]
+}
+```
+
+**Key differences from individual task results:**
+
+| Aspect | Individual Task | Suite |
+|--------|-----------------|-------|
+| Top-level stats | `conditions.{name}.aggregate` | `summary.{name}` |
+| Per-task data | N/A | `tasks[].{condition}` |
+| Run count | Runs for one task | Total runs across all tasks |
+| Metadata | `task_id` | `task_count`, `branch_info` |
+
+**Branch metadata (`branch_info`):**
+
+Suite results include git branch information for tracking which code version was tested:
+- `branch`: Full branch name
+- `commit_sha`: Short commit SHA
+
 ### Per-Run Metrics
 
 Each run in the `runs` array contains:
@@ -754,18 +816,54 @@ Check these potential issues:
 
 ### Comparing Multiple Task Results
 
-For suite results (`suite_results_*.json`), aggregate across tasks:
+For suite results (`suite_results_*.json`), use the `summary` key for aggregate stats or iterate over `tasks[]`:
 
 ```python
 # Load suite results
 with open('suite_results_n20_xxx.json') as f:
     suite = json.load(f)
 
-# Aggregate metrics across all tasks
-for task_id, task_data in suite['tasks'].items():
-    control = task_data['conditions']['control']['aggregate']
-    gabb = task_data['conditions']['gabb']['aggregate']
-    # ... compute comparisons
+# Use pre-computed summary (recommended)
+control = suite['summary']['control']
+gabb = suite['summary']['gabb']
+print(f"Time: {control['wall_time_seconds']['mean']:.1f}s → {gabb['wall_time_seconds']['mean']:.1f}s")
+
+# Or iterate per-task (note: different structure than individual results!)
+for task in suite['tasks']:
+    task_id = task['task_id']
+    # Tasks have 'control' and 'gabb' keys directly, not 'conditions'
+    c_runs = task['control']['runs']
+    g_runs = task['gabb']['runs']
+```
+
+### Structure Mismatch Errors
+
+**Problem:** Scripts fail with `KeyError: 'conditions'` or `KeyError: 'aggregate'`
+
+**Cause:** Suite and individual results have different structures:
+
+| Access Pattern | Individual Task | Suite |
+|----------------|-----------------|-------|
+| Aggregate stats | `data['conditions']['control']['aggregate']` | `data['summary']['control']` |
+| Per-task data | N/A | `data['tasks'][i]['control']` |
+| Runs array | `data['conditions']['control']['runs']` | `data['summary']` doesn't have runs (use per-task) |
+
+**Solution:** Use `analyze.py` which auto-detects the format:
+
+```bash
+python benchmark/claude-code/analyze.py --latest
+```
+
+Or detect manually:
+
+```python
+def get_aggregate_stats(data, condition='control'):
+    """Get aggregate stats regardless of result type."""
+    if 'summary' in data:  # Suite
+        return data['summary'][condition]
+    elif 'conditions' in data:  # Individual
+        return data['conditions'][condition].get('aggregate', data['conditions'][condition])
+    raise ValueError("Unknown format")
 ```
 
 ---
@@ -796,6 +894,38 @@ for task_id, task_data in suite['tasks'].items():
 
 ## 12. Quick Analysis Commands
 
+### Using analyze.py (Recommended)
+
+The unified analysis script handles both individual and suite results:
+
+```bash
+# Analyze latest benchmark (auto-detects type)
+python benchmark/claude-code/analyze.py --latest
+
+# Analyze specific file
+python benchmark/claude-code/analyze.py results/suite_results_*.json
+
+# Output as markdown
+python benchmark/claude-code/analyze.py --latest --markdown
+
+# Output as JSON (for further processing)
+python benchmark/claude-code/analyze.py --latest --json
+
+# Find results from a specific date
+python benchmark/claude-code/analyze.py --date 20260104
+
+# Save markdown report to analysis/ directory
+python benchmark/claude-code/analyze.py --latest --markdown --save
+```
+
+**Features:**
+- Auto-detects suite vs individual task results
+- Calculates t-tests, confidence intervals, Cohen's d
+- Shows significance stars (*, **, ***) for p < 0.05, 0.01, 0.001
+- Works with any condition names (not just control/gabb)
+
+### Legacy Manual Commands
+
 ```bash
 # Show latest results file
 ls -t benchmark/claude-code/results/*.json | head -1
@@ -808,29 +938,4 @@ find ~/.claude/projects -name "*.jsonl" -mtime -1 | wc -l
 
 # Analyze with telemetry tools
 cd benchmark/telemetry && gabb-benchmark analyze ~/.claude/projects/{path}/*.jsonl
-
-# Quick statistical summary
-python3 -c "
-import json, sys
-with open(sys.argv[1]) as f:
-    data = json.load(f)
-c = data['conditions']['control']['aggregate']
-g = data['conditions']['gabb']['aggregate']
-print(f\"Time: {c['wall_time_seconds']['mean']:.1f}s → {g['wall_time_seconds']['mean']:.1f}s\")
-print(f\"Tokens: {c['tokens_total']['mean']:,.0f} → {g['tokens_total']['mean']:,.0f}\")
-" $(ls -t benchmark/claude-code/results/*.json | head -1)
-
-# Extract tool usage comparison
-python3 -c "
-import json, sys
-with open(sys.argv[1]) as f:
-    data = json.load(f)
-c = data['conditions']['control']['aggregate']['tool_calls']
-g = data['conditions']['gabb']['aggregate']['tool_calls']
-all_tools = set(c.keys()) | set(g.keys())
-for tool in sorted(all_tools):
-    cm = c.get(tool, {}).get('mean', 0)
-    gm = g.get(tool, {}).get('mean', 0)
-    print(f'{tool}: {cm:.1f} → {gm:.1f}')
-" $(ls -t benchmark/claude-code/results/*.json | head -1)
 ```

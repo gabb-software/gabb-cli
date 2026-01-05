@@ -1,133 +1,100 @@
 # Benchmark Analysis
 
-Analyze Claude Code benchmark results with interactive filtering.
+Analyze Claude Code benchmark results using the unified analysis script.
 
-## Step 1: Discover Available Data
+## Step 1: Run Initial Analysis
 
-First, list available results files with their timestamps:
-
-```bash
-ls -lt benchmark/claude-code/results/*.json 2>/dev/null | head -20
-```
-
-Also check for any existing analyses:
+Start by running the analyze.py script on the latest results:
 
 ```bash
-ls -lt benchmark/claude-code/analysis/*.md 2>/dev/null | head -5
+python benchmark/claude-code/analyze.py --latest
 ```
 
-## Step 2: Ask What to Analyze
+This will:
+- Auto-detect if it's a suite or individual task result
+- Show primary metrics (time, tokens, success rate)
+- Calculate statistical significance (t-tests, Cohen's d)
+- Display tool usage comparison
 
-Use the AskUserQuestion tool to gather requirements:
+## Step 2: Ask About Output Preferences
 
-**Question 1: Which results to analyze?**
-- Latest results file (Recommended)
-- All results from today
-- Results after a specific time (will prompt for time)
-- Specific file (will prompt for filename)
+Use AskUserQuestion to determine output format:
 
-**Question 2: Analysis depth?**
-- Quick summary - aggregates and basic comparison only
-- Standard analysis - includes statistical tests and subgroups (Recommended)
-- Deep dive - full methodology with token attribution and detailed run tables
-
-**Question 3: Output format?**
-- Terminal only - display results without saving
-- Create analysis file - save to `benchmark/claude-code/analysis/YYYY-MM-DD.md` (Recommended)
+**Question: How should results be saved?**
+- Terminal only - just display (Recommended for quick checks)
+- Save markdown report - create `analysis/YYYY-MM-DD.md`
 - Both - display and save
 
-## Step 3: Filter Results (if needed)
-
-If user selected time-based filtering:
-
+If saving, run:
 ```bash
-# Files modified after a specific time today
-find benchmark/claude-code/results -name "*.json" -newermt "today HH:MM"
-
-# Or for a specific date/time
-find benchmark/claude-code/results -name "*.json" -newermt "YYYY-MM-DD HH:MM"
+python benchmark/claude-code/analyze.py --latest --markdown --save
 ```
 
-Parse the timestamp from filenames (format: `results_*_YYYYMMDD_HHMMSS.json`) if modification time is unreliable.
+## Step 3: Interpret Results
 
-## Step 4: Load and Analyze
+### Key Metrics to Highlight
 
-For each selected results file:
+After running the analysis, summarize the findings:
 
-### 4a. Load Data
-```python
-import json
-with open('results_file.json') as f:
-    data = json.load(f)
-control = data['conditions']['control']
-gabb = data['conditions']['gabb']
+1. **Statistical Significance** - Look for stars:
+   - `*` = p < 0.05 (likely real effect)
+   - `**` = p < 0.01 (strong evidence)
+   - `***` = p < 0.001 (very strong evidence)
+
+2. **Effect Size** - Cohen's d interpretation:
+   - Small (0.2): Detectable but modest improvement
+   - Medium (0.5): Noticeable practical improvement
+   - Large (0.8+): Substantial improvement
+
+3. **Tool Usage Changes** - Compare:
+   - Read/Grep/Glob reduction (positive for gabb)
+   - gabb_structure/gabb_symbols usage (expected in gabb condition)
+
+### Red Flags to Watch For
+
+- Success rate difference between conditions
+- Token increase without time savings
+- High variance (std > 50% of mean)
+
+## Step 4: Additional Analysis (Optional)
+
+For deeper investigation:
+
+### Analyze Specific File
+```bash
+python benchmark/claude-code/analyze.py results/suite_results_*.json
 ```
 
-### 4b. Quick Summary (always)
-Calculate and display:
-- Success rates for both conditions
-- Time: mean ± std, difference, percentage change
-- Tokens: mean ± std, difference, percentage change
-- Cost: mean ± std, difference (if available)
-- Tool calls: mean ± std for key tools (Read, Grep, Glob, gabb_structure)
+### JSON Output for Processing
+```bash
+python benchmark/claude-code/analyze.py --latest --json > analysis.json
+```
 
-### 4c. Statistical Analysis (Standard or Deep)
-Follow Section 5 of `benchmark/claude-code/RESULTS_ANALYSIS_GUIDE.md`:
-- Two-sample t-test for time and tokens
-- Calculate confidence intervals
-- Compute Cohen's d effect size
-- Interpret significance levels
+### Find Results by Date
+```bash
+python benchmark/claude-code/analyze.py --date 20260104
+```
 
-### 4d. Subgroup Analysis (Standard or Deep)
-Follow Section 6 of the guide:
-- Group runs by Read count (0, 1, 2+)
-- Check gabb_structure usage rate within each group
-- Identify behavioral patterns
-- Warn about selection bias if comparing across groups
+## Step 5: Follow-up Questions
 
-### 4e. Token Attribution (Deep only)
-Follow Section 7 of the guide:
-- Break down by cache type (read, create, input, output)
-- Calculate actual cost vs raw token count
-- Identify major token sources
+After presenting results, offer:
+- Comparison with previous analyses
+- Investigation of specific runs or transcripts
+- Review of per-task breakdown (for suite results)
+- Recommendations for next steps
 
-### 4f. Detailed Run Tables (Deep only)
-Follow Section 9 of the guide:
-- Create sorted tables of individual runs
-- Highlight patterns and outliers
+## Quick Reference
 
-## Step 5: Generate Output
+| Command | Purpose |
+|---------|---------|
+| `--latest` | Analyze most recent results file |
+| `--markdown` | Output as markdown |
+| `--json` | Output as JSON |
+| `--save` | Save report to analysis/ |
+| `--date YYYYMMDD` | Filter by date |
 
-### Terminal Output
-Display a formatted summary with:
-- Key metrics table
-- Statistical significance indicators (*, **, ***)
-- Effect size interpretation
-- Key insights (1-3 bullet points)
+## Reference Documentation
 
-### Analysis File (if requested)
-Create `benchmark/claude-code/analysis/YYYY-MM-DD.md` following the template in Section 9 of the guide:
-- Executive summary
-- Aggregate results with cache breakdown
-- Statistical significance section
-- Subgroup analysis
-- Recommendations
-- Appendix with raw data locations
-
-## Step 6: Follow-up
-
-After presenting results, ask if the user wants:
-- Deeper analysis on any specific metric
-- Comparison with a previous analysis
-- To investigate specific runs or transcripts
-- Recommendations documented or actioned
-
-## Reference
-
-Full methodology: `benchmark/claude-code/RESULTS_ANALYSIS_GUIDE.md`
-
-Key sections:
-- Section 5: Statistical Significance Testing
-- Section 6: Subgroup Analysis & Selection Bias
-- Section 7: Token Cost Attribution
-- Section 9: Generating a Summary Report
+- Full guide: `benchmark/claude-code/RESULTS_ANALYSIS_GUIDE.md`
+- Script source: `benchmark/claude-code/analyze.py`
+- Past analyses: `benchmark/claude-code/analysis/*.md`

@@ -23,6 +23,8 @@ This saves tokens when you only need part of a large file.
 - The file is likely small (<100 lines)
 - You can answer from existing context
 - Files you've already seen structure for in this conversation
+- **You're searching for string literals, regex patterns, or error messages**
+  (gabb_structure shows symbols, not strings—use Grep directly)
 
 ## Supported Languages
 

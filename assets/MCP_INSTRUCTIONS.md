@@ -2,6 +2,25 @@
 
 Code indexing server providing lightweight file structure previews via SQLite index.
 
+## Task Complexity Assessment
+
+Before using gabb exploration tools, assess whether exploration is needed:
+
+**Go direct (skip exploration) when:**
+- Task names a specific file or function (e.g., "fix bug in utils.py")
+- Change is localized (e.g., "add parameter to X", "rename Y to Z")
+- You can identify the exact target from the task description
+- Task is a simple fix with obvious location
+
+**Explore when:**
+- Task requires understanding system architecture
+- You need to find where something is implemented
+- Change affects multiple components or has unclear scope
+- You're unfamiliar with the codebase structure
+
+⚠️ **Over-exploration costs time.** A trivial task that could be solved in 15s
+can take 60s+ with unnecessary exploration. Match exploration depth to task complexity.
+
 ## Pre-Read Check for Code Files (Recommended)
 
 For large or unfamiliar code files, consider calling `gabb_structure` first to see the layout.

@@ -225,21 +225,25 @@ What gets indexed:
 
 ## MCP Server (AI Assistant Integration)
 
-Gabb includes an MCP (Model Context Protocol) server that exposes the `gabb_structure` tool to AI assistants. This provides a cheap, lightweight way to preview file contents before reading them.
+Gabb includes an MCP (Model Context Protocol) server that exposes the `gabb_peek` tool to AI assistants. This provides a smart file preview that automatically returns the right format.
 
-### The `gabb_structure` Tool
+### The `gabb_peek` Tool
 
-Get a file overview **without reading the source code**. Returns symbol names, kinds, and line numbers—perfect for understanding what's in a large file before deciding which parts to read.
+A smart file preview that adapts to the file:
+- **Small files (<75 lines):** Full contents with line numbers
+- **Non-code files (.json, .md, .yaml):** Full contents with line numbers
+- **Large code files (>75 lines):** Symbol structure (names, kinds, line numbers)
 
-**Use it when:**
-- Before reading any file >100 lines
-- To understand what functions/classes exist in a file
-- To get line numbers for targeted `Read` calls with offset/limit
+This eliminates guessing about file size or type before deciding what to read.
 
 **Example workflow:**
 ```
-1. gabb_structure file="src/large_file.rs"  → See symbols and line numbers
-2. Read with offset/limit                    → Read only what you need
+1. gabb_peek file="src/some_file.py"
+   → Small/non-code: full contents with line numbers
+   → Large code: symbol structure
+
+2. If structure returned and you need more:
+   Read with offset/limit
 ```
 
 ---
@@ -383,7 +387,7 @@ The `gabb mcp command` creates a `/gabb` slash command in your project that help
 
 ### Agent Skill for Discoverability
 
-In addition to the MCP server, gabb can generate an **Agent Skill** that teaches Claude when to use `gabb_structure`:
+In addition to the MCP server, gabb can generate an **Agent Skill** that teaches Claude when to use `gabb_peek`:
 
 ```bash
 # Create the skill during project initialization
@@ -393,7 +397,7 @@ gabb init --skill
 gabb init --mcp --skill
 ```
 
-This creates `.claude/skills/gabb/SKILL.md` which Claude auto-discovers. The skill teaches Claude to use `gabb_structure` before reading large files in supported languages.
+This creates `.claude/skills/gabb/SKILL.md` which Claude auto-discovers. The skill teaches Claude to use `gabb_peek` for smart file previews.
 
 **Skills vs MCP**: The MCP server provides the actual tool. The skill provides guidance on *when* to use it. Both complement each other for optimal AI assistant integration.
 

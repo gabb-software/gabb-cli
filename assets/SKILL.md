@@ -1,35 +1,29 @@
 ---
 name: gabb-code-navigation
 description: |
-  Teaches when to use gabb_structure for efficient file exploration.
-  Use gabb_structure before reading large files in supported languages.
-allowed-tools: mcp__gabb__gabb_structure, Edit, Write, Bash, Read, Glob
+  Teaches when to use gabb_peek for efficient file exploration.
+  gabb_peek is a smart preview tool that returns the right format automatically.
+allowed-tools: mcp__gabb__gabb_peek, Edit, Write, Bash, Read, Glob
 ---
 
-# gabb File Structure Preview
+# gabb Smart File Preview
 
-## When to Use `gabb_structure`
+## When to Use `gabb_peek`
 
 **First:** Assess if exploration is needed (see MCP instructions).
 For trivial tasks with obvious targets, go directly to the file.
 
-**If exploring:** Before reading large or unfamiliar code files, consider using `gabb_structure` to preview the layout.
-This saves tokens when you only need part of a large file.
+**If exploring:** Use `gabb_peek` as your first step when exploring any file.
+It automatically returns the right format:
+- **Small files (<75 lines):** Full contents with line numbers
+- **Non-code files (.json, .md, .yaml):** Full contents with line numbers
+- **Large code files (>75 lines):** Symbol structure overview
 
-**Recommended for:**
-- Large files (>100 lines) where you only need part
-- Unfamiliar codebases where you're exploring
-- Files you'll read multiple times
+This eliminates guessing about file size or type.
 
-**Skip when:**
-- You already know exactly what you're looking for
-- The file is likely small (<100 lines)
-- You can answer from existing context
-- Files you've already seen structure for in this conversation
-- **You're searching for string literals, regex patterns, or error messages**
-  (gabb_structure shows symbols, not strings—use Grep directly)
+## Supported Languages for Structure
 
-## Supported Languages
+When returning structure (for large code files):
 
 | Language   | Extensions                              |
 |------------|----------------------------------------|
@@ -42,15 +36,26 @@ This saves tokens when you only need part of a large file.
 ## Usage Pattern
 
 ```
-1. gabb_structure file="src/large_file.rs"
-   → Returns symbol names, kinds, line numbers (NO source code)
+1. gabb_peek file="src/some_file.py"
+   → For small/non-code: full contents with line numbers
+   → For large code: symbol structure
 
-2. Read file_path="src/large_file.rs" offset=150 limit=50
-   → Read only the section you need
+2. If structure returned and you need more:
+   Read file_path="src/some_file.py" offset=150 limit=50
 ```
 
-## What the Output Looks Like
+## Output Examples
 
+### Small File or Non-Code File
+```
+path/to/config.json (42 lines, non-code file)
+    1→{
+    2→  "name": "example",
+    3→  ...
+   42→}
+```
+
+### Large Code File
 ```
 /path/to/file.rs:450
 Summary: 15 functions, 3 structs | 450 lines
@@ -63,8 +68,8 @@ helper fn 30
 main fn 50
 ```
 
-The output shows:
-- File path and line count
-- Summary stats (function count, struct count, line count)
-- Key types with method counts
-- Compact symbol tree: `name kind_abbrev line` with single-space indent for children
+## When NOT to Use gabb_peek
+
+Fall back to Grep directly for:
+- Searching for string literals, regex patterns, or error messages
+  (gabb_peek shows file contents or symbols, not search results)

@@ -12,6 +12,7 @@
 #![allow(dead_code)]
 
 use crate::is_test_file;
+use crate::languages::registry::ParserRegistry;
 use crate::store::{DuplicateGroup, IndexStore, SymbolQuery, SymbolRecord};
 use crate::workspace;
 use anyhow::{bail, Result};
@@ -317,19 +318,15 @@ impl McpServer {
 
     fn handle_tools_list(&self) -> Result<Value> {
         let tools = vec![Tool {
-            name: "gabb_structure".to_string(),
+            name: "gabb_peek".to_string(),
             description: concat!(
-                "Get a CHEAP, LIGHTWEIGHT overview of a file's symbols before reading it.\n\n",
-                "Recommended for:\n",
-                "- Large files (>100 lines) where you only need part\n",
-                "- Unfamiliar codebases where you're exploring\n",
-                "- Files you'll read multiple times\n\n",
-                "Skip when:\n",
-                "- You already know exactly what you're looking for\n",
-                "- The file is likely small (<100 lines)\n",
-                "- You can answer from existing context\n\n",
-                "Returns: symbol names, kinds, line numbers—NOT source code. ",
-                "After seeing structure, use targeted Read with offset/limit."
+                "Smart file preview - returns symbol structure for large code files, ",
+                "full contents for small files (<75 lines) or non-code files.\n\n",
+                "Use as your first step when exploring any file. The tool automatically:\n",
+                "- Returns full contents with line numbers for small files (<75 lines)\n",
+                "- Returns full contents for non-code files (.json, .md, .yaml, etc.)\n",
+                "- Returns symbol structure for large code files (>75 lines)\n\n",
+                "This eliminates the need to guess file size before deciding what to use."
             )
             .to_string(),
             input_schema: json!({
@@ -337,7 +334,7 @@ impl McpServer {
                 "properties": {
                     "file": {
                         "type": "string",
-                        "description": "Path to the file to analyze"
+                        "description": "Path to the file to preview"
                     }
                 },
                 "required": ["file"]
@@ -356,7 +353,7 @@ impl McpServer {
         let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
         let result = match name {
-            "gabb_structure" => self.tool_structure(&arguments),
+            "gabb_peek" => self.tool_peek(&arguments),
             _ => Ok(ToolResult::error(format!("Unknown tool: {}", name))),
         };
 
@@ -1267,7 +1264,10 @@ impl McpServer {
         Ok(ToolResult::text(output))
     }
 
-    fn tool_structure(&mut self, args: &Value) -> Result<ToolResult> {
+    /// Threshold for small files - files with this many lines or fewer return full contents
+    const SMALL_FILE_THRESHOLD: usize = 75;
+
+    fn tool_peek(&mut self, args: &Value) -> Result<ToolResult> {
         let file = args
             .get("file")
             .and_then(|v| v.as_str())
@@ -1287,8 +1287,35 @@ impl McpServer {
             )));
         }
 
-        let store = self.get_store_for_workspace(&workspace)?;
+        // Read file contents
+        let content = match fs::read_to_string(&full_path) {
+            Ok(c) => c,
+            Err(e) => {
+                return Ok(ToolResult::error(format!("Failed to read file: {}", e)));
+            }
+        };
+        let lines: Vec<&str> = content.lines().collect();
+        let line_count = lines.len();
         let file_str = crate::store::normalize_path(&full_path);
+
+        // Check if this is a supported file type
+        let registry = ParserRegistry::new();
+        let is_supported = registry.is_supported(&full_path);
+
+        // For unsupported files or small files, return full contents
+        if !is_supported || line_count <= Self::SMALL_FILE_THRESHOLD {
+            let reason = if !is_supported {
+                "non-code file"
+            } else {
+                "small file"
+            };
+            return Ok(ToolResult::text(format_file_contents(
+                &file_str, &lines, line_count, reason,
+            )));
+        }
+
+        // For large supported files, try to get structure from index
+        let store = self.get_store_for_workspace(&workspace)?;
 
         // Query symbols for this file
         let query = SymbolQuery {
@@ -1297,10 +1324,13 @@ impl McpServer {
         };
         let symbols = store.list_symbols_filtered(&query)?;
 
+        // If no symbols found (not indexed yet), fall back to contents
         if symbols.is_empty() {
-            return Ok(ToolResult::error(format!(
-                "No symbols found in {}. Is it indexed?",
-                file_str
+            return Ok(ToolResult::text(format_file_contents(
+                &file_str,
+                &lines,
+                line_count,
+                "not indexed",
             )));
         }
 
@@ -2166,6 +2196,33 @@ fn format_file_summary(summary: &FileSummary) -> String {
     }
 
     result
+}
+
+/// Format file contents with line numbers (similar to Read tool output)
+///
+/// Output format:
+/// ```text
+/// path/to/file.json (75 lines, non-code file)
+///      1→{
+///      2→  "name": "example",
+///      ...
+/// ```
+fn format_file_contents(
+    file_path: &str,
+    lines: &[&str],
+    line_count: usize,
+    reason: &str,
+) -> String {
+    let mut output = format!("{} ({} lines, {})\n", file_path, line_count, reason);
+
+    // Calculate width needed for line numbers
+    let width = line_count.to_string().len().max(5);
+
+    for (i, line) in lines.iter().enumerate() {
+        output.push_str(&format!("{:>width$}→{}\n", i + 1, line, width = width));
+    }
+
+    output
 }
 
 /// Build a hierarchical tree of symbols for the structure command

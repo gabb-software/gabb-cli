@@ -1,6 +1,6 @@
 # Gabb MCP Server
 
-Code indexing server providing lightweight file structure previews via SQLite index.
+Code indexing server providing smart file previews via SQLite index.
 
 ## Task Complexity Assessment
 
@@ -18,32 +18,30 @@ Before using gabb exploration tools, assess whether exploration is needed:
 - Change affects multiple components or has unclear scope
 - You're unfamiliar with the codebase structure
 
-⚠️ **Over-exploration costs time.** A trivial task that could be solved in 15s
-can take 60s+ with unnecessary exploration. Match exploration depth to task complexity.
+## Smart File Preview
 
-## Pre-Read Check for Code Files (Recommended)
+Use `gabb_peek` as your first step when exploring any file. It automatically
+returns the right format based on file size and type:
 
-For large or unfamiliar code files, consider calling `gabb_structure` first to see the layout.
-This saves tokens when you only need part of a large file.
+- **Small files (<75 lines):** Full contents with line numbers
+- **Non-code files (.json, .md, .yaml):** Full contents with line numbers
+- **Large code files (>75 lines):** Symbol structure overview
 
-**Recommended for:**
-- Large files (>100 lines) where you only need part
-- Unfamiliar codebases where you're exploring
-- Files you'll read multiple times in a session
-
-**Skip this check when:**
-- You already know exactly what you're looking for
-- The file is likely small (<100 lines)
-- You can answer from existing context
-- Files you've already seen structure for
+This eliminates the need to guess file size before deciding between tools.
 
 **The pattern:**
 ```
-gabb_structure file="path/to/file.rs"      # ~50 tokens, shows layout
-Read file="path/to/file.rs" offset=X limit=Y   # Read only what you need
+gabb_peek file="path/to/file"
+→ Small/non-code: full contents with line numbers
+→ Large code: symbol structure (~50 tokens)
+
+If structure returned and you need more:
+Read file="path/to/file" offset=X limit=Y
 ```
 
 ## Supported Languages
+
+Symbol structure is available for these languages:
 
 | Language   | Extensions                              |
 |------------|----------------------------------------|
@@ -56,6 +54,5 @@ Read file="path/to/file.rs" offset=X limit=Y   # Read only what you need
 ## When NOT to Use gabb
 
 Fall back to Grep/Read for:
-- Non-code files (.json, .md, .yaml, .toml)
-- Unsupported languages (.js, .jsx, .go, .java, .c, .h)
-- Searching for text content (strings, comments)
+- Searching for text content (strings, comments, error messages)
+  (gabb_peek shows file contents or symbols, not search results)

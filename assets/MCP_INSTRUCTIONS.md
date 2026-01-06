@@ -2,24 +2,35 @@
 
 Code indexing server providing lightweight file structure previews via SQLite index.
 
-## Task Complexity Assessment
+## Exploration Ladder
 
-Before using gabb exploration tools, assess whether exploration is needed:
+Match exploration depth to **actual** difficulty, not predicted difficulty.
+Start simple and escalate only when needed.
 
-**Go direct (skip exploration) when:**
-- Task names a specific file or function (e.g., "fix bug in utils.py")
-- Change is localized (e.g., "add parameter to X", "rename Y to Z")
-- You can identify the exact target from the task description
-- Task is a simple fix with obvious location
+### Level 1 - Direct (try first)
+- Go directly to the most likely file based on task description
+- If you find what you need, stop here
+- Use when: task names a specific file/function, change is localized, obvious location
 
-**Explore when:**
-- Task requires understanding system architecture
-- You need to find where something is implemented
-- Change affects multiple components or has unclear scope
-- You're unfamiliar with the codebase structure
+### Level 2 - Targeted Search (if Level 1 insufficient)
+- Use Grep for specific symbols/patterns mentioned in the task
+- Read 1-2 additional files identified by search
+- Use when: direct attempt didn't find the target, need to locate a symbol
+
+### Level 3 - Structure Overview (if still stuck)
+- Use gabb_structure on candidate files to understand layout
+- Read targeted sections based on structure
+- Use when: file is large and you need to find the right section
+
+### Level 4 - Full Exploration (only for genuinely complex tasks)
+- Use Task agents for systematic codebase exploration
+- Use when: architectural questions, multi-component changes, truly unknown territory
+
+**Key principle:** Start at Level 1 and escalate only when needed.
+Don't predict difficulty—discover it.
 
 ⚠️ **Over-exploration costs time.** A trivial task that could be solved in 15s
-can take 60s+ with unnecessary exploration. Match exploration depth to task complexity.
+can take 60s+ with unnecessary exploration.
 
 ## Pre-Read Check for Code Files (Recommended)
 

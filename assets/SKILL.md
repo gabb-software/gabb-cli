@@ -10,11 +10,12 @@ allowed-tools: mcp__gabb__gabb_structure, Edit, Write, Bash, Read, Glob
 
 ## When to Use `gabb_structure`
 
-**First:** Assess if exploration is needed (see MCP instructions).
-For trivial tasks with obvious targets, go directly to the file.
+**Use the Exploration Ladder** (see MCP instructions). `gabb_structure` belongs at **Level 3**—use it when:
+- Level 1 (direct read) and Level 2 (targeted grep) didn't find what you need
+- You're reading a large file and need to find the right section
+- You want to understand a file's layout before reading specific parts
 
-**If exploring:** Before reading large or unfamiliar code files, consider using `gabb_structure` to preview the layout.
-This saves tokens when you only need part of a large file.
+Don't start with gabb_structure. Start simple, escalate when needed.
 
 **Recommended for:**
 - Large files (>100 lines) where you only need part

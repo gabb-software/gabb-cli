@@ -320,13 +320,12 @@ impl McpServer {
         let tools = vec![Tool {
             name: "gabb_peek".to_string(),
             description: concat!(
-                "Smart file preview - returns symbol structure for large code files, ",
-                "full contents for small files (<75 lines) or non-code files.\n\n",
-                "Use as your first step when exploring any file. The tool automatically:\n",
-                "- Returns full contents with line numbers for small files (<75 lines)\n",
-                "- Returns full contents for non-code files (.json, .md, .yaml, etc.)\n",
-                "- Returns symbol structure for large code files (>75 lines)\n\n",
-                "This eliminates the need to guess file size before deciding what to use."
+                "Smart file preview that automatically returns the right format:\n",
+                "- Small files (<75 lines): full contents with line numbers\n",
+                "- Non-code files (.json, .md, .yaml): full contents with line numbers\n",
+                "- Large code files (>75 lines): symbol structure overview\n\n",
+                "Use this as your default way to look at any file. ",
+                "Skip only when searching for strings (use Grep) or making edits (use Edit)."
             )
             .to_string(),
             input_schema: json!({

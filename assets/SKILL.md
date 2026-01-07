@@ -10,16 +10,19 @@ allowed-tools: mcp__gabb__gabb_peek, Edit, Write, Bash, Read, Glob
 
 ## When to Use `gabb_peek`
 
-**First:** Assess if exploration is needed (see MCP instructions).
-For trivial tasks with obvious targets, go directly to the file.
-
-**If exploring:** Use `gabb_peek` as your first step when exploring any file.
-It automatically returns the right format:
+Use `gabb_peek` as your default way to look at any file. It automatically returns the right format:
 - **Small files (<75 lines):** Full contents with line numbers
 - **Non-code files (.json, .md, .yaml):** Full contents with line numbers
 - **Large code files (>75 lines):** Symbol structure overview
 
-This eliminates guessing about file size or type.
+No need to guess file size or type - just use `gabb_peek` and it handles it.
+
+## When to Skip `gabb_peek`
+
+Go directly to specialized tools when:
+- **Searching for strings/patterns:** Use Grep (gabb_peek shows structure, not search results)
+- **You already know the exact location:** Use Read with offset/limit
+- **Making edits:** Use Edit directly
 
 ## Supported Languages for Structure
 
@@ -67,9 +70,3 @@ MyStruct st 10
 helper fn 30
 main fn 50
 ```
-
-## When NOT to Use gabb_peek
-
-Fall back to Grep directly for:
-- Searching for string literals, regex patterns, or error messages
-  (gabb_peek shows file contents or symbols, not search results)

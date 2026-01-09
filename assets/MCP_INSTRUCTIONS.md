@@ -21,6 +21,30 @@ Before using gabb exploration tools, assess whether exploration is needed:
 ⚠️ **Over-exploration costs time.** A trivial task that could be solved in 15s
 can take 60s+ with unnecessary exploration. Match exploration depth to task complexity.
 
+## Anti-Patterns to Avoid
+
+❌ **Over-exploration on obvious targets:**
+
+```
+Task: "Fix Http404 handling in technical_404_response in debug views"
+
+BAD (60s): Grep "Http404" → Glob "*debug*" → Read 5 wrong files → finally find it
+GOOD (15s): Read django/views/debug.py → Done (task named the file)
+```
+
+**Key insight:** If the task names specific files or functions, trust that information. Don't verify what's already stated.
+
+❌ **Task agent for simple lookups:**
+
+```
+Task: "Find where UserSerializer is defined"
+
+BAD: Launch Task agent to "explore serializers"
+GOOD: Grep "class UserSerializer" → Read the match
+```
+
+**Key insight:** Direct tool calls beat exploration agents for specific symbol lookups.
+
 ## Pre-Read Check for Code Files (Recommended)
 
 For large or unfamiliar code files, consider calling `gabb_structure` first to see the layout.

@@ -6,32 +6,51 @@ description: |
 allowed-tools: mcp__gabb__*, Edit, Write, Bash, Read, Glob
 ---
 
-# When to Use gabb vs Grep/Read
+# Gabb Code Navigation
 
-## Pre-Flight Checklist (Before ANY Read on Code Files)
+## Search Strategy Decision Flow
 
-Before calling `Read` on a code file, run this check:
+When you need to find code, follow this order:
 
+1. **Task names specific file/function?** → Read directly (skip exploration)
+2. **Looking for a code construct by name?** → `gabb_symbol`
+3. **Looking for text content (strings, error messages)?** → Grep
+4. **Need to understand file layout?** → `gabb_structure`
+
+## `gabb_symbol` - Workspace Symbol Search
+
+Search for symbols (functions, classes, methods) by name across the workspace.
+
+**When to use:**
+- Task mentions a function/class/method name to find or fix
+- You need to find where something is defined
+- Grep would return too many false positives
+
+**Example:**
 ```
-□ Is file extension in [.py, .pyi, .ts, .tsx, .rs, .kt, .kts, .cpp, .cc, .cxx, .hpp, .hh]?
-  ├─ NO  → Use Read directly (unsupported language)
-  └─ YES → Have I called gabb_structure on this file in this session?
-           ├─ NO  → Call gabb_structure FIRST, then decide what to read
-           └─ YES → Use Read with offset/limit based on structure output
+gabb_symbol name="update_proxy_model_permissions"
+→ function update_proxy_model_permissions [prod] migrations/0011_update_proxy_permissions.py:5:1
 ```
 
-**Why checklists work**: They force a pause before automatic behavior.
+**Use Grep instead when:**
+- Searching for error messages or string literals
+- Looking for text patterns, not code identifiers
 
-## The Core Decision
+## `gabb_structure` - File Layout Preview
 
-**Ask yourself: "Am I looking for CODE (functions, classes, symbols)?"**
+Before reading large or unfamiliar code files, consider using `gabb_structure` to preview the layout.
+This saves tokens when you only need part of a large file.
 
-| If YES → Use gabb | If NO → Use Grep/Read |
-|-------------------|----------------------|
-| Find a function | Search log messages |
-| Find a class | Find config values |
-| Find where X is defined | Search comments |
-| Find usages of X | Find in .json/.md/.yaml |
+**Recommended for:**
+- Large files (>100 lines) where you only need part
+- Unfamiliar codebases where you're exploring
+- Files you'll read multiple times
+
+**Skip when:**
+- You already know exactly what you're looking for
+- The file is likely small (<100 lines)
+- You can answer from existing context
+- Files you've already seen structure for in this conversation
 
 ## Supported Languages
 
@@ -45,36 +64,13 @@ Before calling `Read` on a code file, run this check:
 
 **For .js, .jsx, .go, .java, .c, .h → Use Grep/Read**
 
-## Start Here: The Two-Step Pattern
-
-**Step 1: Get cheap overview** (no source code, just structure)
-```
-gabb_structure file="path/to/file.py"
-```
-**MANDATORY** for any supported code file. Returns symbol names, kinds, line numbers.
-
-**Step 2: Get specific code** (one of these based on what you need)
-- `gabb_symbols name="FunctionName" include_source=true` - get a specific symbol's code
-- `Read file="path" offset=150 limit=50` - read specific line range from structure output
-
 ## Quick Reference
 
 | Goal | Tool |
 |------|------|
-| Preview file structure (cheap) | `gabb_structure file="path"` → [details](./tools/structure.md) |
-| Find and read code by keyword | `gabb_symbols name_contains="X" include_source=true` → [details](./tools/symbols.md) |
-| Find usages before refactoring | `gabb_usages file="X" line=N character=M` → [details](./tools/usages.md) |
-
-**Use `include_source=true`** on `gabb_symbols`, `gabb_symbol`, `gabb_definition` - NOT on `gabb_structure`.
-
-## Specialized Tools
-
-For call tracing, type hierarchies, and other tasks:
-- [callers.md](./tools/callers.md) / [callees.md](./tools/callees.md) - trace call graph
-- [hierarchy.md](./tools/hierarchy.md) - supertypes/subtypes
-- [definition.md](./tools/definition.md) - jump to definition
-- [rename.md](./tools/rename.md) - safe renaming
-- [implementations.md](./tools/implementations.md) - find interface implementations
+| Find symbol by name | `gabb_symbol name="X"` |
+| Preview file structure | `gabb_structure file="path"` |
+| Find usages before refactoring | `gabb_usages file="X" line=N character=M` |
 
 ## When to Fall Back to Grep/Read
 

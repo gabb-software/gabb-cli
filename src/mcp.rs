@@ -316,33 +316,64 @@ impl McpServer {
     }
 
     fn handle_tools_list(&self) -> Result<Value> {
-        let tools = vec![Tool {
-            name: "gabb_structure".to_string(),
-            description: concat!(
-                "Get a CHEAP, LIGHTWEIGHT overview of a file's symbols before reading it.\n\n",
-                "Recommended for:\n",
-                "- Large files (>100 lines) where you only need part\n",
-                "- Unfamiliar codebases where you're exploring\n",
-                "- Files you'll read multiple times\n\n",
-                "Skip when:\n",
-                "- You already know exactly what you're looking for\n",
-                "- The file is likely small (<100 lines)\n",
-                "- You can answer from existing context\n\n",
-                "Returns: symbol names, kinds, line numbers—NOT source code. ",
-                "After seeing structure, use targeted Read with offset/limit."
-            )
-            .to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "file": {
-                        "type": "string",
-                        "description": "Path to the file to analyze"
-                    }
-                },
-                "required": ["file"]
-            }),
-        }];
+        let tools = vec![
+            Tool {
+                name: "gabb_structure".to_string(),
+                description: concat!(
+                    "Get a CHEAP, LIGHTWEIGHT overview of a file's symbols before reading it.\n\n",
+                    "Recommended for:\n",
+                    "- Large files (>100 lines) where you only need part\n",
+                    "- Unfamiliar codebases where you're exploring\n",
+                    "- Files you'll read multiple times\n\n",
+                    "Skip when:\n",
+                    "- You already know exactly what you're looking for\n",
+                    "- The file is likely small (<100 lines)\n",
+                    "- You can answer from existing context\n\n",
+                    "Returns: symbol names, kinds, line numbers—NOT source code. ",
+                    "After seeing structure, use targeted Read with offset/limit."
+                )
+                .to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "file": {
+                            "type": "string",
+                            "description": "Path to the file to analyze"
+                        }
+                    },
+                    "required": ["file"]
+                }),
+            },
+            Tool {
+                name: "gabb_symbol".to_string(),
+                description: concat!(
+                    "Search for symbols (functions, classes, methods) by name across the workspace.\n\n",
+                    "Use INSTEAD of Grep when:\n",
+                    "- Task mentions a function/class/method to find or fix\n",
+                    "- Looking for where a symbol is defined\n",
+                    "- Symbol name would have many false-positive text matches\n\n",
+                    "Use Grep instead when:\n",
+                    "- Searching for error messages or string literals\n",
+                    "- Pattern is text content, not a code identifier\n\n",
+                    "Returns: symbol kind, name, file:line:col (up to 10 matches)"
+                )
+                .to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Symbol name to search for (function, class, method name)"
+                        },
+                        "kind": {
+                            "type": "string",
+                            "description": "Optional filter: function, class, method, struct, trait, etc."
+                        }
+                    },
+                    "required": ["name"]
+                }),
+            },
+        ];
 
         Ok(json!({ "tools": tools }))
     }
@@ -357,6 +388,7 @@ impl McpServer {
 
         let result = match name {
             "gabb_structure" => self.tool_structure(&arguments),
+            "gabb_symbol" => self.tool_symbol(&arguments),
             _ => Ok(ToolResult::error(format!("Unknown tool: {}", name))),
         };
 

@@ -1,6 +1,44 @@
 # Gabb MCP Server
 
-Code indexing server providing lightweight file structure previews via SQLite index.
+Code indexing server providing semantic symbol search and file structure previews via SQLite index.
+
+## Search Strategy Decision Flow
+
+When you need to find code, follow this order:
+
+1. **Task names specific file/function?** → Read directly (skip exploration)
+2. **Looking for a code construct by name?** → `gabb_symbol`
+3. **Looking for text content (strings, error messages)?** → Grep
+4. **Need to understand file layout?** → `gabb_structure`
+
+## `gabb_symbol` - Workspace Symbol Search
+
+Search for symbols (functions, classes, methods) by name across the workspace.
+
+**When to use:**
+- Task mentions a function/class/method name to find or fix
+- You need to find where something is defined
+- Grep would return too many false positives for a common term
+
+**Example:**
+```
+Task: "The update_proxy_model_permissions function has a bug"
+
+gabb_symbol name="update_proxy_model_permissions"
+→ function update_proxy_model_permissions [prod] django/contrib/auth/migrations/0011_update_proxy_permissions.py:5:1
+```
+
+**Anti-pattern:**
+```
+Task: "Fix the update_proxy_model_permissions function"
+
+BAD (75s): Grep "IntegrityError" → 48 files → spawn Task agent → still confused
+GOOD (5s): gabb_symbol name="update_proxy_model_permissions" → 1 match → done
+```
+
+**Use Grep instead when:**
+- Searching for error messages or string literals
+- Looking for text patterns, not code identifiers
 
 ## Task Complexity Assessment
 
@@ -21,31 +59,7 @@ Before using gabb exploration tools, assess whether exploration is needed:
 ⚠️ **Over-exploration costs time.** A trivial task that could be solved in 15s
 can take 60s+ with unnecessary exploration. Match exploration depth to task complexity.
 
-## Anti-Patterns to Avoid
-
-❌ **Over-exploration on obvious targets:**
-
-```
-Task: "Fix Http404 handling in technical_404_response in debug views"
-
-BAD (60s): Grep "Http404" → Glob "*debug*" → Read 5 wrong files → finally find it
-GOOD (15s): Read django/views/debug.py → Done (task named the file)
-```
-
-**Key insight:** If the task names specific files or functions, trust that information. Don't verify what's already stated.
-
-❌ **Task agent for simple lookups:**
-
-```
-Task: "Find where UserSerializer is defined"
-
-BAD: Launch Task agent to "explore serializers"
-GOOD: Grep "class UserSerializer" → Read the match
-```
-
-**Key insight:** Direct tool calls beat exploration agents for specific symbol lookups.
-
-## Pre-Read Check for Code Files (Recommended)
+## `gabb_structure` - File Layout Preview
 
 For large or unfamiliar code files, consider calling `gabb_structure` first to see the layout.
 This saves tokens when you only need part of a large file.

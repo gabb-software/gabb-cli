@@ -225,7 +225,29 @@ What gets indexed:
 
 ## MCP Server (AI Assistant Integration)
 
-Gabb includes an MCP (Model Context Protocol) server that exposes the `gabb_structure` tool to AI assistants. This provides a cheap, lightweight way to preview file contents before reading them.
+Gabb includes an MCP (Model Context Protocol) server that exposes code navigation tools to AI assistants.
+
+### MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `gabb_symbol` | Search for symbols (functions, classes, methods) by name across the workspace |
+| `gabb_structure` | Get a lightweight file structure overview before reading |
+
+### The `gabb_symbol` Tool
+
+Search for code symbols by name across the entire workspace. Use this **instead of Grep** when looking for functions, classes, or methods.
+
+**Use it when:**
+- Task mentions a function/class/method name to find or fix
+- You need to find where something is defined
+- Grep would return too many false-positive text matches
+
+**Example:**
+```
+gabb_symbol name="update_proxy_model_permissions"
+→ function update_proxy_model_permissions [prod] migrations/0011.py:5:1
+```
 
 ### The `gabb_structure` Tool
 
@@ -393,9 +415,9 @@ gabb init --skill
 gabb init --mcp --skill
 ```
 
-This creates `.claude/skills/gabb/SKILL.md` which Claude auto-discovers. The skill teaches Claude to use `gabb_structure` before reading large files in supported languages.
+This creates `.claude/skills/gabb/SKILL.md` which Claude auto-discovers. The skill teaches Claude when to use `gabb_symbol` for workspace-wide symbol search and `gabb_structure` for file previews.
 
-**Skills vs MCP**: The MCP server provides the actual tool. The skill provides guidance on *when* to use it. Both complement each other for optimal AI assistant integration.
+**Skills vs MCP**: The MCP server provides the actual tools. The skill provides guidance on *when* to use them. Both complement each other for optimal AI assistant integration.
 
 ## Project Layout
 - `src/main.rs`: CLI entrypoint and logging setup

@@ -3,12 +3,40 @@ name: gabb-code-navigation
 description: |
   Teaches when to use gabb_structure for efficient file exploration.
   Use gabb_structure before reading large files in supported languages.
-allowed-tools: mcp__gabb__gabb_structure, Edit, Write, Bash, Read, Glob
+allowed-tools: mcp__gabb__gabb_structure, mcp__gabb__gabb_symbol, Edit, Write, Bash, Read, Glob
 ---
 
-# gabb File Structure Preview
+# Gabb Code Navigation
 
-## When to Use `gabb_structure`
+## Search Strategy Decision Flow
+
+When you need to find code, follow this order:
+
+1. **Task names specific file/function?** → Read directly (skip exploration)
+2. **Looking for a code construct by name?** → `gabb_symbol`
+3. **Looking for text content (strings, error messages)?** → Grep
+4. **Need to understand file layout?** → `gabb_structure`
+
+## `gabb_symbol` - Workspace Symbol Search
+
+Search for symbols (functions, classes, methods) by name across the workspace.
+
+**When to use:**
+- Task mentions a function/class/method name to find or fix
+- You need to find where something is defined
+- Grep would return too many false positives
+
+**Example:**
+```
+gabb_symbol name="update_proxy_model_permissions"
+→ function update_proxy_model_permissions [prod] migrations/0011_update_proxy_permissions.py:5:1
+```
+
+**Use Grep instead when:**
+- Searching for error messages or string literals
+- Looking for text patterns, not code identifiers
+
+## `gabb_structure` - File Layout Preview
 
 **First:** Assess if exploration is needed (see MCP instructions).
 For trivial tasks with obvious targets, go directly to the file.
@@ -39,8 +67,15 @@ This saves tokens when you only need part of a large file.
 | Kotlin     | `.kt`, `.kts`                          |
 | C++        | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`   |
 
-## Usage Pattern
+## Usage Patterns
 
+### Symbol Search
+```
+gabb_symbol name="MyClass"
+→ class MyClass [prod] src/models.py:45:1
+```
+
+### File Structure Preview
 ```
 1. gabb_structure file="src/large_file.rs"
    → Returns symbol names, kinds, line numbers (NO source code)
@@ -49,7 +84,7 @@ This saves tokens when you only need part of a large file.
    → Read only the section you need
 ```
 
-## What the Output Looks Like
+## What `gabb_structure` Output Looks Like
 
 ```
 /path/to/file.rs:450

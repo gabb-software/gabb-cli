@@ -11,7 +11,7 @@ Gabb is a Rust CLI that builds a local code index so editors and AI coding assis
 ## Quickstart
 ```bash
 # 1) Install via Homebrew
-brew install dmb23/tap/gabb
+brew install gabb-software/tap/gabb
 
 # 2) Run the interactive setup wizard
 gabb setup
@@ -20,6 +20,10 @@ gabb setup
 gabb symbols --kind function --limit 10
 gabb symbol --name MyClass
 gabb usages --file src/main.rs:10:5
+
+# 4) Install in Claude Code
+claude mcp add gabb -- gabb mcp-server
+# Then restart claude code
 ```
 
 The `gabb setup` command is an interactive wizard that:

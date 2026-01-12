@@ -230,6 +230,7 @@ def run_benchmark(
     runs: int = 1,
     condition: str = "both",
     workspace: Path | None = None,
+    lite: bool = False,
 ) -> Path | None:
     """Run benchmark on current branch.
 
@@ -244,6 +245,8 @@ def run_benchmark(
             cmd.extend(["--workspace", str(workspace)])
     elif swe_bench:
         cmd.extend(["--swe-bench", swe_bench])
+        if lite:
+            cmd.append("--lite")
 
     cmd.extend(["--runs", str(runs)])
     cmd.extend(["--condition", condition])
@@ -318,6 +321,11 @@ def main() -> int:
         help="Include statistical tests in comparison",
     )
     parser.add_argument(
+        "--lite",
+        action="store_true",
+        help="Use SWE-bench_Lite dataset (for tasks only in lite)",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Force run even with dirty working tree (auto-stashes)",
@@ -386,6 +394,7 @@ def main() -> int:
             runs=args.runs,
             condition=args.condition,
             workspace=args.workspace,
+            lite=args.lite,
         )
         if result_a:
             print(f"  Results: {result_a}")
@@ -415,6 +424,7 @@ def main() -> int:
             runs=args.runs,
             condition=args.condition,
             workspace=args.workspace,
+            lite=args.lite,
         )
         if result_b:
             print(f"  Results: {result_b}")

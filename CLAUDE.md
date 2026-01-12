@@ -212,6 +212,7 @@ Gabb is a local code indexing CLI that builds and maintains a SQLite database of
   - `kotlin.rs`: Kotlin parser (`.kt`, `.kts`)
   - `cpp.rs`: C++ parser (`.cpp`, `.cc`, `.cxx`, `.c++`, `.hpp`, `.hh`, `.hxx`, `.h++`)
   - `python.rs`: Python parser (`.py`, `.pyi`)
+  - `go.rs`: Go parser (`.go`)
 
 - **Store** (`src/store.rs`): SQLite persistence layer with WAL mode for concurrent reads. Schema includes:
   - `files`: tracked file metadata (path, hash, mtime)

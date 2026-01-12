@@ -64,6 +64,7 @@ This saves tokens when you only need part of a large file.
 | Python     | `.py`, `.pyi`                          |
 | TypeScript | `.ts`, `.tsx`                          |
 | Rust       | `.rs`                                  |
+| Go         | `.go`                                  |
 | Kotlin     | `.kt`, `.kts`                          |
 | C++        | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`   |
 

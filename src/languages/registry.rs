@@ -4,7 +4,7 @@
 //! replacing the if/else chains in the indexer.
 
 use super::traits::{LanguageParser, ParseResult};
-use super::{cpp, kotlin, python, rust, typescript};
+use super::{cpp, go, kotlin, python, rust, typescript};
 use anyhow::{bail, Result};
 use std::collections::HashMap;
 use std::path::Path;
@@ -55,6 +55,12 @@ impl ParserRegistry {
             registry
                 .parsers
                 .insert(ext, Box::new(python_parser.clone()));
+        }
+
+        // Register Go parser
+        let go_parser = go::GoParser::new();
+        for ext in go_parser.config().extensions {
+            registry.parsers.insert(ext, Box::new(go_parser.clone()));
         }
 
         registry
@@ -170,10 +176,16 @@ mod tests {
     }
 
     #[test]
+    fn registry_finds_go_parser() {
+        let registry = ParserRegistry::new();
+        assert!(registry.is_supported(&PathBuf::from("test.go")));
+    }
+
+    #[test]
     fn registry_rejects_unsupported() {
         let registry = ParserRegistry::new();
-        assert!(!registry.is_supported(&PathBuf::from("test.go")));
         assert!(!registry.is_supported(&PathBuf::from("test.java")));
+        assert!(!registry.is_supported(&PathBuf::from("test.rb")));
     }
 
     #[test]
@@ -185,5 +197,6 @@ mod tests {
         assert!(languages.contains(&"Kotlin"));
         assert!(languages.contains(&"C++"));
         assert!(languages.contains(&"Python"));
+        assert!(languages.contains(&"Go"));
     }
 }

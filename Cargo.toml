@@ -2,12 +2,12 @@
 name = "gabb-cli"
 version = "0.0.0-dev"  # Actual version set by CI from version.toml
 edition = "2021"
-description = "Fast local code indexing CLI for TypeScript, Rust, Kotlin, C++, and Python projects"
+description = "Fast local code indexing CLI for TypeScript, Rust, Kotlin, C++, Python, and Go projects"
 license = "MIT"
 repository = "https://github.com/gabb-software/gabb-cli"
 homepage = "https://github.com/gabb-software/gabb-cli"
 readme = "README.md"
-keywords = ["code-indexing", "symbols", "typescript", "rust", "python"]
+keywords = ["code-indexing", "symbols", "typescript", "rust", "go"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
@@ -37,6 +37,7 @@ tree-sitter-rust = "0.23.2"
 tree-sitter-kotlin-codanna = "0.3.9"
 tree-sitter-cpp = "0.23"
 tree-sitter-python = "0.23"
+tree-sitter-go = "0.23"
 indicatif = "0.17"
 
 [dev-dependencies]

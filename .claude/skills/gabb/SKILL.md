@@ -8,14 +8,31 @@ allowed-tools: mcp__gabb__gabb_structure, mcp__gabb__gabb_symbol, Edit, Write, B
 
 # Gabb Code Navigation
 
-## Search Strategy Decision Flow
+## Search Strategy (Parallel-First)
 
-When you need to find code, follow this order:
+When the target location isn't obvious, run MULTIPLE searches in parallel:
 
-1. **Task names specific file/function?** → Read directly (skip exploration)
-2. **Looking for a code construct by name?** → `gabb_symbol`
-3. **Looking for text content (strings, error messages)?** → Grep
-4. **Need to understand file layout?** → `gabb_structure`
+**Combine in ONE turn:**
+- `gabb_symbol` for likely function/class names
+- `Grep` for error messages, string literals, or text patterns
+- `Glob` for filename patterns (if file location is hinted)
+
+**Example:** Task mentions "fix the IsNull lookup validation"
+→ Call `gabb_symbol(name="IsNull")` AND `Grep(pattern="IsNull")` in same turn
+→ Don't wait for one to finish before trying the other
+
+**After finding a location:** Immediately Read the file in the SAME response.
+Don't make it a separate turn.
+
+**Only go sequential when:**
+- First search definitively found the target (no need for more)
+- You need the result of tool A to know what to search for with tool B
+
+**Efficiency target:** Aim for ≤3 turns per task. Each turn adds context tokens.
+
+**Skip exploration entirely when:**
+- Task names a specific file/function → Read directly
+- Change is localized with obvious target
 
 ## `gabb_symbol` - Workspace Symbol Search
 

@@ -88,6 +88,7 @@ Read file="path/to/file.rs" offset=X limit=Y   # Read only what you need
 | Python     | `.py`, `.pyi`                          |
 | TypeScript | `.ts`, `.tsx`                          |
 | Rust       | `.rs`                                  |
+| Go         | `.go`                                  |
 | Kotlin     | `.kt`, `.kts`                          |
 | C++        | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`   |
 
@@ -95,5 +96,5 @@ Read file="path/to/file.rs" offset=X limit=Y   # Read only what you need
 
 Fall back to Grep/Read for:
 - Non-code files (.json, .md, .yaml, .toml)
-- Unsupported languages (.js, .jsx, .go, .java, .c, .h)
+- Unsupported languages (.js, .jsx, .java, .c, .h)
 - Searching for text content (strings, comments)

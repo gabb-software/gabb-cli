@@ -223,7 +223,7 @@ Structure command:
 - Shows start line for each symbol (compact format: `name kind line`)
 
 What gets indexed:
-- Files: `*.ts`, `*.tsx`, `*.rs`, `*.kt`, `*.kts`
+- Files: `*.ts`, `*.tsx`, `*.rs`, `*.kt`, `*.kts`, `*.py`, `*.pyi`, `*.go`, `*.cpp`, `*.cc`, `*.cxx`, `*.hpp`, `*.hh`
 - Data stored: symbols (functions, classes, interfaces, methods, etc.), relationships (implements/extends), references
 - Storage: SQLite with WAL enabled for safe concurrent reads
 

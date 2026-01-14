@@ -2,7 +2,7 @@
 
 Create a new release by analyzing changes and prompting for version bump type.
 
-## Step 1: Get Current Version and Last Release Tag
+## Step 1: Get Current Version and Last Release Commit
 
 Read the current version from `version.toml`:
 
@@ -10,24 +10,32 @@ Read the current version from `version.toml`:
 cat version.toml
 ```
 
-Get the last release tag:
+Find the last release commit (identified by `chore: release vX.Y.Z` message):
 
 ```bash
-git describe --tags --abbrev=0 2>/dev/null || echo "No previous tags"
+git log --oneline --grep="^chore: release v" -1
 ```
 
 ## Step 2: Analyze Changes Since Last Release
 
-Get all commits since the last release tag:
+Get all commits since the last release commit (excluding the release commit itself):
 
 ```bash
-git log $(git describe --tags --abbrev=0 2>/dev/null || echo "HEAD~50")..HEAD --oneline --no-merges
+LAST_RELEASE=$(git log --format="%H" --grep="^chore: release v" -1)
+git log ${LAST_RELEASE}..HEAD --oneline --no-merges
 ```
 
 Also get the full commit messages for better analysis:
 
 ```bash
-git log $(git describe --tags --abbrev=0 2>/dev/null || echo "HEAD~50")..HEAD --pretty=format:"- %s%n  %b" --no-merges
+LAST_RELEASE=$(git log --format="%H" --grep="^chore: release v" -1)
+git log ${LAST_RELEASE}..HEAD --pretty=format:"- %s%n  %b" --no-merges
+```
+
+If no release commit exists (first release), use the last 50 commits:
+
+```bash
+git log HEAD~50..HEAD --oneline --no-merges
 ```
 
 ## Step 3: Categorize Changes
@@ -65,7 +73,7 @@ Format the recommendation clearly:
 
 ```
 Current version: X.Y.Z
-Last release: vX.Y.Z (or "No previous releases")
+Last release: vX.Y.Z (from last "chore: release" commit, or "No previous releases")
 
 📊 Changes since last release:
 - N breaking changes

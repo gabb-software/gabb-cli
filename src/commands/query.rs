@@ -274,23 +274,19 @@ pub fn show_symbol(
                 refs = search_usages_by_name(&store, sym, &workspace_root).ok()?;
             }
 
-            let outgoing_edges: Vec<EdgeOutput> = outgoing
-                .iter()
-                .map(|e| EdgeOutput {
-                    src: e.src.clone(),
-                    dst: e.dst.clone(),
-                    kind: e.kind.clone(),
-                })
-                .collect();
+            let outgoing_edges: Vec<EdgeOutput> = crate::output::deduplicate_edges(
+                outgoing
+                    .iter()
+                    .map(|e| EdgeOutput::new(e.src.clone(), e.dst.clone(), e.kind.clone()))
+                    .collect(),
+            );
 
-            let incoming_edges: Vec<EdgeOutput> = incoming
-                .iter()
-                .map(|e| EdgeOutput {
-                    src: e.src.clone(),
-                    dst: e.dst.clone(),
-                    kind: e.kind.clone(),
-                })
-                .collect();
+            let incoming_edges: Vec<EdgeOutput> = crate::output::deduplicate_edges(
+                incoming
+                    .iter()
+                    .map(|e| EdgeOutput::new(e.src.clone(), e.dst.clone(), e.kind.clone()))
+                    .collect(),
+            );
 
             let references: Vec<ReferenceOutput> = refs
                 .iter()
@@ -397,13 +393,21 @@ pub fn show_symbol(
                 if !sym.outgoing_edges.is_empty() {
                     println!("  outgoing edges:");
                     for e in &sym.outgoing_edges {
-                        println!("    {} -> {} ({})", e.src, e.dst, e.kind);
+                        if let Some(count) = e.count {
+                            println!("    {} -> {} ({}) ×{}", e.src, e.dst, e.kind, count);
+                        } else {
+                            println!("    {} -> {} ({})", e.src, e.dst, e.kind);
+                        }
                     }
                 }
                 if !sym.incoming_edges.is_empty() {
                     println!("  incoming edges:");
                     for e in &sym.incoming_edges {
-                        println!("    {} -> {} ({})", e.src, e.dst, e.kind);
+                        if let Some(count) = e.count {
+                            println!("    {} -> {} ({}) ×{}", e.src, e.dst, e.kind, count);
+                        } else {
+                            println!("    {} -> {} ({})", e.src, e.dst, e.kind);
+                        }
                     }
                 }
                 if !sym.references.is_empty() {

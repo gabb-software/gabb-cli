@@ -17,6 +17,25 @@ When you need to find code, follow this order:
 3. **Looking for text content (strings, error messages)?** → Grep
 4. **Need to understand file layout?** → `gabb_structure`
 
+## When to Skip Exploration Entirely
+
+Go DIRECTLY to the file (no gabb_symbol, no Grep, no gabb_structure) when ANY of these are true:
+
+1. **Task names a specific file path**: "fix bug in django/db/models/fields.py"
+   → Read that file directly
+
+2. **Hint/diff shows exact location**: The task includes a code snippet or diff
+   → Read the file at that location
+
+3. **Single-line fix**: "change X to Y", "rename A to B", "fix typo"
+   → Find and read the obvious file
+
+4. **Error traceback provided**: Stack trace points to specific file:line
+   → Read that file at that line
+
+**The test:** If you can name the target file from the task description alone,
+skip exploration and just Read it.
+
 ## `gabb_symbol` - Workspace Symbol Search
 
 Search for symbols (functions, classes, methods) by name across the workspace.

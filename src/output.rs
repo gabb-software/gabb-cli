@@ -190,11 +190,14 @@ pub struct SymbolDetailOutput {
     pub references: Vec<ReferenceOutput>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone)]
 pub struct EdgeOutput {
     pub src: String,
     pub dst: String,
     pub kind: String,
+    /// Count of duplicate edges (only present when > 1)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<usize>,
 }
 
 #[derive(serde::Serialize)]
@@ -202,6 +205,45 @@ pub struct ReferenceOutput {
     pub file: String,
     pub start: Position,
     pub end: Position,
+}
+
+impl EdgeOutput {
+    /// Create an EdgeOutput from src, dst, kind without a count
+    pub fn new(src: String, dst: String, kind: String) -> Self {
+        Self {
+            src,
+            dst,
+            kind,
+            count: None,
+        }
+    }
+}
+
+/// Deduplicate edges by (src, dst, kind) and add count when > 1
+///
+/// This is useful for displaying edges in a human-readable format where
+/// multiple calls to the same function are grouped together with a count.
+pub fn deduplicate_edges(edges: Vec<EdgeOutput>) -> Vec<EdgeOutput> {
+    use std::collections::HashMap;
+
+    let mut counts: HashMap<(String, String, String), usize> = HashMap::new();
+    for e in edges {
+        *counts.entry((e.src, e.dst, e.kind)).or_insert(0) += 1;
+    }
+
+    let mut result: Vec<EdgeOutput> = counts
+        .into_iter()
+        .map(|((src, dst, kind), count)| EdgeOutput {
+            src,
+            dst,
+            kind,
+            count: if count > 1 { Some(count) } else { None },
+        })
+        .collect();
+
+    // Sort for stable output: by kind, then dst name
+    result.sort_by(|a, b| (&a.kind, &a.dst).cmp(&(&b.kind, &b.dst)));
+    result
 }
 
 // ==================== Definition Output ====================

@@ -755,42 +755,7 @@ impl McpServer {
             )));
         }
 
-        // Format symbols with edges
-        let mut output = String::new();
-        for sym in &symbols {
-            output.push_str(&format_symbol(sym, &workspace, &FormatOptions::default()));
-
-            // Fetch and format edges for this symbol
-            let outgoing = store.edges_from(&sym.id).unwrap_or_default();
-            let incoming = store.edges_to(&sym.id).unwrap_or_default();
-
-            if !outgoing.is_empty() || !incoming.is_empty() {
-                output.push_str("\n  edges:");
-
-                // Deduplicate and format outgoing edges
-                let deduped_outgoing = deduplicate_edges(&outgoing);
-                for (dst, kind, count) in deduped_outgoing {
-                    if count > 1 {
-                        output.push_str(&format!("\n    → {} ({}) ×{}", dst, kind, count));
-                    } else {
-                        output.push_str(&format!("\n    → {} ({})", dst, kind));
-                    }
-                }
-
-                // Deduplicate and format incoming edges
-                let deduped_incoming = deduplicate_incoming_edges(&incoming);
-                for (src, kind, count) in deduped_incoming {
-                    if count > 1 {
-                        output.push_str(&format!("\n    ← {} ({}) ×{}", src, kind, count));
-                    } else {
-                        output.push_str(&format!("\n    ← {} ({})", src, kind));
-                    }
-                }
-            }
-
-            output.push('\n');
-        }
-
+        let output = format_symbols(&symbols, &workspace, &FormatOptions::default());
         Ok(ToolResult::text(output))
     }
 
@@ -2322,44 +2287,6 @@ fn abbreviate_kind(kind: &str) -> &'static str {
         "class" => "cl",
         _ => "??",
     }
-}
-
-/// Deduplicate outgoing edges by (dst, kind) and return sorted (target, kind, count) tuples
-fn deduplicate_edges(edges: &[crate::store::EdgeRecord]) -> Vec<(String, String, usize)> {
-    use std::collections::HashMap;
-
-    let mut counts: HashMap<(String, String), usize> = HashMap::new();
-    for e in edges {
-        *counts.entry((e.dst.clone(), e.kind.clone())).or_insert(0) += 1;
-    }
-
-    let mut result: Vec<(String, String, usize)> = counts
-        .into_iter()
-        .map(|((target, kind), count)| (target, kind, count))
-        .collect();
-
-    // Sort by kind, then target name for stable output
-    result.sort_by(|a, b| (&a.1, &a.0).cmp(&(&b.1, &b.0)));
-    result
-}
-
-/// Deduplicate incoming edges by (src, kind) and return sorted (source, kind, count) tuples
-fn deduplicate_incoming_edges(edges: &[crate::store::EdgeRecord]) -> Vec<(String, String, usize)> {
-    use std::collections::HashMap;
-
-    let mut counts: HashMap<(String, String), usize> = HashMap::new();
-    for e in edges {
-        *counts.entry((e.src.clone(), e.kind.clone())).or_insert(0) += 1;
-    }
-
-    let mut result: Vec<(String, String, usize)> = counts
-        .into_iter()
-        .map(|((source, kind), count)| (source, kind, count))
-        .collect();
-
-    // Sort by kind, then source name for stable output
-    result.sort_by(|a, b| (&a.1, &a.0).cmp(&(&b.1, &b.0)));
-    result
 }
 
 /// Format the structure tree as ultra-compact text (~4-5 tokens/line)

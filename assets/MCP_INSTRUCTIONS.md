@@ -59,25 +59,6 @@ Before using gabb exploration tools, assess whether exploration is needed:
 ⚠️ **Over-exploration costs time.** A trivial task that could be solved in 15s
 can take 60s+ with unnecessary exploration. Match exploration depth to task complexity.
 
-## When to Skip Exploration Entirely
-
-Go DIRECTLY to the file (no gabb_symbol, no Grep, no gabb_structure) when ANY of these are true:
-
-1. **Task names a specific file path**: "fix bug in django/db/models/fields.py"
-   → Read that file directly
-
-2. **Hint/diff shows exact location**: The task includes a code snippet or diff
-   → Read the file at that location
-
-3. **Single-line fix**: "change X to Y", "rename A to B", "fix typo"
-   → Find and read the obvious file
-
-4. **Error traceback provided**: Stack trace points to specific file:line
-   → Read that file at that line
-
-**The test:** If you can name the target file from the task description alone,
-skip exploration and just Read it.
-
 ## `gabb_structure` - File Layout Preview
 
 For large or unfamiliar code files, consider calling `gabb_structure` first to see the layout.

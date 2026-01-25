@@ -38,24 +38,20 @@ gabb_symbol name="update_proxy_model_permissions"
 
 ## `gabb_structure` - File Layout Preview
 
-**First:** Assess if exploration is needed (see MCP instructions).
-For trivial tasks with obvious targets, go directly to the file.
+**After `gabb_symbol` returns a location:** Go directly to `Read` with offset.
+Don't call `gabb_structure` on a file where you already know the target line.
 
-**If exploring:** Before reading large or unfamiliar code files, consider using `gabb_structure` to preview the layout.
-This saves tokens when you only need part of a large file.
+**SKIP `gabb_structure` when:**
+- `gabb_symbol` already found the exact file:line location
+- You're reading a single known file (not choosing between files)
+- The file is <200 lines (just read it directly)
+- You only need a specific function/class (use offset from symbol search)
+- You're searching for string literals or error messages (use Grep)
 
-**Recommended for:**
-- Large files (>100 lines) where you only need part
-- Unfamiliar codebases where you're exploring
-- Files you'll read multiple times
-
-**Skip when:**
-- You already know exactly what you're looking for
-- The file is likely small (<100 lines)
-- You can answer from existing context
-- Files you've already seen structure for in this conversation
-- **You're searching for string literals, regex patterns, or error messages**
-  (gabb_structure shows symbols, not strings—use Grep directly)
+**USE `gabb_structure` only when:**
+- Multiple files matched and you need to pick the right one
+- You need to understand overall file organization before making changes
+- The file is very large (>500 lines) AND you don't know which section to read
 
 ## Supported Languages
 

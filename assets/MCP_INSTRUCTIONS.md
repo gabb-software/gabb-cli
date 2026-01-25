@@ -61,25 +61,19 @@ can take 60s+ with unnecessary exploration. Match exploration depth to task comp
 
 ## `gabb_structure` - File Layout Preview
 
-For large or unfamiliar code files, consider calling `gabb_structure` first to see the layout.
-This saves tokens when you only need part of a large file.
+**After `gabb_symbol` returns a location:** Go directly to `Read` with offset.
+Don't call `gabb_structure` on a file where you already know the target line.
 
-**Recommended for:**
-- Large files (>100 lines) where you only need part
-- Unfamiliar codebases where you're exploring
-- Files you'll read multiple times in a session
+**SKIP `gabb_structure` when:**
+- `gabb_symbol` already found the exact file:line location
+- You're reading a single known file (not choosing between files)
+- The file is <200 lines (just read it directly)
+- You only need a specific function/class (use offset from symbol search)
 
-**Skip this check when:**
-- You already know exactly what you're looking for
-- The file is likely small (<100 lines)
-- You can answer from existing context
-- Files you've already seen structure for
-
-**The pattern:**
-```
-gabb_structure file="path/to/file.rs"      # ~50 tokens, shows layout
-Read file="path/to/file.rs" offset=X limit=Y   # Read only what you need
-```
+**USE `gabb_structure` only when:**
+- Multiple files matched and you need to pick the right one
+- You need to understand overall file organization before making changes
+- The file is very large (>500 lines) AND you don't know which section to read
 
 ## Supported Languages
 

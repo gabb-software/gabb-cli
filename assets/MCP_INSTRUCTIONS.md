@@ -28,14 +28,6 @@ gabb_symbol name="update_proxy_model_permissions"
 → function update_proxy_model_permissions [prod] django/contrib/auth/migrations/0011_update_proxy_permissions.py:5:1
 ```
 
-**Anti-pattern:**
-```
-Task: "Fix the update_proxy_model_permissions function"
-
-BAD (75s): Grep "IntegrityError" → 48 files → spawn Task agent → still confused
-GOOD (5s): gabb_symbol name="update_proxy_model_permissions" → 1 match → done
-```
-
 **Use Grep instead when:**
 - Searching for error messages or string literals
 - Looking for text patterns, not code identifiers

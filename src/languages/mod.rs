@@ -3,6 +3,7 @@ pub mod go;
 pub mod kotlin;
 pub mod python;
 pub mod registry;
+pub mod ruby;
 pub mod rust;
 pub mod traits;
 pub mod typescript;

@@ -3,7 +3,7 @@
 Gabb is a Rust CLI that builds a local code index so editors and AI coding assistants can answer questions like "where is this implemented?" without shipping your sources to a remote service. It includes an indexing daemon that stays in sync with filesystem changes.
 
 ## Status
-- Indexes TypeScript/TSX, Rust, Kotlin, C++, Python, and Go, storing results in a local SQLite database
+- Indexes TypeScript/TSX, Rust, Kotlin, C++, Python, Go, and Ruby, storing results in a local SQLite database
 - Commands: `gabb setup`, `gabb init`, `gabb daemon start/stop/restart/status`, `gabb symbols`, `gabb symbol`, `gabb implementation`, `gabb usages`, `gabb definition`, `gabb duplicates`, `gabb structure`, `gabb stats`, `gabb includers`, `gabb includes`, `gabb mcp-server`
 - Outputs: symbol definitions, relationships (implements/extends), and references
 - MCP server for AI assistant integration (Claude Desktop, Claude Code)
@@ -223,7 +223,7 @@ Structure command:
 - Shows start line for each symbol (compact format: `name kind line`)
 
 What gets indexed:
-- Files: `*.ts`, `*.tsx`, `*.rs`, `*.kt`, `*.kts`, `*.py`, `*.pyi`, `*.go`, `*.cpp`, `*.cc`, `*.cxx`, `*.hpp`, `*.hh`
+- Files: `*.ts`, `*.tsx`, `*.rs`, `*.kt`, `*.kts`, `*.py`, `*.pyi`, `*.go`, `*.cpp`, `*.cc`, `*.cxx`, `*.hpp`, `*.hh`, `*.rb`
 - Data stored: symbols (functions, classes, interfaces, methods, etc.), relationships (implements/extends), references
 - Storage: SQLite with WAL enabled for safe concurrent reads
 
@@ -427,7 +427,7 @@ This creates `.claude/skills/gabb/SKILL.md` which Claude auto-discovers. The ski
 - `src/main.rs`: CLI entrypoint and logging setup
 - `src/daemon.rs`: filesystem watcher and incremental indexing loop
 - `src/indexer.rs`: full/index-one routines and workspace traversal
-- `src/languages/`: language parsers (TypeScript, Rust, Kotlin, C++) built on tree-sitter
+- `src/languages/`: language parsers (TypeScript, Rust, Kotlin, C++, Python, Go, Ruby) built on tree-sitter
 - `src/store.rs`: SQLite-backed index store
 - `src/mcp.rs`: MCP server implementation for AI assistant integration
 - `ARCHITECTURE.md`: deeper design notes

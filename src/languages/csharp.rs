@@ -301,10 +301,9 @@ fn walk_symbols(
 
 /// Extract modifiers from a declaration node.
 /// Returns (visibility, is_const, is_static).
-fn extract_modifiers(source: &str, node: &Node) -> (Option<String>, bool, bool) {
+fn extract_modifiers(source: &str, node: &Node) -> (Option<String>, bool) {
     let mut visibility = None;
     let mut is_const = false;
-    let mut is_static = false;
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "modifier" {
@@ -317,15 +316,12 @@ fn extract_modifiers(source: &str, node: &Node) -> (Option<String>, bool, bool) 
                     "const" => {
                         is_const = true;
                     }
-                    "static" => {
-                        is_static = true;
-                    }
                     _ => {}
                 }
             }
         }
     }
-    (visibility, is_const, is_static)
+    (visibility, is_const)
 }
 
 /// Extract the identifier name from a declaration node.
@@ -462,7 +458,7 @@ fn handle_class(
         _ => return,
     };
 
-    let (visibility, _, _) = extract_modifiers(source, node);
+    let (visibility, _) = extract_modifiers(source, node);
     let default_vis = if container.is_some() {
         "private"
     } else {
@@ -530,7 +526,7 @@ fn handle_struct(
         _ => return,
     };
 
-    let (visibility, _, _) = extract_modifiers(source, node);
+    let (visibility, _) = extract_modifiers(source, node);
     let default_vis = if container.is_some() {
         "private"
     } else {
@@ -601,7 +597,7 @@ fn handle_record(
 
     let kind = if is_record_struct { "struct" } else { "class" };
 
-    let (visibility, _, _) = extract_modifiers(source, node);
+    let (visibility, _) = extract_modifiers(source, node);
     let default_vis = if container.is_some() {
         "private"
     } else {
@@ -667,7 +663,7 @@ fn handle_interface(
         _ => return,
     };
 
-    let (visibility, _, _) = extract_modifiers(source, node);
+    let (visibility, _) = extract_modifiers(source, node);
     let default_vis = if container.is_some() {
         "private"
     } else {
@@ -733,7 +729,7 @@ fn handle_enum(
         _ => return,
     };
 
-    let (visibility, _, _) = extract_modifiers(source, node);
+    let (visibility, _) = extract_modifiers(source, node);
     let default_vis = if container.is_some() {
         "private"
     } else {
@@ -788,7 +784,7 @@ fn handle_method(
         "function"
     };
 
-    let (visibility, _, _) = extract_modifiers(source, node);
+    let (visibility, _) = extract_modifiers(source, node);
     let vis = if container.is_some() {
         Some(visibility.unwrap_or_else(|| "private".to_string()))
     } else {
@@ -844,7 +840,7 @@ fn handle_constructor(
         "function"
     };
 
-    let (visibility, _, _) = extract_modifiers(source, node);
+    let (visibility, _) = extract_modifiers(source, node);
     let vis = if container.is_some() {
         Some(visibility.unwrap_or_else(|| "private".to_string()))
     } else {
@@ -892,7 +888,7 @@ fn handle_property(
         _ => return,
     };
 
-    let (visibility, _, _) = extract_modifiers(source, node);
+    let (visibility, _) = extract_modifiers(source, node);
     let vis = if container.is_some() {
         Some(visibility.unwrap_or_else(|| "private".to_string()))
     } else {
@@ -935,7 +931,7 @@ fn handle_field(
         return;
     }
 
-    let (visibility, is_const, _) = extract_modifiers(source, node);
+    let (visibility, is_const) = extract_modifiers(source, node);
     let vis = if container.is_some() {
         Some(visibility.unwrap_or_else(|| "private".to_string()))
     } else {

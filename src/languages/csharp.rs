@@ -420,6 +420,13 @@ fn extract_base_types(source: &str, node: &Node) -> (Option<String>, Vec<String>
     (base_class, interfaces)
 }
 
+/// Check if a node has a direct child with the given kind.
+fn has_child_kind(node: &Node, kind: &str) -> bool {
+    let mut cursor = node.walk();
+    let found = node.children(&mut cursor).any(|child| child.kind() == kind);
+    found
+}
+
 /// Check if a type name looks like an interface (starts with I followed by uppercase).
 fn looks_like_interface(name: &str) -> bool {
     let mut chars = name.chars();
@@ -590,13 +597,7 @@ fn handle_record(
     };
 
     // Determine if it's a record struct
-    let is_record_struct = {
-        let mut cursor = node.walk();
-        let result = node
-            .children(&mut cursor)
-            .any(|child| child.kind() == "struct");
-        result
-    };
+    let is_record_struct = has_child_kind(node, "struct");
 
     let kind = if is_record_struct { "struct" } else { "class" };
 

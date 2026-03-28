@@ -2,7 +2,7 @@
 name = "gabb-cli"
 version = "0.0.0-dev"  # Actual version set by CI from version.toml
 edition = "2021"
-description = "Fast local code indexing CLI for TypeScript, Rust, Kotlin, C++, Python, Go, and Ruby projects"
+description = "Fast local code indexing CLI for TypeScript, Rust, Kotlin, C++, C#, Python, Go, and Ruby projects"
 license = "MIT"
 repository = "https://github.com/gabb-software/gabb-cli"
 homepage = "https://github.com/gabb-software/gabb-cli"

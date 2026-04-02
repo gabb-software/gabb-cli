@@ -4,7 +4,7 @@
 //! replacing the if/else chains in the indexer.
 
 use super::traits::{LanguageParser, ParseResult};
-use super::{cpp, go, kotlin, python, ruby, rust, typescript};
+use super::{cpp, csharp, go, kotlin, python, ruby, rust, typescript};
 use anyhow::{bail, Result};
 use std::collections::HashMap;
 use std::path::Path;
@@ -41,6 +41,14 @@ impl ParserRegistry {
             registry
                 .parsers
                 .insert(ext, Box::new(kotlin_parser.clone()));
+        }
+
+        // Register C# parser
+        let csharp_parser = csharp::CSharpParser::new();
+        for ext in csharp_parser.config().extensions {
+            registry
+                .parsers
+                .insert(ext, Box::new(csharp_parser.clone()));
         }
 
         // Register C++ parser
@@ -167,6 +175,12 @@ mod tests {
     }
 
     #[test]
+    fn registry_finds_csharp_parser() {
+        let registry = ParserRegistry::new();
+        assert!(registry.is_supported(&PathBuf::from("test.cs")));
+    }
+
+    #[test]
     fn registry_finds_cpp_parser() {
         let registry = ParserRegistry::new();
         assert!(registry.is_supported(&PathBuf::from("test.cpp")));
@@ -211,5 +225,6 @@ mod tests {
         assert!(languages.contains(&"Python"));
         assert!(languages.contains(&"Go"));
         assert!(languages.contains(&"Ruby"));
+        assert!(languages.contains(&"C#"));
     }
 }

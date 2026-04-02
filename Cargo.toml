@@ -2,7 +2,7 @@
 name = "gabb-cli"
 version = "0.0.0-dev"  # Actual version set by CI from version.toml
 edition = "2021"
-description = "Fast local code indexing CLI for TypeScript, Rust, Kotlin, C++, Python, Go, and Ruby projects"
+description = "Fast local code indexing CLI for TypeScript, Rust, Kotlin, C++, C#, Python, Go, and Ruby projects"
 license = "MIT"
 repository = "https://github.com/gabb-software/gabb-cli"
 homepage = "https://github.com/gabb-software/gabb-cli"
@@ -40,6 +40,7 @@ tree-sitter-python = "0.23"
 tree-sitter-go = "0.23"
 indicatif = "0.17"
 tree-sitter-ruby = "0.23"
+tree-sitter-c-sharp = "0.23.1"
 
 [dev-dependencies]
 tempfile = "3.10"

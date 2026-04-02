@@ -67,6 +67,7 @@ This saves tokens when you only need part of a large file.
 | Go         | `.go`                                  |
 | Kotlin     | `.kt`, `.kts`                          |
 | C++        | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`   |
+| C#         | `.cs`                                  |
 | Ruby       | `.rb`                                  |
 
 ## Usage Patterns

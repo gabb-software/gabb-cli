@@ -1,8 +1,7 @@
 ---
 name: gabb-code-navigation
-description: |
-  Teaches when to use gabb_structure for efficient file exploration.
-  Use gabb_structure before reading large files in supported languages.
+description: >
+  Navigate and explore codebases using symbol search and file structure preview via gabb MCP tools. Finds functions, classes, and methods by name across workspaces, previews large file layouts before reading. Use when the user says 'find function', 'find class', 'explore file', 'symbol search', 'code structure', 'where is defined', or needs to navigate unfamiliar code.
 allowed-tools: mcp__gabb__gabb_structure, mcp__gabb__gabb_symbol, Edit, Write, Bash, Read, Glob
 ---
 

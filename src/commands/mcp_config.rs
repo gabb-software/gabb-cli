@@ -50,6 +50,13 @@ pub fn find_gabb_binary() -> String {
     "gabb".to_string()
 }
 
+/// Get the path to the global user-scoped Claude config directory (~/.claude/)
+pub fn global_claude_dir() -> Result<PathBuf> {
+    dirs::home_dir()
+        .map(|h| h.join(".claude"))
+        .ok_or_else(|| anyhow!("Could not determine home directory"))
+}
+
 /// Controls how the --workspace argument is set in MCP config
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceMode {
@@ -193,7 +200,11 @@ pub fn mcp_install(root: &Path, claude_desktop_only: bool, claude_code_only: boo
 
 /// Install gabb config to a specific config file
 /// Returns Ok(true) if installed, Ok(false) if already present
-fn install_to_config_file(config_path: &Path, root: &Path, use_absolute: bool) -> Result<bool> {
+pub(crate) fn install_to_config_file(
+    config_path: &Path,
+    root: &Path,
+    use_absolute: bool,
+) -> Result<bool> {
     // Create parent directory if needed
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent)?;
@@ -513,7 +524,7 @@ pub fn mcp_uninstall(claude_desktop_only: bool, claude_code_only: bool) -> Resul
 
 /// Remove gabb from a config file
 /// Returns Ok(true) if removed, Ok(false) if wasn't present
-fn uninstall_from_config_file(config_path: &Path) -> Result<bool> {
+pub(crate) fn uninstall_from_config_file(config_path: &Path) -> Result<bool> {
     let content = fs::read_to_string(config_path)?;
     let mut config: serde_json::Value = serde_json::from_str(&content)?;
 
@@ -595,6 +606,13 @@ If the index doesn't exist, gabb will auto-start the daemon to build it.
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn global_claude_dir_returns_home_dot_claude() {
+        let dir = global_claude_dir().unwrap();
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(dir, home.join(".claude"));
+    }
 
     #[test]
     fn generate_mcp_config_omit_workspace() {

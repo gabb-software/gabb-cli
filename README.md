@@ -168,6 +168,8 @@ Requires Rust 1.70+. The `cargo binstall` option downloads pre-built binaries in
 # Workspace is auto-detected from .gabb/, .git/, Cargo.toml, package.json, etc.
 gabb setup [--yes] [--dry-run] [--no-index]
 gabb init [--mcp] [--skill] [--gitignore]
+gabb install-global [--mcp] [--skill]
+gabb uninstall-global [--mcp] [--skill]
 gabb daemon start [--rebuild] [--background] [-v|-vv]
 gabb daemon stop [--force]
 gabb daemon status
@@ -221,6 +223,26 @@ Structure command:
 - **Key types**: highlights important public types with many methods
 - Displays symbols nested by containment (e.g., methods inside classes)
 - Shows start line for each symbol (compact format: `name kind line`)
+
+### Global Installation
+
+Install gabb MCP server and skill for all projects (writes to `~/.claude/`):
+
+```bash
+# Install both MCP config and skill globally
+gabb install-global
+
+# Install only MCP config globally
+gabb install-global --mcp
+
+# Install only the skill file globally
+gabb install-global --skill
+
+# Remove global installation
+gabb uninstall-global
+```
+
+When installed globally, gabb's MCP server infers the workspace from the directory Claude Code is opened in, so it works across all projects without per-project setup.
 
 What gets indexed:
 - Files: `*.ts`, `*.tsx`, `*.rs`, `*.kt`, `*.kts`, `*.py`, `*.pyi`, `*.go`, `*.cpp`, `*.cc`, `*.cxx`, `*.hpp`, `*.hh`, `*.rb`

@@ -4,7 +4,6 @@ use anyhow::{anyhow, Result};
 use std::fs;
 use std::path::Path;
 
-
 /// Initialize gabb in a project
 pub fn init_project(
     root: &Path,
@@ -85,7 +84,10 @@ pub(crate) fn install_mcp_config(claude_dir: &Path, include_workspace: bool) -> 
             .and_then(|s| s.get("gabb"))
             .is_some()
         {
-            println!("  {} already has gabb configured", mcp_config_path.display());
+            println!(
+                "  {} already has gabb configured",
+                mcp_config_path.display()
+            );
             return Ok(());
         }
 

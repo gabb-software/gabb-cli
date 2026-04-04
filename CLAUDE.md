@@ -194,6 +194,18 @@ cargo run -- usages --db .gabb/index.db --file path/to/file.ts:10:5
 cargo run -- --json symbols --db .gabb/index.db
 ```
 
+### Global Installation
+```bash
+# Install MCP and skill to ~/.claude/ (works in all projects)
+cargo run -- install-global
+
+# Install only MCP config globally
+cargo run -- install-global --mcp
+
+# Remove global installation
+cargo run -- uninstall-global
+```
+
 ## Architecture Overview
 
 Gabb is a local code indexing CLI that builds and maintains a SQLite database of code symbols. It provides fast, offline symbol search and navigation without sending code to remote services.

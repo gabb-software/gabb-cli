@@ -92,9 +92,7 @@ mod tests {
 
         let content: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&mcp_path).unwrap()).unwrap();
-        let args = content["mcpServers"]["gabb"]["args"]
-            .as_array()
-            .unwrap();
+        let args = content["mcpServers"]["gabb"]["args"].as_array().unwrap();
         assert_eq!(
             args.len(),
             1,
@@ -141,10 +139,9 @@ mod tests {
 
         install_mcp_config(&claude_dir, false).unwrap();
 
-        let content: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(claude_dir.join("mcp.json")).unwrap(),
-        )
-        .unwrap();
+        let content: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(claude_dir.join("mcp.json")).unwrap())
+                .unwrap();
 
         // Both servers should be present
         assert!(content["mcpServers"]["other-tool"].is_object());

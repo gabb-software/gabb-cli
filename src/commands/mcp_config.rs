@@ -50,22 +50,45 @@ pub fn find_gabb_binary() -> String {
     "gabb".to_string()
 }
 
+/// Controls how the --workspace argument is set in MCP config
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceMode {
+    /// Use relative path "." (for project-level config, version control friendly)
+    Relative,
+    /// Use absolute path (for Claude Desktop config)
+    Absolute,
+    /// Omit --workspace entirely (for global config, inferred at runtime)
+    Omit,
+}
+
 /// Generate MCP server config JSON for a workspace
-pub fn generate_mcp_config(root: &Path, use_absolute_path: bool) -> serde_json::Value {
-    let root_str = if use_absolute_path {
-        root.canonicalize()
-            .unwrap_or_else(|_| root.to_path_buf())
-            .to_string_lossy()
-            .to_string()
-    } else {
-        ".".to_string()
-    };
+pub fn generate_mcp_config(root: &Path, mode: WorkspaceMode) -> serde_json::Value {
+    let mut args: Vec<serde_json::Value> = vec!["mcp-server".into()];
+
+    match mode {
+        WorkspaceMode::Relative => {
+            args.push("--workspace".into());
+            args.push(".".into());
+        }
+        WorkspaceMode::Absolute => {
+            let root_str = root
+                .canonicalize()
+                .unwrap_or_else(|_| root.to_path_buf())
+                .to_string_lossy()
+                .to_string();
+            args.push("--workspace".into());
+            args.push(root_str.into());
+        }
+        WorkspaceMode::Omit => {
+            // No --workspace arg; MCP server infers from working directory
+        }
+    }
 
     serde_json::json!({
         "mcpServers": {
             "gabb": {
                 "command": find_gabb_binary(),
-                "args": ["mcp-server", "--workspace", root_str]
+                "args": args
             }
         }
     })
@@ -76,7 +99,7 @@ pub fn generate_mcp_config(root: &Path, use_absolute_path: bool) -> serde_json::
 /// Print MCP configuration JSON
 pub fn mcp_config(root: &Path, format: McpConfigFormat) -> Result<()> {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let config = generate_mcp_config(&root, true);
+    let config = generate_mcp_config(&root, WorkspaceMode::Absolute);
 
     match format {
         McpConfigFormat::Json => {
@@ -202,7 +225,12 @@ fn install_to_config_file(config_path: &Path, root: &Path, use_absolute: bool) -
     }
 
     // Add gabb to mcpServers
-    let gabb_config = generate_mcp_config(root, use_absolute);
+    let mode = if use_absolute {
+        WorkspaceMode::Absolute
+    } else {
+        WorkspaceMode::Relative
+    };
+    let gabb_config = generate_mcp_config(root, mode);
     let mcp_servers = config
         .as_object_mut()
         .ok_or_else(|| anyhow!("Config is not a JSON object"))?
@@ -561,4 +589,40 @@ If the index doesn't exist, gabb will auto-start the daemon to build it.
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn generate_mcp_config_omit_workspace() {
+        let root = PathBuf::from("/tmp/fake");
+        let config = generate_mcp_config(&root, WorkspaceMode::Omit);
+        let args = config["mcpServers"]["gabb"]["args"].as_array().unwrap();
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0], "mcp-server");
+        assert!(!args.iter().any(|a| a.as_str() == Some("--workspace")));
+    }
+
+    #[test]
+    fn generate_mcp_config_relative_workspace() {
+        let root = PathBuf::from("/tmp/fake");
+        let config = generate_mcp_config(&root, WorkspaceMode::Relative);
+        let args = config["mcpServers"]["gabb"]["args"].as_array().unwrap();
+        assert_eq!(args.len(), 3);
+        assert_eq!(args[1], "--workspace");
+        assert_eq!(args[2], ".");
+    }
+
+    #[test]
+    fn generate_mcp_config_absolute_workspace() {
+        let root = PathBuf::from("/tmp/fake");
+        let config = generate_mcp_config(&root, WorkspaceMode::Absolute);
+        let args = config["mcpServers"]["gabb"]["args"].as_array().unwrap();
+        assert_eq!(args.len(), 3);
+        assert_eq!(args[1], "--workspace");
+        assert_ne!(args[2], ".");
+    }
 }

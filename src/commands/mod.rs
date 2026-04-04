@@ -5,6 +5,7 @@
 pub mod deps;
 pub mod duplicates;
 pub mod init;
+pub mod install_global;
 pub mod mcp_config;
 pub mod query;
 pub mod setup;
@@ -15,6 +16,7 @@ pub mod structure;
 pub use deps::{find_includers, find_includes};
 pub use duplicates::find_duplicates;
 pub use init::init_project;
+pub use install_global::{install_global, uninstall_global};
 pub use mcp_config::{mcp_command, mcp_config, mcp_install, mcp_status, mcp_uninstall};
 pub use query::{find_definition, find_implementation, find_usages, list_symbols, show_symbol};
 pub use setup::setup_wizard;

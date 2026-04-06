@@ -1,5 +1,7 @@
 //! Install/uninstall gabb globally to ~/.claude/ for all projects.
 
+use std::path::Path;
+
 use anyhow::Result;
 
 use crate::commands::init::{install_mcp_config, install_skill};
@@ -8,16 +10,27 @@ use crate::commands::mcp_config::{global_claude_dir, uninstall_from_config_file}
 /// Install gabb MCP config and/or skill file globally to ~/.claude/.
 pub fn install_global(mcp: bool, skill: bool) -> Result<()> {
     let claude_dir = global_claude_dir()?;
+    install_global_to_dir(&claude_dir, mcp, skill)
+}
+
+/// Remove gabb MCP config and/or skill file from ~/.claude/.
+pub fn uninstall_global(mcp: bool, skill: bool) -> Result<()> {
+    let claude_dir = global_claude_dir()?;
+    uninstall_global_from_dir(&claude_dir, mcp, skill)
+}
+
+/// Core install logic operating on a given directory (testable without ~/.claude/).
+fn install_global_to_dir(claude_dir: &Path, mcp: bool, skill: bool) -> Result<()> {
     let install_both = !mcp && !skill;
 
     println!("Installing gabb globally to {}/", claude_dir.display());
 
     if install_both || mcp {
-        install_mcp_config(&claude_dir, false)?;
+        install_mcp_config(claude_dir, false)?;
     }
 
     if install_both || skill {
-        install_skill(&claude_dir)?;
+        install_skill(claude_dir)?;
     }
 
     println!();
@@ -26,9 +39,8 @@ pub fn install_global(mcp: bool, skill: bool) -> Result<()> {
     Ok(())
 }
 
-/// Remove gabb MCP config and/or skill file from ~/.claude/.
-pub fn uninstall_global(mcp: bool, skill: bool) -> Result<()> {
-    let claude_dir = global_claude_dir()?;
+/// Core uninstall logic operating on a given directory (testable without ~/.claude/).
+fn uninstall_global_from_dir(claude_dir: &Path, mcp: bool, skill: bool) -> Result<()> {
     let uninstall_both = !mcp && !skill;
     let mut removed_any = false;
 
@@ -182,5 +194,162 @@ mod tests {
         // Remove it
         fs::remove_dir_all(&skill_dir).unwrap();
         assert!(!skill_dir.exists());
+    }
+
+    // --- Orchestration tests (flag logic) ---
+
+    #[test]
+    fn install_both_when_no_flags() {
+        let dir = tempdir().unwrap();
+        let claude_dir = dir.path().join(".claude");
+
+        // mcp=false, skill=false → install both
+        install_global_to_dir(&claude_dir, false, false).unwrap();
+
+        assert!(
+            claude_dir.join("mcp.json").exists(),
+            "MCP config should exist"
+        );
+        assert!(
+            claude_dir
+                .join("skills")
+                .join("gabb")
+                .join("SKILL.md")
+                .exists(),
+            "Skill file should exist"
+        );
+    }
+
+    #[test]
+    fn install_mcp_only_flag() {
+        let dir = tempdir().unwrap();
+        let claude_dir = dir.path().join(".claude");
+
+        // mcp=true, skill=false → only MCP
+        install_global_to_dir(&claude_dir, true, false).unwrap();
+
+        assert!(
+            claude_dir.join("mcp.json").exists(),
+            "MCP config should exist"
+        );
+        assert!(
+            !claude_dir
+                .join("skills")
+                .join("gabb")
+                .join("SKILL.md")
+                .exists(),
+            "Skill file should NOT exist"
+        );
+    }
+
+    #[test]
+    fn install_skill_only_flag() {
+        let dir = tempdir().unwrap();
+        let claude_dir = dir.path().join(".claude");
+
+        // mcp=false, skill=true → only skill
+        install_global_to_dir(&claude_dir, false, true).unwrap();
+
+        assert!(
+            !claude_dir.join("mcp.json").exists(),
+            "MCP config should NOT exist"
+        );
+        assert!(
+            claude_dir
+                .join("skills")
+                .join("gabb")
+                .join("SKILL.md")
+                .exists(),
+            "Skill file should exist"
+        );
+    }
+
+    #[test]
+    fn install_is_idempotent() {
+        let dir = tempdir().unwrap();
+        let claude_dir = dir.path().join(".claude");
+
+        // Install twice — should not error or corrupt files
+        install_global_to_dir(&claude_dir, false, false).unwrap();
+        install_global_to_dir(&claude_dir, false, false).unwrap();
+
+        let content: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(claude_dir.join("mcp.json")).unwrap())
+                .unwrap();
+        assert!(content["mcpServers"]["gabb"].is_object());
+        assert!(claude_dir
+            .join("skills")
+            .join("gabb")
+            .join("SKILL.md")
+            .exists());
+    }
+
+    #[test]
+    fn uninstall_when_nothing_installed() {
+        let dir = tempdir().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        // Don't install anything — just create the dir
+        fs::create_dir_all(&claude_dir).unwrap();
+
+        // Should not error
+        uninstall_global_from_dir(&claude_dir, false, false).unwrap();
+    }
+
+    #[test]
+    fn uninstall_mcp_only_leaves_skill() {
+        let dir = tempdir().unwrap();
+        let claude_dir = dir.path().join(".claude");
+
+        // Install both
+        install_global_to_dir(&claude_dir, false, false).unwrap();
+
+        // Uninstall only MCP
+        uninstall_global_from_dir(&claude_dir, true, false).unwrap();
+
+        // MCP should have gabb removed
+        let content: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(claude_dir.join("mcp.json")).unwrap())
+                .unwrap();
+        assert!(
+            content["mcpServers"]["gabb"].is_null(),
+            "gabb should be removed from MCP"
+        );
+
+        // Skill should still exist
+        assert!(
+            claude_dir
+                .join("skills")
+                .join("gabb")
+                .join("SKILL.md")
+                .exists(),
+            "Skill file should still exist"
+        );
+    }
+
+    #[test]
+    fn uninstall_skill_only_leaves_mcp() {
+        let dir = tempdir().unwrap();
+        let claude_dir = dir.path().join(".claude");
+
+        // Install both
+        install_global_to_dir(&claude_dir, false, false).unwrap();
+
+        // Uninstall only skill
+        uninstall_global_from_dir(&claude_dir, false, true).unwrap();
+
+        // MCP should still have gabb
+        let content: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(claude_dir.join("mcp.json")).unwrap())
+                .unwrap();
+        assert!(
+            content["mcpServers"]["gabb"].is_object(),
+            "gabb should still be in MCP"
+        );
+
+        // Skill dir should be gone
+        assert!(
+            !claude_dir.join("skills").join("gabb").exists(),
+            "Skill dir should be removed"
+        );
     }
 }

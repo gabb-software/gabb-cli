@@ -4,6 +4,7 @@ AGENTS.md
 ARCHITECTURE.md
 PLAN.md
 TOOL_PLAN.md
+docs/superpowers/
 .gabb/
 # Claude Code local files (keep commands/skills for sharing)
 .claude/*

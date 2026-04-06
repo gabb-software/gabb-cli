@@ -4,8 +4,6 @@ use anyhow::{anyhow, Result};
 use std::fs;
 use std::path::Path;
 
-use crate::commands::mcp_config::find_gabb_binary;
-
 /// Initialize gabb in a project
 pub fn init_project(
     root: &Path,
@@ -55,31 +53,30 @@ pub fn init_project(
     Ok(())
 }
 
-/// Create .claude/mcp.json with gabb configuration
+/// Create mcp.json with gabb configuration in the given claude directory.
 ///
-/// This is used by both `init --mcp` and `setup` commands.
-pub(crate) fn init_mcp_config(root: &Path) -> Result<()> {
-    let claude_dir = root.join(".claude");
+/// `claude_dir` is the `.claude/` directory (local or global).
+/// `include_workspace` controls whether `--workspace .` is added to args.
+pub(crate) fn install_mcp_config(claude_dir: &Path, include_workspace: bool) -> Result<()> {
     let mcp_config_path = claude_dir.join("mcp.json");
 
-    // Create .claude directory
+    // Create directory
     if !claude_dir.exists() {
-        fs::create_dir_all(&claude_dir)?;
-        println!("  Created .claude/");
+        fs::create_dir_all(claude_dir)?;
+        println!("  Created {}/", claude_dir.display());
     }
 
-    // Generate MCP config with relative path (version control friendly)
-    let config = serde_json::json!({
-        "mcpServers": {
-            "gabb": {
-                "command": find_gabb_binary(),
-                "args": ["mcp-server", "--workspace", "."]
-            }
-        }
-    });
+    // Generate MCP config using shared helper
+    let mode = if include_workspace {
+        crate::commands::mcp_config::WorkspaceMode::Relative
+    } else {
+        crate::commands::mcp_config::WorkspaceMode::Omit
+    };
+    // For Relative mode root doesn't matter (uses "."), for Omit mode root is unused
+    let dummy_root = std::path::Path::new(".");
+    let config = crate::commands::mcp_config::generate_mcp_config(dummy_root, mode);
 
     if mcp_config_path.exists() {
-        // Check if gabb already configured
         let existing = fs::read_to_string(&mcp_config_path)?;
         let existing_config: serde_json::Value = serde_json::from_str(&existing)?;
         if existing_config
@@ -87,7 +84,10 @@ pub(crate) fn init_mcp_config(root: &Path) -> Result<()> {
             .and_then(|s| s.get("gabb"))
             .is_some()
         {
-            println!("  .claude/mcp.json already has gabb configured");
+            println!(
+                "  {} already has gabb configured",
+                mcp_config_path.display()
+            );
             return Ok(());
         }
 
@@ -110,13 +110,21 @@ pub(crate) fn init_mcp_config(root: &Path) -> Result<()> {
         }
 
         fs::write(&mcp_config_path, serde_json::to_string_pretty(&merged)?)?;
-        println!("  Added gabb to .claude/mcp.json");
+        println!("  Added gabb to {}", mcp_config_path.display());
     } else {
         fs::write(&mcp_config_path, serde_json::to_string_pretty(&config)?)?;
-        println!("  Created .claude/mcp.json");
+        println!("  Created {}", mcp_config_path.display());
     }
 
     Ok(())
+}
+
+/// Create .claude/mcp.json with gabb configuration (project-local).
+///
+/// This is used by both `init --mcp` and `setup` commands.
+pub(crate) fn init_mcp_config(root: &Path) -> Result<()> {
+    let claude_dir = root.join(".claude");
+    install_mcp_config(&claude_dir, true)
 }
 
 /// Add .gabb/ and .claude/ to .gitignore
@@ -180,18 +188,16 @@ pub(crate) fn init_gitignore(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Create .claude/skills/gabb/ agent skill for Claude Code discoverability
+/// Install the gabb skill file to the given claude directory.
 ///
-/// This is used by both `init --skill` and `setup` commands.
-pub(crate) fn init_skill(root: &Path) -> Result<()> {
-    // Create .claude/skills/gabb directory
-    let skills_dir = root.join(".claude").join("skills").join("gabb");
+/// `claude_dir` is the `.claude/` directory (local or global).
+pub(crate) fn install_skill(claude_dir: &Path) -> Result<()> {
+    let skills_dir = claude_dir.join("skills").join("gabb");
     if !skills_dir.exists() {
         fs::create_dir_all(&skills_dir)?;
-        println!("  Created .claude/skills/gabb/");
+        println!("  Created {}/", skills_dir.display());
     }
 
-    // Write SKILL.md (self-contained skill file with all guidance)
     let skill_file = skills_dir.join("SKILL.md");
     let skill_content = include_str!("../../assets/SKILL.md");
     write_skill_file(&skill_file, skill_content, "SKILL.md")?;
@@ -199,19 +205,27 @@ pub(crate) fn init_skill(root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Create .claude/skills/gabb/ agent skill for Claude Code discoverability (project-local).
+///
+/// This is used by both `init --skill` and `setup` commands.
+pub(crate) fn init_skill(root: &Path) -> Result<()> {
+    let claude_dir = root.join(".claude");
+    install_skill(&claude_dir)
+}
+
 /// Helper to write a skill file, checking if it needs updating
 fn write_skill_file(path: &Path, content: &str, name: &str) -> Result<()> {
     if path.exists() {
         let existing = fs::read_to_string(path)?;
         if existing == content {
-            println!("  .claude/skills/gabb/{} is up to date", name);
+            println!("  {} is up to date", path.display());
             return Ok(());
         }
         fs::write(path, content)?;
-        println!("  Updated .claude/skills/gabb/{}", name);
+        println!("  Updated {}", path.display());
     } else {
         fs::write(path, content)?;
-        println!("  Created .claude/skills/gabb/{}", name);
+        println!("  Created {}", path.display());
         if name == "SKILL.md" {
             println!("  Claude will auto-discover this skill for code navigation tasks");
         }

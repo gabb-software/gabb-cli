@@ -236,6 +236,12 @@ fn main() -> std::process::ExitCode {
             .and_then(|_| commands::file_structure(&db, &workspace, &file, format, quiet)),
         Commands::Stats => ensure_index(&db, cli.no_start_daemon, cli.no_daemon)
             .and_then(|_| commands::show_stats(&db, format).map(|_| ExitCode::Success)),
+        Commands::InstallGlobal { mcp, skill } => {
+            commands::install_global(mcp, skill).map(|_| ExitCode::Success)
+        }
+        Commands::UninstallGlobal { mcp, skill } => {
+            commands::uninstall_global(mcp, skill).map(|_| ExitCode::Success)
+        }
     };
 
     match result {

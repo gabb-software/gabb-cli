@@ -1121,3 +1121,35 @@ fn main() {
         main_refs
     );
 }
+
+#[test]
+fn install_global_creates_mcp_and_skill() {
+    let bin = env!("CARGO_BIN_EXE_gabb");
+    let output = Command::new(bin)
+        .args(["install-global", "--help"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--mcp"), "should have --mcp flag");
+    assert!(stdout.contains("--skill"), "should have --skill flag");
+    assert!(
+        stdout.contains("globally"),
+        "help should mention global install"
+    );
+}
+
+#[test]
+fn uninstall_global_has_correct_flags() {
+    let bin = env!("CARGO_BIN_EXE_gabb");
+    let output = Command::new(bin)
+        .args(["uninstall-global", "--help"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--mcp"), "should have --mcp flag");
+    assert!(stdout.contains("--skill"), "should have --skill flag");
+}

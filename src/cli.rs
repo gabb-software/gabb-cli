@@ -238,6 +238,24 @@ pub enum Commands {
     },
     /// Show index statistics (file counts, symbol counts, index metadata)
     Stats,
+    /// Install gabb MCP server and skill globally (~/.claude/) for all projects
+    InstallGlobal {
+        /// Only install MCP server configuration
+        #[arg(long)]
+        mcp: bool,
+        /// Only install the agent skill file
+        #[arg(long)]
+        skill: bool,
+    },
+    /// Remove gabb MCP server and skill from global config (~/.claude/)
+    UninstallGlobal {
+        /// Only remove MCP server configuration
+        #[arg(long)]
+        mcp: bool,
+        /// Only remove the agent skill file
+        #[arg(long)]
+        skill: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

@@ -8,6 +8,11 @@ allowed-tools: mcp__gabb__gabb_structure, mcp__gabb__gabb_symbol, Edit, Write, B
 
 # Gabb Code Navigation
 
+## Installation
+
+gabb can be installed per-project (`gabb init --mcp --skill`) or globally (`gabb install-global`).
+When installed globally, gabb is available in all Claude Code sessions without per-project setup.
+
 ## Search Strategy Decision Flow
 
 When you need to find code, follow this order:
